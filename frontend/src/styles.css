@@ -1,0 +1,29 @@
+:root {
+  color-scheme: light;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  color: #14213d;
+  background: linear-gradient(160deg, #f8f9fb 0%, #e5ecf8 100%);
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+}
+
+main {
+  max-width: 760px;
+  margin: 2rem auto;
+  padding: 1.5rem;
+  border: 1px solid #d5deef;
+  border-radius: 16px;
+  background: #ffffff;
+  box-shadow: 0 10px 30px rgba(20, 33, 61, 0.08);
+}
+
+h1 {
+  margin-top: 0;
+}
+
+#appointments {
+  padding-left: 1rem;
+}

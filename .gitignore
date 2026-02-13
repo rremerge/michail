@@ -1,0 +1,19 @@
+# Node
+node_modules/
+npm-debug.log*
+
+# Build output
+dist/
+coverage/
+cdk.out/
+
+# Env
+.env
+.env.*
+
+# Editor
+.DS_Store
+.vscode/*.log
+
+# Lambda artifacts
+*.zip
