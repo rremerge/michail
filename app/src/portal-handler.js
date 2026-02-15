@@ -1,0 +1,497 @@
+import crypto from "node:crypto";
+import { createRuntimeDeps } from "./runtime-deps.js";
+
+function parseBody(event) {
+  if (!event.body) {
+    return {};
+  }
+
+  const bodyText = event.isBase64Encoded
+    ? Buffer.from(event.body, "base64").toString("utf8")
+    : event.body;
+
+  return typeof bodyText === "string" ? JSON.parse(bodyText) : bodyText;
+}
+
+function jsonResponse(statusCode, body) {
+  return {
+    statusCode,
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "no-store"
+    },
+    body: JSON.stringify(body)
+  };
+}
+
+function htmlResponse(statusCode, html) {
+  return {
+    statusCode,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store"
+    },
+    body: html
+  };
+}
+
+function redirectResponse(location) {
+  return {
+    statusCode: 302,
+    headers: {
+      location,
+      "cache-control": "no-store"
+    },
+    body: ""
+  };
+}
+
+function routeNotFound() {
+  return jsonResponse(404, { error: "Not found" });
+}
+
+function badRequest(message) {
+  return jsonResponse(400, { error: message });
+}
+
+function serverError(message) {
+  return jsonResponse(500, { error: message });
+}
+
+function parseGoogleAppSecret(secretString) {
+  const parsed = JSON.parse(secretString);
+  const clientId = parsed.client_id;
+  const clientSecret = parsed.client_secret;
+
+  if (!clientId || !clientSecret) {
+    throw new Error("Google OAuth app secret is missing client_id or client_secret");
+  }
+
+  return { clientId, clientSecret };
+}
+
+function getBaseUrl(event) {
+  const domainName = event.requestContext?.domainName;
+  const stage = event.requestContext?.stage;
+
+  if (!domainName) {
+    throw new Error("Missing requestContext.domainName");
+  }
+
+  if (!stage || stage === "$default") {
+    return `https://${domainName}`;
+  }
+
+  return `https://${domainName}/${stage}`;
+}
+
+function normalizeRawPath(rawPath, stage) {
+  const path = rawPath || "/";
+  if (!stage || stage === "$default") {
+    return path;
+  }
+
+  if (path === `/${stage}`) {
+    return "/";
+  }
+
+  const stagePrefix = `/${stage}/`;
+  if (path.startsWith(stagePrefix)) {
+    return path.slice(stagePrefix.length - 1);
+  }
+
+  return path;
+}
+
+function buildAdvisorPage() {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Advisor Portal - Connected Calendars</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; background: #f5f7fb; color: #1f2937; }
+      .card { background: #fff; border: 1px solid #d0d7e2; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+      h1 { margin-top: 0; }
+      button { padding: 8px 12px; margin-right: 8px; cursor: pointer; }
+      .banner { border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; }
+      .banner.ok { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
+      .banner.error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
+      table { width: 100%; border-collapse: collapse; }
+      th, td { text-align: left; border-bottom: 1px solid #e5e7eb; padding: 8px; font-size: 14px; }
+      .muted { color: #6b7280; }
+      .status { font-weight: 600; }
+      .ok { color: #047857; }
+      .warn { color: #b45309; }
+      .error { color: #b91c1c; }
+      code { background: #eef2ff; padding: 2px 6px; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <h1>Connected Calendars</h1>
+      <div id="statusBanner" style="display:none"></div>
+      <p class="muted">Add calendars for availability checks without manually editing AWS secrets.</p>
+      <button id="addMock">Add Mock Calendar (Test)</button>
+      <button id="googleConnect">Connect Google (Sign In)</button>
+      <span class="muted">Google flow requires app credentials configured in backend secret.</span>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0;">Current Connections</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Provider</th>
+            <th>Account</th>
+            <th>Status</th>
+            <th>Primary</th>
+            <th>Updated</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="connectionsBody"></tbody>
+      </table>
+    </div>
+
+    <script>
+      function showStatusFromQuery() {
+        const banner = document.getElementById('statusBanner');
+        const params = new URLSearchParams(window.location.search);
+        const connected = params.get('connected');
+        const error = params.get('error');
+
+        if (connected === 'google') {
+          banner.style.display = 'block';
+          banner.className = 'banner ok';
+          banner.textContent = 'Google calendar connected successfully.';
+        } else if (error) {
+          banner.style.display = 'block';
+          banner.className = 'banner error';
+          banner.textContent = error;
+        } else {
+          banner.style.display = 'none';
+          banner.className = '';
+          banner.textContent = '';
+        }
+      }
+
+      async function loadConnections() {
+        const response = await fetch('./advisor/api/connections');
+        const payload = await response.json();
+        const tbody = document.getElementById('connectionsBody');
+        tbody.innerHTML = '';
+
+        if (!payload.connections || payload.connections.length === 0) {
+          const row = document.createElement('tr');
+          row.innerHTML = '<td colspan="6" class="muted">No connections yet.</td>';
+          tbody.appendChild(row);
+          return;
+        }
+
+        for (const connection of payload.connections) {
+          const row = document.createElement('tr');
+          const statusClass = connection.status === 'connected' ? 'ok' : connection.status === 'error' ? 'error' : 'warn';
+
+          row.innerHTML =
+            '<td><code>' + connection.provider + '</code></td>' +
+            '<td>' + (connection.accountEmail || '-') + '</td>' +
+            '<td><span class="status ' + statusClass + '">' + connection.status + '</span></td>' +
+            '<td>' + (connection.isPrimary ? 'Yes' : 'No') + '</td>' +
+            '<td>' + (connection.updatedAt || '-') + '</td>' +
+            '<td><button data-id="' + connection.connectionId + '">Remove</button></td>';
+
+          row.querySelector('button').addEventListener('click', async () => {
+            await fetch('./advisor/api/connections/' + connection.connectionId, { method: 'DELETE' });
+            await loadConnections();
+          });
+
+          tbody.appendChild(row);
+        }
+      }
+
+      document.getElementById('addMock').addEventListener('click', async () => {
+        await fetch('./advisor/api/connections/mock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
+        await loadConnections();
+      });
+
+      document.getElementById('googleConnect').addEventListener('click', () => {
+        window.location.href = './advisor/api/connections/google/start';
+      });
+
+      showStatusFromQuery();
+      loadConnections().catch((error) => {
+        console.error(error);
+      });
+    </script>
+  </body>
+</html>`;
+}
+
+function redirectAdvisorWithError(event, message) {
+  const location = `${getBaseUrl(event)}/advisor?error=${encodeURIComponent(message)}`;
+  return redirectResponse(location);
+}
+
+async function exchangeCodeForTokens({ clientId, clientSecret, code, redirectUri, fetchImpl }) {
+  const fetchFn = fetchImpl ?? fetch;
+  const form = new URLSearchParams({
+    code,
+    client_id: clientId,
+    client_secret: clientSecret,
+    redirect_uri: redirectUri,
+    grant_type: "authorization_code"
+  });
+
+  const response = await fetchFn("https://oauth2.googleapis.com/token", {
+    method: "POST",
+    headers: {
+      "content-type": "application/x-www-form-urlencoded"
+    },
+    body: form.toString()
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Google code exchange failed (${response.status}): ${message}`);
+  }
+
+  return response.json();
+}
+
+async function fetchGoogleUserProfile(accessToken, fetchImpl) {
+  const fetchFn = fetchImpl ?? fetch;
+  const response = await fetchFn("https://openidconnect.googleapis.com/v1/userinfo", {
+    method: "GET",
+    headers: {
+      authorization: `Bearer ${accessToken}`
+    }
+  });
+
+  if (!response.ok) {
+    return { email: null };
+  }
+
+  return response.json();
+}
+
+export function createPortalHandler(overrides = {}) {
+  const runtimeDeps = createRuntimeDeps();
+  const deps = {
+    ...runtimeDeps,
+    ...overrides
+  };
+
+  return async function handler(event) {
+    const method = event.requestContext?.http?.method ?? "GET";
+    const rawPath = normalizeRawPath(event.rawPath ?? "/", event.requestContext?.stage);
+
+    const advisorId = process.env.ADVISOR_ID ?? "manoj";
+    const appName = process.env.APP_NAME ?? "calendar-agent-spike";
+    const stage = process.env.STAGE ?? "dev";
+    const connectionsTableName = process.env.CONNECTIONS_TABLE_NAME;
+    const oauthStateTableName = process.env.OAUTH_STATE_TABLE_NAME;
+
+    if (!connectionsTableName) {
+      return serverError("CONNECTIONS_TABLE_NAME is required");
+    }
+
+    if (method === "GET" && rawPath === "/advisor") {
+      return htmlResponse(200, buildAdvisorPage());
+    }
+
+    if (method === "GET" && rawPath === "/advisor/api/connections") {
+      const connections = await deps.listConnections(connectionsTableName, advisorId);
+      connections.sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
+
+      return jsonResponse(200, {
+        advisorId,
+        connections: connections.map((item) => ({
+          connectionId: item.connectionId,
+          provider: item.provider,
+          accountEmail: item.accountEmail,
+          status: item.status,
+          isPrimary: Boolean(item.isPrimary),
+          updatedAt: item.updatedAt
+        }))
+      });
+    }
+
+    if (method === "POST" && rawPath === "/advisor/api/connections/mock") {
+      const nowIso = new Date().toISOString();
+      const connectionId = `mock-${crypto.randomUUID()}`;
+
+      await deps.putConnection(connectionsTableName, {
+        advisorId,
+        connectionId,
+        provider: "mock",
+        accountEmail: "mock@local",
+        status: "connected",
+        isPrimary: true,
+        createdAt: nowIso,
+        updatedAt: nowIso
+      });
+
+      return jsonResponse(201, {
+        connectionId,
+        provider: "mock",
+        status: "connected"
+      });
+    }
+
+    if ((method === "POST" || method === "GET") && rawPath === "/advisor/api/connections/google/start") {
+      if (!oauthStateTableName) {
+        if (method === "GET") {
+          return redirectAdvisorWithError(event, "OAUTH_STATE_TABLE_NAME is required");
+        }
+
+        return serverError("OAUTH_STATE_TABLE_NAME is required");
+      }
+
+      const googleAppSecretArn = process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
+      if (!googleAppSecretArn) {
+        if (method === "GET") {
+          return redirectAdvisorWithError(event, "Google OAuth app is not configured in this environment yet.");
+        }
+
+        return badRequest("Google OAuth app is not configured in this environment yet.");
+      }
+
+      let appSecret;
+      try {
+        appSecret = parseGoogleAppSecret(await deps.getSecretString(googleAppSecretArn));
+      } catch (error) {
+        if (method === "GET") {
+          return redirectAdvisorWithError(event, error.message);
+        }
+
+        return badRequest(error.message);
+      }
+
+      const state = crypto.randomUUID();
+      const nowMs = Date.now();
+
+      await deps.putOauthState(oauthStateTableName, state, {
+        advisorId,
+        createdAt: new Date(nowMs).toISOString(),
+        expiresAt: Math.floor((nowMs + 15 * 60 * 1000) / 1000)
+      });
+
+      const redirectUri = `${getBaseUrl(event)}/advisor/api/connections/google/callback`;
+      const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+      authUrl.searchParams.set("client_id", appSecret.clientId);
+      authUrl.searchParams.set("redirect_uri", redirectUri);
+      authUrl.searchParams.set("response_type", "code");
+      authUrl.searchParams.set("scope", "https://www.googleapis.com/auth/calendar.readonly openid email profile");
+      authUrl.searchParams.set("access_type", "offline");
+      authUrl.searchParams.set("prompt", "consent");
+      authUrl.searchParams.set("state", state);
+
+      return redirectResponse(authUrl.toString());
+    }
+
+    if (method === "GET" && rawPath === "/advisor/api/connections/google/callback") {
+      if (!oauthStateTableName) {
+        return serverError("OAUTH_STATE_TABLE_NAME is required");
+      }
+
+      const code = event.queryStringParameters?.code;
+      const state = event.queryStringParameters?.state;
+      if (!code || !state) {
+        return badRequest("Missing OAuth callback code/state");
+      }
+
+      const stateItem = await deps.getOauthState(oauthStateTableName, state);
+      if (!stateItem || stateItem.advisorId !== advisorId) {
+        return badRequest("Invalid or expired OAuth state");
+      }
+
+      await deps.deleteOauthState(oauthStateTableName, state);
+
+      const googleAppSecretArn = process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
+      if (!googleAppSecretArn) {
+        return badRequest("Google OAuth app is not configured in this environment yet.");
+      }
+
+      let appSecret;
+      try {
+        appSecret = parseGoogleAppSecret(await deps.getSecretString(googleAppSecretArn));
+      } catch (error) {
+        return badRequest(error.message);
+      }
+
+      const redirectUri = `${getBaseUrl(event)}/advisor/api/connections/google/callback`;
+
+      const tokenPayload = await exchangeCodeForTokens({
+        clientId: appSecret.clientId,
+        clientSecret: appSecret.clientSecret,
+        code,
+        redirectUri,
+        fetchImpl: deps.fetchImpl
+      });
+
+      if (!tokenPayload.refresh_token) {
+        return badRequest("Google did not return refresh_token. Reconnect and ensure consent prompt is granted.");
+      }
+
+      const profile = tokenPayload.access_token
+        ? await fetchGoogleUserProfile(tokenPayload.access_token, deps.fetchImpl)
+        : { email: null };
+
+      const nowIso = new Date().toISOString();
+      const connectionId = `google-${crypto.randomUUID()}`;
+      const secretName = `/${appName}/${stage}/${advisorId}/connections/${connectionId}`;
+      const secretArn = await deps.createSecret(
+        secretName,
+        JSON.stringify({
+          client_id: appSecret.clientId,
+          client_secret: appSecret.clientSecret,
+          refresh_token: tokenPayload.refresh_token,
+          calendar_ids: ["primary"]
+        })
+      );
+
+      await deps.putConnection(connectionsTableName, {
+        advisorId,
+        connectionId,
+        provider: "google",
+        accountEmail: profile.email ?? "unknown@google",
+        status: "connected",
+        isPrimary: true,
+        secretArn,
+        createdAt: nowIso,
+        updatedAt: nowIso
+      });
+
+      return redirectResponse(`${getBaseUrl(event)}/advisor?connected=google`);
+    }
+
+    if (method === "DELETE" && rawPath.startsWith("/advisor/api/connections/")) {
+      const connectionId = rawPath.split("/").at(-1);
+      if (!connectionId) {
+        return badRequest("Missing connectionId");
+      }
+
+      const existing = await deps.getConnection(connectionsTableName, advisorId, connectionId);
+      if (!existing) {
+        return jsonResponse(404, { error: "Connection not found" });
+      }
+
+      if (existing.secretArn) {
+        try {
+          await deps.deleteSecret(existing.secretArn);
+        } catch {
+          // Best-effort token cleanup for missing/deleted secrets.
+        }
+      }
+
+      await deps.deleteConnection(connectionsTableName, advisorId, connectionId);
+      return jsonResponse(200, { deleted: true, connectionId });
+    }
+
+    return routeNotFound();
+  };
+}
+
+export const handler = createPortalHandler();

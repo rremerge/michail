@@ -1,0 +1,21 @@
+{
+  "name": "calendar-agent-spike",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Email-to-calendar availability spike for the calendar agent",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --test"
+  },
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.990.0",
+    "@aws-sdk/client-secrets-manager": "^3.990.0",
+    "@aws-sdk/client-sesv2": "^3.990.0",
+    "@aws-sdk/lib-dynamodb": "^3.990.0",
+    "luxon": "^3.6.1"
+  }
+}

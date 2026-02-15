@@ -1,0 +1,6 @@
+{
+  "fromEmail": "client@example.com",
+  "subject": "Need 30 min chat next week",
+  "body": "Timezone: America/New_York\nI can do 2026-03-03T13:00:00-05:00 to 2026-03-03T16:00:00-05:00",
+  "channel": "email"
+}

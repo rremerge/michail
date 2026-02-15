@@ -17,3 +17,6 @@ cdk.out/
 
 # Lambda artifacts
 *.zip
+.aws-sam/
+.npm-cache/
+.gcloud/

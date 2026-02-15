@@ -1,0 +1,360 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Calendar Agent Spike 1 (email intake -> calendar lookup -> response).
+  Isolated stack only; does not modify global SES receipt rules or other applications.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: calendar-agent-spike
+  Stage:
+    Type: String
+    Default: dev
+  CalendarMode:
+    Type: String
+    AllowedValues:
+      - mock
+      - google
+      - connection
+    Default: mock
+  ResponseMode:
+    Type: String
+    AllowedValues:
+      - log
+      - send
+    Default: log
+  SenderEmail:
+    Type: String
+    Default: ""
+    Description: Verified SES sender identity. Required if ResponseMode=send.
+  HostTimezone:
+    Type: String
+    Default: America/Los_Angeles
+  AdvisingDays:
+    Type: String
+    Default: Tue,Wed
+  SearchDays:
+    Type: Number
+    Default: 14
+  MaxSuggestions:
+    Type: Number
+    Default: 3
+  WorkdayStartHour:
+    Type: Number
+    Default: 9
+  WorkdayEndHour:
+    Type: Number
+    Default: 17
+  DefaultDurationMinutes:
+    Type: Number
+    Default: 30
+  MaxDurationMinutes:
+    Type: Number
+    Default: 120
+  GoogleOAuthSecretName:
+    Type: String
+    Default: ""
+    Description: Optional custom Secrets Manager name. Leave empty to auto-generate per stack.
+  GoogleOAuthAppSecretName:
+    Type: String
+    Default: ""
+    Description: Optional app-level secret name for Google OAuth client_id/client_secret.
+  AdvisorId:
+    Type: String
+    Default: manoj
+
+Conditions:
+  HasCustomSecretName: !Not [!Equals [!Ref GoogleOAuthSecretName, ""]]
+  HasCustomAppSecretName: !Not [!Equals [!Ref GoogleOAuthAppSecretName, ""]]
+
+Resources:
+  TraceTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: requestId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: requestId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: application
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  ConnectionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: advisorId
+          AttributeType: S
+        - AttributeName: connectionId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: advisorId
+          KeyType: HASH
+        - AttributeName: connectionId
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: application
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  OAuthStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: state
+          AttributeType: S
+      KeySchema:
+        - AttributeName: state
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: application
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  GoogleOAuthSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !If
+        - HasCustomSecretName
+        - !Ref GoogleOAuthSecretName
+        - !Sub /${AppName}/${Stage}/${AWS::StackName}/google-oauth
+      Description: Google OAuth config for calendar free/busy lookup.
+      SecretString: '{"client_id":"","client_secret":"","refresh_token":"","calendar_ids":["primary"]}'
+      Tags:
+        - Key: application
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  GoogleOAuthAppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !If
+        - HasCustomAppSecretName
+        - !Ref GoogleOAuthAppSecretName
+        - !Sub /${AppName}/${Stage}/${AWS::StackName}/google-oauth-app
+      Description: Google OAuth application credentials (client_id/client_secret).
+      SecretString: '{"client_id":"","client_secret":""}'
+      Tags:
+        - Key: application
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  SpikeApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref Stage
+      CorsConfiguration:
+        AllowMethods:
+          - POST
+          - GET
+          - DELETE
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - content-type
+          - x-request-id
+
+  EmailSpikeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: app/
+      Handler: src/handler.handler
+      Runtime: nodejs22.x
+      Architectures:
+        - arm64
+      MemorySize: 512
+      Timeout: 60
+      Tracing: Active
+      Environment:
+        Variables:
+          TRACE_TABLE_NAME: !Ref TraceTable
+          GOOGLE_OAUTH_SECRET_ARN: !Ref GoogleOAuthSecret
+          CONNECTIONS_TABLE_NAME: !Ref ConnectionsTable
+          ADVISOR_ID: !Ref AdvisorId
+          CALENDAR_MODE: !Ref CalendarMode
+          RESPONSE_MODE: !Ref ResponseMode
+          SENDER_EMAIL: !Ref SenderEmail
+          HOST_TIMEZONE: !Ref HostTimezone
+          ADVISING_DAYS: !Ref AdvisingDays
+          SEARCH_DAYS: !Ref SearchDays
+          MAX_SUGGESTIONS: !Ref MaxSuggestions
+          WORKDAY_START_HOUR: !Ref WorkdayStartHour
+          WORKDAY_END_HOUR: !Ref WorkdayEndHour
+          DEFAULT_DURATION_MINUTES: !Ref DefaultDurationMinutes
+          MAX_DURATION_MINUTES: !Ref MaxDurationMinutes
+      Events:
+        SpikeApiRequest:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: POST
+            Path: /spike/email
+      Policies:
+        - Statement:
+            - Sid: WriteTraceMetadata
+              Effect: Allow
+              Action:
+                - dynamodb:PutItem
+              Resource: !GetAtt TraceTable.Arn
+            - Sid: ReadConnections
+              Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource: !GetAtt ConnectionsTable.Arn
+            - Sid: ReadGoogleOAuthSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref GoogleOAuthSecret
+            - Sid: ReadConnectionOAuthSecrets
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/${AppName}/${Stage}/*
+            - Sid: SendResponseEmail
+              Effect: Allow
+              Action:
+                - ses:SendEmail
+                - ses:SendRawEmail
+              Resource: "*"
+      Tags:
+        application: !Ref AppName
+        stage: !Ref Stage
+
+  AdvisorPortalFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: app/
+      Handler: src/portal-handler.handler
+      Runtime: nodejs22.x
+      Architectures:
+        - arm64
+      MemorySize: 512
+      Timeout: 60
+      Tracing: Active
+      Environment:
+        Variables:
+          APP_NAME: !Ref AppName
+          STAGE: !Ref Stage
+          ADVISOR_ID: !Ref AdvisorId
+          CONNECTIONS_TABLE_NAME: !Ref ConnectionsTable
+          OAUTH_STATE_TABLE_NAME: !Ref OAuthStateTable
+          GOOGLE_OAUTH_APP_SECRET_ARN: !Ref GoogleOAuthAppSecret
+      Events:
+        AdvisorHome:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /advisor
+        AdvisorConnectionsList:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /advisor/api/connections
+        AdvisorConnectionsMock:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: POST
+            Path: /advisor/api/connections/mock
+        AdvisorGoogleStart:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: POST
+            Path: /advisor/api/connections/google/start
+        AdvisorGoogleStartGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /advisor/api/connections/google/start
+        AdvisorGoogleCallback:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /advisor/api/connections/google/callback
+        AdvisorConnectionsDelete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: DELETE
+            Path: /advisor/api/connections/{connectionId}
+      Policies:
+        - Statement:
+            - Sid: ManageConnections
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+              Resource: !GetAtt ConnectionsTable.Arn
+            - Sid: ManageOauthState
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:DeleteItem
+              Resource: !GetAtt OAuthStateTable.Arn
+            - Sid: ReadGoogleOAuthAppSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref GoogleOAuthAppSecret
+            - Sid: ManageConnectionSecrets
+              Effect: Allow
+              Action:
+                - secretsmanager:CreateSecret
+                - secretsmanager:DeleteSecret
+              Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/${AppName}/${Stage}/*
+      Tags:
+        application: !Ref AppName
+        stage: !Ref Stage
+
+Outputs:
+  SpikeApiUrl:
+    Description: HTTP API endpoint for test email intake.
+    Value: !Sub https://${SpikeApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/spike/email
+  GoogleOAuthSecretArn:
+    Description: Secret ARN for storing Google OAuth credentials.
+    Value: !Ref GoogleOAuthSecret
+  GoogleOAuthAppSecretArn:
+    Description: Secret ARN for OAuth app credentials (client_id/client_secret).
+    Value: !Ref GoogleOAuthAppSecret
+  TraceTableName:
+    Description: DynamoDB table for content-free request traces.
+    Value: !Ref TraceTable
+  ConnectionsTableName:
+    Description: DynamoDB table for advisor calendar connections.
+    Value: !Ref ConnectionsTable
+  AdvisorPortalUrl:
+    Description: Advisor portal URL for managing connected calendars.
+    Value: !Sub https://${SpikeApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/advisor
