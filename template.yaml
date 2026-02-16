@@ -307,12 +307,19 @@ Resources:
             ApiId: !Ref SpikeApi
             Method: POST
             Path: /spike/email
+        SpikeApiFeedback:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: POST
+            Path: /spike/feedback
       Policies:
         - Statement:
             - Sid: WriteTraceMetadata
               Effect: Allow
               Action:
                 - dynamodb:PutItem
+                - dynamodb:UpdateItem
               Resource: !GetAtt TraceTable.Arn
             - Sid: ReadConnections
               Effect: Allow
@@ -361,6 +368,7 @@ Resources:
           STAGE: !Ref Stage
           ADVISOR_ID: !Ref AdvisorId
           CONNECTIONS_TABLE_NAME: !Ref ConnectionsTable
+          TRACE_TABLE_NAME: !Ref TraceTable
           OAUTH_STATE_TABLE_NAME: !Ref OAuthStateTable
           GOOGLE_OAUTH_APP_SECRET_ARN: !Ref GoogleOAuthAppSecret
           ADVISOR_PORTAL_AUTH_MODE: !Ref AdvisorPortalAuthMode
@@ -428,6 +436,18 @@ Resources:
             ApiId: !Ref SpikeApi
             Method: DELETE
             Path: /advisor/api/connections/{connectionId}
+        AdvisorTraceLookup:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /advisor/api/traces/{requestId}
+        AdvisorTraceFeedback:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: POST
+            Path: /advisor/api/traces/{requestId}/feedback
       Policies:
         - Statement:
             - Sid: ManageConnections
@@ -445,6 +465,12 @@ Resources:
                 - dynamodb:PutItem
                 - dynamodb:DeleteItem
               Resource: !GetAtt OAuthStateTable.Arn
+            - Sid: AccessTraceMetadata
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt TraceTable.Arn
             - Sid: ReadGoogleOAuthAppSecret
               Effect: Allow
               Action:

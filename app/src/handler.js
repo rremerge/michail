@@ -50,11 +50,37 @@ function parseIncomingPayload(event) {
   return event ?? {};
 }
 
+function normalizeRawPath(rawPath, stage) {
+  const path = rawPath || "/";
+  if (!stage || stage === "$default") {
+    return path;
+  }
+
+  if (path === `/${stage}`) {
+    return "/";
+  }
+
+  const stagePrefix = `/${stage}/`;
+  if (path.startsWith(stagePrefix)) {
+    return path.slice(stagePrefix.length - 1);
+  }
+
+  return path;
+}
+
 function ok(body) {
   return {
     statusCode: 200,
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body)
+  };
+}
+
+function notFound() {
+  return {
+    statusCode: 404,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ error: "Not found" })
   };
 }
 
@@ -71,6 +97,102 @@ function serverError(requestId, message) {
     statusCode: 500,
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ requestId, error: message })
+  };
+}
+
+const FEEDBACK_TYPE_VALUES = new Set(["incorrect", "odd", "helpful", "other"]);
+const FEEDBACK_REASON_VALUES = new Set([
+  "availability_mismatch",
+  "timezone_issue",
+  "tone_quality",
+  "latency",
+  "other"
+]);
+const FEEDBACK_SOURCE_VALUES = new Set(["client", "advisor", "system"]);
+
+function validateFeedbackField(rawValue, allowedValues, fieldName, defaultValue) {
+  const normalized = String(rawValue ?? defaultValue)
+    .trim()
+    .toLowerCase();
+  if (!allowedValues.has(normalized)) {
+    throw new Error(`${fieldName} must be one of: ${Array.from(allowedValues).join(", ")}`);
+  }
+
+  return normalized;
+}
+
+function parseFeedbackPayload(payload) {
+  const requestId = String(payload.requestId ?? "").trim();
+  const responseId = String(payload.responseId ?? "").trim();
+  if (!requestId || !responseId) {
+    throw new Error("requestId and responseId are required");
+  }
+
+  const feedbackType = validateFeedbackField(payload.feedbackType, FEEDBACK_TYPE_VALUES, "feedbackType", "other");
+  const feedbackReason = validateFeedbackField(
+    payload.feedbackReason,
+    FEEDBACK_REASON_VALUES,
+    "feedbackReason",
+    "other"
+  );
+  const feedbackSource = validateFeedbackField(
+    payload.feedbackSource,
+    FEEDBACK_SOURCE_VALUES,
+    "feedbackSource",
+    "client"
+  );
+
+  return {
+    requestId,
+    responseId,
+    feedbackType,
+    feedbackReason,
+    feedbackSource
+  };
+}
+
+export async function processSchedulingFeedback({ payload, env, deps, now = () => Date.now() }) {
+  if (!env.TRACE_TABLE_NAME) {
+    return { http: serverError(null, "TRACE_TABLE_NAME is required") };
+  }
+
+  let feedback;
+  try {
+    feedback = parseFeedbackPayload(payload);
+  } catch (error) {
+    return { http: badRequest(error.message) };
+  }
+
+  const updatedAt = new Date(now()).toISOString();
+  const updated = await deps.updateTraceFeedback(env.TRACE_TABLE_NAME, {
+    requestId: feedback.requestId,
+    responseId: feedback.responseId,
+    feedbackSource: feedback.feedbackSource,
+    feedbackType: feedback.feedbackType,
+    feedbackReason: feedback.feedbackReason,
+    updatedAt
+  });
+
+  if (!updated) {
+    return {
+      http: {
+        statusCode: 404,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ error: "requestId and responseId were not found" })
+      }
+    };
+  }
+
+  return {
+    http: ok({
+      requestId: feedback.requestId,
+      responseId: feedback.responseId,
+      feedbackRecorded: true,
+      feedbackSource: feedback.feedbackSource,
+      feedbackType: feedback.feedbackType,
+      feedbackReason: feedback.feedbackReason,
+      feedbackUpdatedAt: updatedAt
+    })
   };
 }
 
@@ -175,6 +297,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     await deps.writeTrace(env.TRACE_TABLE_NAME, {
       requestId,
       responseId,
+      advisorId,
       status: "failed",
       stage: "calendar_lookup",
       providerStatus,
@@ -259,6 +382,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   await deps.writeTrace(env.TRACE_TABLE_NAME, {
     requestId,
     responseId,
+    advisorId,
     status: "completed",
     providerStatus,
     channel: payload.channel ?? "email",
@@ -298,6 +422,24 @@ export function createHandler(overrides = {}) {
   };
 
   return async function handler(event) {
+    const method = event?.requestContext?.http?.method ?? "POST";
+    const rawPath = normalizeRawPath(event?.rawPath ?? "/spike/email", event?.requestContext?.stage);
+
+    if (event?.version === "2.0" && method === "POST" && rawPath === "/spike/feedback") {
+      const payload = parseIncomingPayload(event);
+      const result = await processSchedulingFeedback({
+        payload,
+        env: process.env,
+        deps
+      });
+
+      return result.http;
+    }
+
+    if (event?.version === "2.0" && rawPath !== "/spike/email") {
+      return notFound();
+    }
+
     const payload = parseIncomingPayload(event);
     const result = await processSchedulingEmail({
       payload,

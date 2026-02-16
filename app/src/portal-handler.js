@@ -434,6 +434,143 @@ function parseReturnTo(queryStringParameters) {
   return candidate;
 }
 
+const FEEDBACK_TYPE_VALUES = new Set(["incorrect", "odd", "helpful", "other"]);
+const FEEDBACK_REASON_VALUES = new Set([
+  "availability_mismatch",
+  "timezone_issue",
+  "tone_quality",
+  "latency",
+  "other"
+]);
+const FEEDBACK_SOURCE_VALUES = new Set(["client", "advisor", "system"]);
+
+function validateEnumValue(rawValue, allowedValues, fieldName, defaultValue) {
+  const normalized = String(rawValue ?? defaultValue)
+    .trim()
+    .toLowerCase();
+  if (!allowedValues.has(normalized)) {
+    throw new Error(`${fieldName} must be one of: ${Array.from(allowedValues).join(", ")}`);
+  }
+
+  return normalized;
+}
+
+function parseFeedbackPayload(payload, defaultSource = "advisor") {
+  const requestId = String(payload.requestId ?? "").trim();
+  const responseId = String(payload.responseId ?? "").trim();
+  if (!requestId || !responseId) {
+    throw new Error("requestId and responseId are required");
+  }
+
+  const feedbackType = validateEnumValue(payload.feedbackType, FEEDBACK_TYPE_VALUES, "feedbackType", "other");
+  const feedbackReason = validateEnumValue(
+    payload.feedbackReason,
+    FEEDBACK_REASON_VALUES,
+    "feedbackReason",
+    "other"
+  );
+  const feedbackSource = validateEnumValue(payload.feedbackSource, FEEDBACK_SOURCE_VALUES, "feedbackSource", defaultSource);
+
+  return {
+    requestId,
+    responseId,
+    feedbackType,
+    feedbackReason,
+    feedbackSource
+  };
+}
+
+function parseTraceLookupPath(rawPath) {
+  const match = rawPath.match(/^\/advisor\/api\/traces\/([^/]+)$/);
+  return match?.[1] ?? null;
+}
+
+function parseTraceFeedbackPath(rawPath) {
+  const match = rawPath.match(/^\/advisor\/api\/traces\/([^/]+)\/feedback$/);
+  return match?.[1] ?? null;
+}
+
+function isValidRequestId(requestId) {
+  return typeof requestId === "string" && /^[A-Za-z0-9-]{8,128}$/.test(requestId);
+}
+
+function selectTraceMetadata(trace) {
+  return {
+    requestId: trace.requestId,
+    responseId: trace.responseId,
+    advisorId: trace.advisorId,
+    status: trace.status,
+    stage: trace.stage,
+    errorCode: trace.errorCode,
+    providerStatus: trace.providerStatus,
+    channel: trace.channel,
+    meetingType: trace.meetingType,
+    durationMinutes: trace.durationMinutes,
+    suggestionCount: trace.suggestionCount,
+    responseMode: trace.responseMode,
+    calendarMode: trace.calendarMode,
+    llmMode: trace.llmMode,
+    llmStatus: trace.llmStatus,
+    fromDomain: trace.fromDomain,
+    latencyMs: trace.latencyMs,
+    createdAt: trace.createdAt,
+    updatedAt: trace.updatedAt,
+    feedbackStatus: trace.feedbackStatus,
+    feedbackSource: trace.feedbackSource,
+    feedbackType: trace.feedbackType,
+    feedbackReason: trace.feedbackReason,
+    feedbackCount: trace.feedbackCount,
+    feedbackUpdatedAt: trace.feedbackUpdatedAt
+  };
+}
+
+function buildTraceDiagnosis(trace) {
+  const categories = [];
+  const actions = [];
+  const latencyMs = Number(trace.latencyMs ?? 0);
+
+  if (trace.status === "failed") {
+    categories.push("processing_failed");
+    if (trace.errorCode === "CALENDAR_LOOKUP_FAILED") {
+      actions.push("Verify advisor calendar connection and OAuth token validity.");
+    }
+  }
+
+  if (trace.llmStatus === "fallback") {
+    categories.push("llm_fallback");
+    actions.push("Check LLM provider key, model availability, and timeout configuration.");
+  }
+
+  if (latencyMs > 5 * 60 * 1000) {
+    categories.push("sla_breach");
+    actions.push("Request exceeded 5 minutes. Inspect Lambda duration and upstream provider latency.");
+  } else if (latencyMs > 30 * 1000) {
+    categories.push("slow_response");
+    actions.push("Response was slow. Inspect calendar/LLM latency from CloudWatch and X-Ray.");
+  }
+
+  if (trace.status === "completed" && Number(trace.suggestionCount ?? 0) === 0) {
+    categories.push("no_slots_found");
+    actions.push("No matching slots were available in the requested time window.");
+  }
+
+  if (trace.feedbackType === "incorrect" || trace.feedbackType === "odd") {
+    categories.push("user_reported_issue");
+    actions.push("Review this trace against client preferences and timezone assumptions.");
+  }
+
+  if (categories.length === 0) {
+    categories.push("healthy");
+  }
+
+  return {
+    categories,
+    actions: Array.from(new Set(actions)),
+    slaTargetMs: 300000,
+    withinSla: latencyMs > 0 ? latencyMs <= 300000 : null
+  };
+}
+
 function advisorAuthErrorPage(message) {
   return htmlResponse(
     403,
@@ -453,6 +590,7 @@ function buildAdvisorPage() {
       .card { background: #fff; border: 1px solid #d0d7e2; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
       h1 { margin-top: 0; }
       button { padding: 8px 12px; margin-right: 8px; cursor: pointer; }
+      input, select { padding: 8px 10px; margin-right: 8px; border: 1px solid #c7ced9; border-radius: 6px; }
       .banner { border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; }
       .banner.ok { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
       .banner.error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
@@ -464,6 +602,8 @@ function buildAdvisorPage() {
       .warn { color: #b45309; }
       .error { color: #b91c1c; }
       code { background: #eef2ff; padding: 2px 6px; border-radius: 4px; }
+      pre { background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 12px; overflow: auto; font-size: 12px; }
+      .row { margin-top: 10px; }
     </style>
   </head>
   <body>
@@ -494,7 +634,32 @@ function buildAdvisorPage() {
       </table>
     </div>
 
+    <div class="card">
+      <h2 style="margin-top:0;">Debug Request By ID</h2>
+      <p class="muted">Looks up metadata-only trace details. No raw email or calendar content is stored.</p>
+      <div class="row">
+        <input id="traceRequestId" placeholder="requestId (UUID)" style="min-width: 320px;" />
+        <button id="traceLookup">Lookup Trace</button>
+      </div>
+      <div class="row">
+        <select id="feedbackReason">
+          <option value="other">Feedback reason: other</option>
+          <option value="availability_mismatch">availability_mismatch</option>
+          <option value="timezone_issue">timezone_issue</option>
+          <option value="tone_quality">tone_quality</option>
+          <option value="latency">latency</option>
+        </select>
+        <button id="markIncorrect">Mark Incorrect</button>
+        <button id="markOdd">Mark Odd</button>
+        <button id="markHelpful">Mark Helpful</button>
+      </div>
+      <p id="traceStatus" class="muted">Enter a request ID and click Lookup Trace.</p>
+      <pre id="traceResult">{}</pre>
+    </div>
+
     <script>
+      let lastTrace = null;
+
       function showStatusFromQuery() {
         const banner = document.getElementById('statusBanner');
         const params = new URLSearchParams(window.location.search);
@@ -514,6 +679,21 @@ function buildAdvisorPage() {
           banner.className = '';
           banner.textContent = '';
         }
+      }
+
+      function normalizeTraceRequestId(value) {
+        return String(value || '').trim();
+      }
+
+      function renderTrace(payload) {
+        const pre = document.getElementById('traceResult');
+        pre.textContent = JSON.stringify(payload, null, 2);
+      }
+
+      function setTraceStatus(text, cssClass) {
+        const node = document.getElementById('traceStatus');
+        node.className = cssClass || 'muted';
+        node.textContent = text;
       }
 
       async function loadConnections() {
@@ -562,6 +742,71 @@ function buildAdvisorPage() {
       document.getElementById('logout').addEventListener('click', async () => {
         await fetch('./advisor/logout', { method: 'POST' });
         window.location.href = './advisor';
+      });
+
+      document.getElementById('traceLookup').addEventListener('click', async () => {
+        const requestId = normalizeTraceRequestId(document.getElementById('traceRequestId').value);
+        if (!requestId) {
+          setTraceStatus('requestId is required.', 'error');
+          return;
+        }
+
+        setTraceStatus('Loading trace...', 'muted');
+        const response = await fetch('./advisor/api/traces/' + encodeURIComponent(requestId));
+        const payload = await response.json();
+
+        if (!response.ok) {
+          lastTrace = null;
+          renderTrace(payload);
+          setTraceStatus(payload.error || 'Trace lookup failed.', 'error');
+          return;
+        }
+
+        lastTrace = payload.trace;
+        renderTrace(payload);
+        setTraceStatus('Trace loaded. You can submit feedback below.', 'ok');
+      });
+
+      async function submitAdvisorFeedback(feedbackType) {
+        if (!lastTrace || !lastTrace.requestId || !lastTrace.responseId) {
+          setTraceStatus('Load a valid trace first.', 'error');
+          return;
+        }
+
+        const feedbackReason = String(document.getElementById('feedbackReason').value || 'other');
+        const response = await fetch(
+          './advisor/api/traces/' + encodeURIComponent(lastTrace.requestId) + '/feedback',
+          {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              responseId: lastTrace.responseId,
+              feedbackType,
+              feedbackReason
+            })
+          }
+        );
+
+        const payload = await response.json();
+        if (!response.ok) {
+          renderTrace(payload);
+          setTraceStatus(payload.error || 'Feedback submission failed.', 'error');
+          return;
+        }
+
+        setTraceStatus('Feedback recorded.', 'ok');
+      }
+
+      document.getElementById('markIncorrect').addEventListener('click', async () => {
+        await submitAdvisorFeedback('incorrect');
+      });
+
+      document.getElementById('markOdd').addEventListener('click', async () => {
+        await submitAdvisorFeedback('odd');
+      });
+
+      document.getElementById('markHelpful').addEventListener('click', async () => {
+        await submitAdvisorFeedback('helpful');
       });
 
       showStatusFromQuery();
@@ -635,6 +880,7 @@ export function createPortalHandler(overrides = {}) {
     const appName = process.env.APP_NAME ?? "calendar-agent-spike";
     const stage = process.env.STAGE ?? "dev";
     const connectionsTableName = process.env.CONNECTIONS_TABLE_NAME;
+    const traceTableName = process.env.TRACE_TABLE_NAME;
     const oauthStateTableName = process.env.OAUTH_STATE_TABLE_NAME;
     const googleAppSecretArn = process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
     const sessionSecretArn = process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
@@ -798,6 +1044,84 @@ export function createPortalHandler(overrides = {}) {
           isPrimary: Boolean(item.isPrimary),
           updatedAt: item.updatedAt
         }))
+      });
+    }
+
+    const traceLookupRequestId = parseTraceLookupPath(rawPath);
+    if (method === "GET" && traceLookupRequestId) {
+      if (!traceTableName) {
+        return serverError("TRACE_TABLE_NAME is required");
+      }
+
+      if (!isValidRequestId(traceLookupRequestId)) {
+        return badRequest("Invalid requestId format");
+      }
+
+      const trace = await deps.getTrace(traceTableName, traceLookupRequestId);
+      if (!trace || (trace.advisorId && trace.advisorId !== advisorId)) {
+        return jsonResponse(404, { error: "Trace not found" });
+      }
+
+      const metadata = selectTraceMetadata(trace);
+      return jsonResponse(200, {
+        trace: metadata,
+        diagnosis: buildTraceDiagnosis(metadata)
+      });
+    }
+
+    const traceFeedbackRequestId = parseTraceFeedbackPath(rawPath);
+    if (method === "POST" && traceFeedbackRequestId) {
+      if (!traceTableName) {
+        return serverError("TRACE_TABLE_NAME is required");
+      }
+
+      if (!isValidRequestId(traceFeedbackRequestId)) {
+        return badRequest("Invalid requestId format");
+      }
+
+      let body;
+      try {
+        body = parseBody(event);
+      } catch {
+        return badRequest("Request body must be valid JSON");
+      }
+
+      let feedback;
+      try {
+        feedback = parseFeedbackPayload(
+          {
+            ...body,
+            requestId: traceFeedbackRequestId,
+            feedbackSource: "advisor"
+          },
+          "advisor"
+        );
+      } catch (error) {
+        return badRequest(error.message);
+      }
+
+      const updatedAt = new Date().toISOString();
+      const updated = await deps.updateTraceFeedback(traceTableName, {
+        requestId: feedback.requestId,
+        responseId: feedback.responseId,
+        feedbackSource: feedback.feedbackSource,
+        feedbackType: feedback.feedbackType,
+        feedbackReason: feedback.feedbackReason,
+        updatedAt
+      });
+
+      if (!updated || (updated.advisorId && updated.advisorId !== advisorId)) {
+        return jsonResponse(404, { error: "Trace not found" });
+      }
+
+      return jsonResponse(200, {
+        requestId: feedback.requestId,
+        responseId: feedback.responseId,
+        feedbackRecorded: true,
+        feedbackSource: feedback.feedbackSource,
+        feedbackType: feedback.feedbackType,
+        feedbackReason: feedback.feedbackReason,
+        feedbackUpdatedAt: updatedAt
       });
     }
 

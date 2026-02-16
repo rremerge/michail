@@ -1340,3 +1340,97 @@ Push result:
 - Remote: `https://github.com/rremerge/michail.git`
 - Updated: `8c3bb8d..b65c62e`
 - Branch: `main -> main`
+
+---
+
+Turn 60
+User:
+great whats next
+
+Assistant:
+Proposed next sequence:
+1. Commit/push pending transcript update.
+2. Run true end-to-end email test with trace evidence.
+3. Add supportability hooks (feedback + debug view).
+4. Strengthen privacy controls and redaction tests.
+5. Run scale/SLO validation.
+
+---
+
+Turn 61
+User:
+yes
+
+Assistant:
+Executed approved steps:
+- Committed and pushed transcript update:
+  - Commit: `4df5a9a`
+  - Message: `docs: update conversation transcript`
+  - Push: `b65c62e..4df5a9a` on `main`
+- Ran local regression:
+  - `npm test` passed (`27/27`).
+- Ran live success-path spike call to `/spike/email` using SES mailbox simulator recipient:
+  - Response: `deliveryStatus: sent`, `llmStatus: ok`
+  - Request ID: `6a7df80d-a85d-4187-ba76-ce72dd4a3d42`
+  - Trace row verified in DynamoDB with metadata-only fields (`status: completed`, `providerStatus: ok`, `calendarMode: connection`, `llmMode: openai`, `llmStatus: ok`).
+- Ran controlled failure-path test:
+  - Added temporary synthetic primary connection with unsupported provider.
+  - API returned HTTP 500 with request ID `ac1f5493-0d49-45fe-aa1d-811c081006fb`.
+  - Trace row verified with `status: failed`, `stage: calendar_lookup`, `errorCode: CALENDAR_LOOKUP_FAILED`.
+  - Deleted temporary synthetic connection to restore state.
+- Post-cleanup health check:
+  - Re-ran `/spike/email`; response again showed `deliveryStatus: sent`, `llmStatus: ok`.
+
+---
+
+Turn 62
+User:
+go ahead
+
+Assistant:
+Implemented supportability hooks and validated them locally and in AWS dev.
+
+Code changes:
+- Added client feedback endpoint in email Lambda:
+  - `POST /spike/feedback`
+  - Validates `requestId`, `responseId`, and enum feedback fields.
+  - Stores metadata-only feedback on existing trace rows (`feedbackStatus`, `feedbackSource`, `feedbackType`, `feedbackReason`, `feedbackUpdatedAt`, `feedbackCount`).
+- Added advisor debug and feedback APIs in advisor portal Lambda:
+  - `GET /advisor/api/traces/{requestId}` returns metadata-only trace + diagnostic categories/actions.
+  - `POST /advisor/api/traces/{requestId}/feedback` records advisor feedback for a trace.
+- Added advisor UI section:
+  - “Debug Request By ID” with trace lookup and feedback buttons (Incorrect/Odd/Helpful).
+- Added runtime dependency methods:
+  - `getTrace(...)`
+  - `updateTraceFeedback(...)` with conditional update requiring matching `responseId`.
+- Updated SAM template:
+  - Added new API routes.
+  - Added `TRACE_TABLE_NAME` to advisor portal env.
+  - Added IAM permissions for trace `UpdateItem/GetItem` where needed.
+- Updated README with usage examples for new supportability endpoints.
+
+Local validation:
+- `npm test` passed (`32/32`).
+- `sam validate --template-file template.yaml` passed (template valid).
+
+Build/deploy/test validation:
+- Built with SAM and deployed stack `calendar-agent-spike-dev` in `us-east-1`.
+- Live `/spike/email` call succeeded and returned request/response IDs.
+- Live `/spike/feedback` call succeeded (`HTTP 200`, `feedbackRecorded: true`).
+- DynamoDB trace row confirmed feedback metadata updates.
+- Advisor debug endpoint without session returned `401 Unauthorized`.
+- Advisor debug endpoint with valid signed session cookie returned `200` with trace + diagnosis.
+- Advisor feedback endpoint with valid signed session cookie returned `200` and updated trace metadata.
+
+---
+
+Turn 63
+User:
+ok go ahead
+
+Assistant:
+Proceeding with checkpoint source control sync:
+- Verified modified files for supportability hooks implementation.
+- Staging all changed files.
+- Creating a checkpoint commit for feedback/debug endpoints, tests, template updates, and docs.
+- Pushing `main` to remote GitHub repository.

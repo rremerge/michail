@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { processSchedulingEmail } from "../src/handler.js";
+import { createHandler, processSchedulingEmail, processSchedulingFeedback } from "../src/handler.js";
 
 const baseEnv = {
   TRACE_TABLE_NAME: "TraceTable",
@@ -271,4 +271,100 @@ test("processSchedulingEmail falls back to template response when LLM draft fail
   assert.match(sentMessages[0].bodyText, /Thanks for reaching out/);
   assert.equal(traceItems[0].llmStatus, "fallback");
   assert.equal(traceItems[0].llmMode, "openai");
+});
+
+test("processSchedulingFeedback records metadata-only feedback", async () => {
+  const updates = [];
+  const deps = {
+    async updateTraceFeedback(_tableName, update) {
+      updates.push(update);
+      return { requestId: update.requestId, responseId: update.responseId };
+    }
+  };
+
+  const result = await processSchedulingFeedback({
+    payload: {
+      requestId: "123e4567-e89b-12d3-a456-426614174000",
+      responseId: "123e4567-e89b-12d3-a456-426614174001",
+      feedbackType: "incorrect",
+      feedbackReason: "timezone_issue",
+      feedbackSource: "client"
+    },
+    env: baseEnv,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(updates.length, 1);
+  assert.equal(updates[0].feedbackType, "incorrect");
+  assert.equal(updates[0].feedbackReason, "timezone_issue");
+  assert.equal(updates[0].feedbackSource, "client");
+});
+
+test("processSchedulingFeedback returns 404 when trace is not found", async () => {
+  const deps = {
+    async updateTraceFeedback() {
+      return null;
+    }
+  };
+
+  const result = await processSchedulingFeedback({
+    payload: {
+      requestId: "123e4567-e89b-12d3-a456-426614174000",
+      responseId: "123e4567-e89b-12d3-a456-426614174001",
+      feedbackType: "odd"
+    },
+    env: baseEnv,
+    deps
+  });
+
+  assert.equal(result.http.statusCode, 404);
+  assert.match(result.http.body, /were not found/);
+});
+
+test("createHandler routes /spike/feedback requests to feedback flow", async () => {
+  let updateCalled = false;
+  const handler = createHandler({
+    async updateTraceFeedback() {
+      updateCalled = true;
+      return {
+        requestId: "123e4567-e89b-12d3-a456-426614174000",
+        responseId: "123e4567-e89b-12d3-a456-426614174001"
+      };
+    }
+  });
+
+  const previousTraceTable = process.env.TRACE_TABLE_NAME;
+  process.env.TRACE_TABLE_NAME = "TraceTable";
+
+  try {
+    const response = await handler({
+      version: "2.0",
+      requestContext: {
+        stage: "dev",
+        http: { method: "POST" }
+      },
+      rawPath: "/dev/spike/feedback",
+      body: JSON.stringify({
+        requestId: "123e4567-e89b-12d3-a456-426614174000",
+        responseId: "123e4567-e89b-12d3-a456-426614174001",
+        feedbackType: "helpful",
+        feedbackReason: "other",
+        feedbackSource: "client"
+      })
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(updateCalled, true);
+    const payload = JSON.parse(response.body);
+    assert.equal(payload.feedbackRecorded, true);
+    assert.equal(payload.feedbackType, "helpful");
+  } finally {
+    if (previousTraceTable === undefined) {
+      delete process.env.TRACE_TABLE_NAME;
+    } else {
+      process.env.TRACE_TABLE_NAME = previousTraceTable;
+    }
+  }
 });

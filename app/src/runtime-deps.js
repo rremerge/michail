@@ -10,7 +10,8 @@ import {
   DynamoDBDocumentClient,
   GetCommand,
   PutCommand,
-  QueryCommand
+  QueryCommand,
+  UpdateCommand
 } from "@aws-sdk/lib-dynamodb";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
 
@@ -41,6 +42,68 @@ export function createRuntimeDeps() {
           Item: item
         })
       );
+    },
+
+    async getTrace(traceTableName, requestId) {
+      const response = await ddbClient.send(
+        new GetCommand({
+          TableName: traceTableName,
+          Key: {
+            requestId
+          }
+        })
+      );
+
+      return response.Item ?? null;
+    },
+
+    async updateTraceFeedback(
+      traceTableName,
+      { requestId, responseId, feedbackSource, feedbackType, feedbackReason, updatedAt }
+    ) {
+      try {
+        const response = await ddbClient.send(
+          new UpdateCommand({
+            TableName: traceTableName,
+            Key: {
+              requestId
+            },
+            ConditionExpression: "attribute_exists(requestId) AND #responseId = :responseId",
+            UpdateExpression:
+              "SET #feedbackStatus = :feedbackStatus, #feedbackSource = :feedbackSource, #feedbackType = :feedbackType, #feedbackReason = :feedbackReason, #feedbackUpdatedAt = :feedbackUpdatedAt, #updatedAt = :updatedAt, #feedbackCount = if_not_exists(#feedbackCount, :zero) + :one",
+            ExpressionAttributeNames: {
+              "#responseId": "responseId",
+              "#feedbackStatus": "feedbackStatus",
+              "#feedbackSource": "feedbackSource",
+              "#feedbackType": "feedbackType",
+              "#feedbackReason": "feedbackReason",
+              "#feedbackUpdatedAt": "feedbackUpdatedAt",
+              "#updatedAt": "updatedAt",
+              "#feedbackCount": "feedbackCount"
+            },
+            ExpressionAttributeValues: {
+              ":responseId": responseId,
+              ":feedbackStatus": "reported",
+              ":feedbackSource": feedbackSource,
+              ":feedbackType": feedbackType,
+              ":feedbackReason": feedbackReason,
+              ":feedbackUpdatedAt": updatedAt,
+              ":updatedAt": updatedAt,
+              ":zero": 0,
+              ":one": 1
+            },
+            ReturnValues: "ALL_NEW"
+          })
+        );
+
+        return response.Attributes ?? null;
+      } catch (error) {
+        if (error?.name === "ConditionalCheckFailedException") {
+          return null;
+        }
+
+        throw error;
+      }
     },
 
     async listConnections(connectionsTableName, advisorId) {

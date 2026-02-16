@@ -94,6 +94,37 @@ Expected result:
 - A metadata-only trace row is written to DynamoDB.
 - The selected advisor connection (mock/google) is used for availability.
 
+## Supportability Hooks (Feedback + Debug)
+Client feedback endpoint (no raw content persistence):
+
+```bash
+curl -sS -X POST "https://<api-id>.execute-api.<region>.amazonaws.com/<stage>/spike/feedback" \
+  -H "content-type: application/json" \
+  --data '{
+    "requestId":"<request-id>",
+    "responseId":"<response-id>",
+    "feedbackType":"incorrect",
+    "feedbackReason":"timezone_issue",
+    "feedbackSource":"client"
+  }' | jq
+```
+
+Advisor debug API (Google-auth protected through advisor portal):
+
+```bash
+curl -sS "https://<api-id>.execute-api.<region>.amazonaws.com/<stage>/advisor/api/traces/<request-id>" | jq
+```
+
+Advisor feedback API:
+
+```bash
+curl -sS -X POST "https://<api-id>.execute-api.<region>.amazonaws.com/<stage>/advisor/api/traces/<request-id>/feedback" \
+  -H "content-type: application/json" \
+  --data '{"responseId":"<response-id>","feedbackType":"odd","feedbackReason":"tone_quality"}' | jq
+```
+
+The advisor UI now includes a request-ID debug section to inspect trace metadata and record feedback.
+
 ## Configure Google OAuth For Portal Flow
 1. Set app credentials in `GoogleOAuthAppSecretArn`:
 
@@ -170,11 +201,12 @@ sam deploy \
 - Lambda IAM role:
   - `secretsmanager:GetSecretValue` on spike secret.
   - `secretsmanager:GetSecretValue` on advisor connection secrets.
-  - `dynamodb:PutItem` on spike trace table.
+  - `dynamodb:PutItem|UpdateItem` on spike trace table.
   - `dynamodb:Query` on connection table for connection mode.
   - `ses:SendEmail`/`ses:SendRawEmail` when response mode is send.
 - Advisor portal Lambda IAM role:
   - `dynamodb:GetItem|PutItem|DeleteItem|Query` on connection + oauth state tables.
+  - `dynamodb:GetItem|UpdateItem` on trace table.
   - `secretsmanager:GetSecretValue` on Google OAuth app secret.
   - `secretsmanager:GetSecretValue` on advisor portal auth secret.
   - `secretsmanager:GetSecretValue` on advisor portal session secret.

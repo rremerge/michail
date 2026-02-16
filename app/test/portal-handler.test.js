@@ -576,3 +576,132 @@ test("advisor portal google start redirects browser to Google login", async () =
     }
   }
 });
+
+test("advisor portal trace lookup returns metadata and diagnosis", async () => {
+  const requestId = "123e4567-e89b-12d3-a456-426614174000";
+  const handler = createPortalHandler({
+    async getTrace(tableName, suppliedRequestId) {
+      assert.equal(tableName, "TraceTable");
+      assert.equal(suppliedRequestId, requestId);
+      return {
+        requestId,
+        responseId: "123e4567-e89b-12d3-a456-426614174001",
+        advisorId: "manoj",
+        status: "failed",
+        errorCode: "CALENDAR_LOOKUP_FAILED",
+        providerStatus: "error",
+        llmStatus: "fallback",
+        latencyMs: 35000,
+        suggestionCount: 0,
+        updatedAt: "2026-02-16T00:00:00.000Z"
+      };
+    }
+  });
+
+  const previousTraceTableName = process.env.TRACE_TABLE_NAME;
+  const previousAuthMode = process.env.ADVISOR_PORTAL_AUTH_MODE;
+  const previousAdvisorId = process.env.ADVISOR_ID;
+  process.env.TRACE_TABLE_NAME = "TraceTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_ID = "manoj";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: `/dev/advisor/api/traces/${requestId}`
+    });
+
+    assert.equal(response.statusCode, 200);
+    const payload = JSON.parse(response.body);
+    assert.equal(payload.trace.requestId, requestId);
+    assert.equal(payload.trace.status, "failed");
+    assert.deepEqual(payload.diagnosis.categories.includes("processing_failed"), true);
+    assert.deepEqual(payload.diagnosis.categories.includes("slow_response"), true);
+  } finally {
+    if (previousTraceTableName === undefined) {
+      delete process.env.TRACE_TABLE_NAME;
+    } else {
+      process.env.TRACE_TABLE_NAME = previousTraceTableName;
+    }
+
+    if (previousAuthMode === undefined) {
+      delete process.env.ADVISOR_PORTAL_AUTH_MODE;
+    } else {
+      process.env.ADVISOR_PORTAL_AUTH_MODE = previousAuthMode;
+    }
+
+    if (previousAdvisorId === undefined) {
+      delete process.env.ADVISOR_ID;
+    } else {
+      process.env.ADVISOR_ID = previousAdvisorId;
+    }
+  }
+});
+
+test("advisor portal can submit feedback for a trace", async () => {
+  const requestId = "123e4567-e89b-12d3-a456-426614174000";
+  const responseId = "123e4567-e89b-12d3-a456-426614174001";
+  const updates = [];
+  const handler = createPortalHandler({
+    async updateTraceFeedback(tableName, update) {
+      assert.equal(tableName, "TraceTable");
+      updates.push(update);
+      return {
+        requestId: update.requestId,
+        responseId: update.responseId,
+        advisorId: "manoj"
+      };
+    }
+  });
+
+  const previousTraceTableName = process.env.TRACE_TABLE_NAME;
+  const previousAuthMode = process.env.ADVISOR_PORTAL_AUTH_MODE;
+  const previousAdvisorId = process.env.ADVISOR_ID;
+  process.env.TRACE_TABLE_NAME = "TraceTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_ID = "manoj";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "POST" }
+      },
+      rawPath: `/dev/advisor/api/traces/${requestId}/feedback`,
+      body: JSON.stringify({
+        responseId,
+        feedbackType: "odd",
+        feedbackReason: "tone_quality"
+      })
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(updates.length, 1);
+    assert.equal(updates[0].requestId, requestId);
+    assert.equal(updates[0].responseId, responseId);
+    assert.equal(updates[0].feedbackType, "odd");
+    assert.equal(updates[0].feedbackReason, "tone_quality");
+    assert.equal(updates[0].feedbackSource, "advisor");
+  } finally {
+    if (previousTraceTableName === undefined) {
+      delete process.env.TRACE_TABLE_NAME;
+    } else {
+      process.env.TRACE_TABLE_NAME = previousTraceTableName;
+    }
+
+    if (previousAuthMode === undefined) {
+      delete process.env.ADVISOR_PORTAL_AUTH_MODE;
+    } else {
+      process.env.ADVISOR_PORTAL_AUTH_MODE = previousAuthMode;
+    }
+
+    if (previousAdvisorId === undefined) {
+      delete process.env.ADVISOR_ID;
+    } else {
+      process.env.ADVISOR_ID = previousAdvisorId;
+    }
+  }
+});
