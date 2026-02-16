@@ -16,6 +16,9 @@ test("template defines isolated serverless resources", () => {
   assert.match(template, /AdvisorPortalFunction/);
   assert.match(template, /ConnectionsTable/);
   assert.match(template, /OAuthStateTable/);
+  assert.match(template, /LlmProviderSecret/);
+  assert.match(template, /AdvisorPortalAuthSecret/);
+  assert.match(template, /AdvisorPortalSessionSecret/);
 
   // Guardrail: this spike must not install account-level SES receipt rules.
   assert.equal(template.includes("AWS::SES::ReceiptRule"), false);

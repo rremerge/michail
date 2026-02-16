@@ -1,6 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import { createPortalHandler } from "../src/portal-handler.js";
+
+function toBasicAuthorization(username, password) {
+  return `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}`;
+}
+
+function createSessionToken(payload, signingKey) {
+  const payloadEncoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = crypto.createHmac("sha256", signingKey).update(payloadEncoded).digest("base64url");
+  return `${payloadEncoded}.${signature}`;
+}
 
 test("advisor portal home serves html", async () => {
   const handler = createPortalHandler({
@@ -28,6 +39,335 @@ test("advisor portal home serves html", async () => {
       delete process.env.CONNECTIONS_TABLE_NAME;
     } else {
       process.env.CONNECTIONS_TABLE_NAME = previousConnectionsTable;
+    }
+  }
+});
+
+test("advisor portal blocks requests when basic auth is enabled and credentials are missing", async () => {
+  const handler = createPortalHandler({
+    async getSecretString() {
+      return JSON.stringify({
+        username: "advisor",
+        password: "test-password"
+      });
+    }
+  });
+
+  const previousConnectionsTable = process.env.CONNECTIONS_TABLE_NAME;
+  const previousAuthMode = process.env.ADVISOR_PORTAL_AUTH_MODE;
+  const previousAuthSecretArn = process.env.ADVISOR_PORTAL_AUTH_SECRET_ARN;
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "secret_basic";
+  process.env.ADVISOR_PORTAL_AUTH_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-auth";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        http: { method: "GET" }
+      },
+      rawPath: "/advisor"
+    });
+
+    assert.equal(response.statusCode, 401);
+    assert.match(response.headers["www-authenticate"], /Basic/);
+  } finally {
+    if (previousConnectionsTable === undefined) {
+      delete process.env.CONNECTIONS_TABLE_NAME;
+    } else {
+      process.env.CONNECTIONS_TABLE_NAME = previousConnectionsTable;
+    }
+
+    if (previousAuthMode === undefined) {
+      delete process.env.ADVISOR_PORTAL_AUTH_MODE;
+    } else {
+      process.env.ADVISOR_PORTAL_AUTH_MODE = previousAuthMode;
+    }
+
+    if (previousAuthSecretArn === undefined) {
+      delete process.env.ADVISOR_PORTAL_AUTH_SECRET_ARN;
+    } else {
+      process.env.ADVISOR_PORTAL_AUTH_SECRET_ARN = previousAuthSecretArn;
+    }
+  }
+});
+
+test("advisor portal allows requests with valid basic auth credentials", async () => {
+  const handler = createPortalHandler({
+    async getSecretString() {
+      return JSON.stringify({
+        username: "advisor",
+        password: "test-password"
+      });
+    }
+  });
+
+  const previousConnectionsTable = process.env.CONNECTIONS_TABLE_NAME;
+  const previousAuthMode = process.env.ADVISOR_PORTAL_AUTH_MODE;
+  const previousAuthSecretArn = process.env.ADVISOR_PORTAL_AUTH_SECRET_ARN;
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "secret_basic";
+  process.env.ADVISOR_PORTAL_AUTH_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-auth";
+
+  try {
+    const response = await handler({
+      headers: {
+        authorization: toBasicAuthorization("advisor", "test-password")
+      },
+      requestContext: {
+        http: { method: "GET" }
+      },
+      rawPath: "/advisor"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.body, /Connected Calendars/);
+  } finally {
+    if (previousConnectionsTable === undefined) {
+      delete process.env.CONNECTIONS_TABLE_NAME;
+    } else {
+      process.env.CONNECTIONS_TABLE_NAME = previousConnectionsTable;
+    }
+
+    if (previousAuthMode === undefined) {
+      delete process.env.ADVISOR_PORTAL_AUTH_MODE;
+    } else {
+      process.env.ADVISOR_PORTAL_AUTH_MODE = previousAuthMode;
+    }
+
+    if (previousAuthSecretArn === undefined) {
+      delete process.env.ADVISOR_PORTAL_AUTH_SECRET_ARN;
+    } else {
+      process.env.ADVISOR_PORTAL_AUTH_SECRET_ARN = previousAuthSecretArn;
+    }
+  }
+});
+
+test("advisor portal redirects to Google login when google_oauth auth is enabled", async () => {
+  const handler = createPortalHandler({
+    async getSecretString() {
+      return JSON.stringify({
+        signing_key: "test-signing-key"
+      });
+    }
+  });
+
+  const previousConnectionsTable = process.env.CONNECTIONS_TABLE_NAME;
+  const previousAuthMode = process.env.ADVISOR_PORTAL_AUTH_MODE;
+  const previousSessionSecretArn = process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
+
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "google_oauth";
+  process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-session";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        domainName: "xytaxmumc3.execute-api.us-east-1.amazonaws.com",
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor"
+    });
+
+    assert.equal(response.statusCode, 302);
+    assert.equal(
+      response.headers.location,
+      "https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev/advisor/auth/google/start?returnTo=%2Fadvisor"
+    );
+  } finally {
+    if (previousConnectionsTable === undefined) {
+      delete process.env.CONNECTIONS_TABLE_NAME;
+    } else {
+      process.env.CONNECTIONS_TABLE_NAME = previousConnectionsTable;
+    }
+
+    if (previousAuthMode === undefined) {
+      delete process.env.ADVISOR_PORTAL_AUTH_MODE;
+    } else {
+      process.env.ADVISOR_PORTAL_AUTH_MODE = previousAuthMode;
+    }
+
+    if (previousSessionSecretArn === undefined) {
+      delete process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
+    } else {
+      process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN = previousSessionSecretArn;
+    }
+  }
+});
+
+test("advisor auth callback creates session cookie for allowed advisor email", async () => {
+  const handler = createPortalHandler({
+    async getSecretString(secretArn) {
+      if (secretArn.endsWith(":secret:portal-app")) {
+        return JSON.stringify({
+          client_id: "google-client-id",
+          client_secret: "google-client-secret"
+        });
+      }
+
+      if (secretArn.endsWith(":secret:portal-session")) {
+        return JSON.stringify({
+          signing_key: "test-signing-key"
+        });
+      }
+
+      throw new Error(`unexpected secret arn: ${secretArn}`);
+    },
+    async getOauthState() {
+      return {
+        advisorId: "manoj",
+        purpose: "portal_login",
+        returnTo: "/advisor"
+      };
+    },
+    async deleteOauthState() {},
+    fetchImpl: async (url) => {
+      if (url === "https://oauth2.googleapis.com/token") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              access_token: "test-access-token"
+            };
+          }
+        };
+      }
+
+      if (url === "https://openidconnect.googleapis.com/v1/userinfo") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              email: "manoj@rremerge.com"
+            };
+          }
+        };
+      }
+
+      throw new Error(`unexpected fetch url: ${url}`);
+    }
+  });
+
+  const previousAuthMode = process.env.ADVISOR_PORTAL_AUTH_MODE;
+  const previousOauthStateTable = process.env.OAUTH_STATE_TABLE_NAME;
+  const previousAppSecretArn = process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
+  const previousSessionSecretArn = process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
+  const previousAllowedEmail = process.env.ADVISOR_ALLOWED_EMAIL;
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "google_oauth";
+  process.env.OAUTH_STATE_TABLE_NAME = "OAuthStateTable";
+  process.env.GOOGLE_OAUTH_APP_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-app";
+  process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-session";
+  process.env.ADVISOR_ALLOWED_EMAIL = "manoj@rremerge.com";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        code: "google-code",
+        state: "oauth-state"
+      },
+      requestContext: {
+        domainName: "xytaxmumc3.execute-api.us-east-1.amazonaws.com",
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/auth/google/callback"
+    });
+
+    assert.equal(response.statusCode, 302);
+    assert.equal(response.headers.location, "https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev/advisor");
+    assert.ok(Array.isArray(response.cookies));
+    assert.match(response.cookies[0], /^advisor_portal_session=/);
+  } finally {
+    if (previousAuthMode === undefined) {
+      delete process.env.ADVISOR_PORTAL_AUTH_MODE;
+    } else {
+      process.env.ADVISOR_PORTAL_AUTH_MODE = previousAuthMode;
+    }
+
+    if (previousOauthStateTable === undefined) {
+      delete process.env.OAUTH_STATE_TABLE_NAME;
+    } else {
+      process.env.OAUTH_STATE_TABLE_NAME = previousOauthStateTable;
+    }
+
+    if (previousAppSecretArn === undefined) {
+      delete process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
+    } else {
+      process.env.GOOGLE_OAUTH_APP_SECRET_ARN = previousAppSecretArn;
+    }
+
+    if (previousSessionSecretArn === undefined) {
+      delete process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
+    } else {
+      process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN = previousSessionSecretArn;
+    }
+
+    if (previousAllowedEmail === undefined) {
+      delete process.env.ADVISOR_ALLOWED_EMAIL;
+    } else {
+      process.env.ADVISOR_ALLOWED_EMAIL = previousAllowedEmail;
+    }
+  }
+});
+
+test("advisor portal accepts session token from API Gateway cookies array", async () => {
+  const signingKey = "test-signing-key";
+  const handler = createPortalHandler({
+    async getSecretString() {
+      return JSON.stringify({
+        signing_key: signingKey
+      });
+    },
+    async listConnections() {
+      return [];
+    }
+  });
+
+  const previousConnectionsTable = process.env.CONNECTIONS_TABLE_NAME;
+  const previousAuthMode = process.env.ADVISOR_PORTAL_AUTH_MODE;
+  const previousSessionSecretArn = process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "google_oauth";
+  process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-session";
+
+  const sessionToken = createSessionToken(
+    {
+      email: "manoj@rremerge.com",
+      expiresAtMs: Date.now() + 5 * 60 * 1000
+    },
+    signingKey
+  );
+
+  try {
+    const response = await handler({
+      cookies: [`advisor_portal_session=${sessionToken}`],
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.body, /Connected Calendars/);
+  } finally {
+    if (previousConnectionsTable === undefined) {
+      delete process.env.CONNECTIONS_TABLE_NAME;
+    } else {
+      process.env.CONNECTIONS_TABLE_NAME = previousConnectionsTable;
+    }
+
+    if (previousAuthMode === undefined) {
+      delete process.env.ADVISOR_PORTAL_AUTH_MODE;
+    } else {
+      process.env.ADVISOR_PORTAL_AUTH_MODE = previousAuthMode;
+    }
+
+    if (previousSessionSecretArn === undefined) {
+      delete process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
+    } else {
+      process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN = previousSessionSecretArn;
     }
   }
 });

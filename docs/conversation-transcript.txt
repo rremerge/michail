@@ -1102,3 +1102,224 @@ Clarified roadmap placement for LLM integration:
 - Keep deterministic scheduler as source of truth; LLM should not decide availability.
 - Add provider abstraction to support GPT-5 now and Claude/Gemini later.
 - Enforce privacy guardrails (no content persistence), timeout/cost controls, and deterministic fallback templates.
+
+---
+
+Turn 47
+User:
+ok so lets checkin the code we have right now to git as a checkpoint first. Then lets go to the first step of minimal hardening, and then llm integration.
+
+Assistant:
+Completed requested sequence:
+1. Created checkpoint commit first:
+- Commit: `0b37b85`
+- Message: `checkpoint: serverless advisor portal and google calendar spike`
+
+2. Implemented minimal hardening step:
+- Added advisor portal access control using secret-backed HTTP Basic Auth.
+- New env/infra configuration for portal auth secret + mode.
+- Added tests for unauthorized/authorized portal access.
+
+3. Implemented LLM integration step:
+- Added OpenAI-based LLM adapter for drafting response emails.
+- Added timeout + strict JSON validation + deterministic fallback to template response.
+- Wired handler to use LLM when `LLM_MODE=openai` and provider secret is configured.
+- Added tests for LLM success and fallback behavior.
+
+4. Updated infrastructure/docs:
+- Updated `template.yaml` with new secrets/parameters/outputs for portal auth + LLM provider.
+- Updated README with hardening and LLM setup instructions.
+
+5. Validation:
+- `npm test` passed.
+- `sam validate` passed.
+- `sam build` passed.
+
+---
+
+Turn 48
+User:
+no we dont checkin without testing all new code first. also for login to advisor portal, we should use login with google
+
+Assistant:
+Aligned and implemented requested changes before any new commit:
+- Switched advisor portal hardening from basic-auth-first to Google login auth mode (`google_oauth`) for portal access.
+- Added Google login routes:
+  - `GET /advisor/auth/google/start`
+  - `GET /advisor/auth/google/callback`
+  - `POST /advisor/logout`
+- Added signed session cookie flow backed by Secrets Manager session signing key.
+- Added optional `AdvisorAllowedEmail` guard for authorized advisor account.
+- Preserved deterministic scheduler + added LLM drafting integration with fallback.
+- Updated SAM template with new parameters/resources/events/env/IAM for session auth + LLM.
+- Updated README to reflect Google login hardening model.
+
+Validation completed before commit:
+- `npm test` passed (26 tests).
+- `sam validate` passed.
+- `sam build` passed.
+
+---
+
+Turn 49
+User:
+dont check in yet. walk me through what testing has been done for the new code
+
+Assistant:
+Confirmed no new check-in performed, then provided explicit testing coverage summary for new code:
+- Local automated tests (`npm test`) passed for all updated modules.
+- New/updated tests cover:
+  - portal auth (basic + google_oauth redirect/session callback behavior),
+  - LLM response drafting and fallback logic,
+  - existing scheduler, parser, calendar adapter, and template smoke checks.
+- Infrastructure checks passed:
+  - `sam validate` successful,
+  - `sam build` successful (including build-time test run).
+- Clarified remaining gaps: no post-change cloud deployment/live endpoint verification yet for latest auth+LLM changes.
+
+---
+
+Turn 50
+User:
+before you do that . there is an issue with the login with google step. The oauth redirect sends the user to a page that gives an error: Access blocked: This app’s request is invalid
+
+Assistant:
+Diagnosed likely root cause as OAuth client configuration mismatch after introducing a new advisor-login callback route.
+Provided corrective actions:
+- Add advisor login redirect URI to Google OAuth client:
+  https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev/advisor/auth/google/callback
+- Keep existing calendar-connect callback URI as well:
+  https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev/advisor/api/connections/google/callback
+- Verify OAuth consent screen test-user settings for the signed-in account.
+
+---
+
+Turn 51
+User:
+now it goes back to login prompt
+
+Assistant:
+Implemented and deployed login-loop fix.
+
+Root cause addressed:
+- API Gateway HTTP API v2 cookie handling mismatch:
+  - Session was being set via `set-cookie` header instead of `cookies` response field.
+  - Session lookup only parsed `headers.cookie`, not `event.cookies` array.
+
+Fixes made:
+- Portal callback now sets session cookie via Lambda response `cookies` array.
+- Logout clears session via `cookies` array.
+- Auth middleware now parses cookies from `event.cookies` first, then falls back to header parsing.
+- Added regression test to validate session auth from API Gateway `cookies` array.
+
+Validation:
+- Local tests passed (`27/27`).
+- `sam build` passed.
+- Deployed successfully to `calendar-agent-spike-dev` (`us-east-1`).
+
+---
+
+Turn 52
+User:
+ok great that worked fine now :) What are our next steps?
+
+Assistant:
+Provided prioritized next-step plan from current working state:
+1. Complete live LLM integration verification (set OpenAI key in LLM secret, run end-to-end and confirm `llmStatus=ok`).
+2. Tighten advisor auth policy (`AdvisorAllowedEmail`) and validate denied/allowed behavior.
+3. Clean environment state (remove stale mock connection if needed, confirm only desired Google connection remains).
+4. Commit tested code checkpoint (hardening + LLM + login loop fix) after user approval.
+5. Begin inbound email automation path (SES inbound -> Lambda) for non-manual trigger.
+
+---
+
+Turn 53
+User:
+ok lets start
+
+Assistant:
+Started step 1 (LLM live validation):
+- Fetched `SpikeApiUrl` and `LlmProviderSecretArn` from deployed stack outputs.
+- Began checking LLM provider secret state to confirm key presence.
+
+Turn 54
+User:
+no we dont have any llm key deployed yet.
+
+Assistant:
+Acknowledged no key is currently deployed and moved to the next required setup step: populate `LlmProviderSecretArn` with OpenAI provider settings/API key, then run live `llmStatus=ok` verification.
+
+---
+
+Turn 55
+User:
+Use the folllowing api_key for openai [REDACTED]
+
+Assistant:
+- Stored provided OpenAI key into deployed `LlmProviderSecretArn`.
+- Ran live `/spike/email` request; response succeeded with `deliveryStatus: sent` but `llmStatus: fallback`.
+- Diagnosed root cause by direct OpenAI API probe with configured model/endpoint:
+  - API returned `insufficient_quota`.
+- Conclusion: fallback is expected until a key/project with available API quota is used.
+
+---
+
+Turn 56
+User:
+no just try the openai chatcompletion call with curl first to ensure they key is working. We can try email spike next
+
+Assistant:
+Ran direct OpenAI `chat/completions` curl test using API key from deployed LLM secret.
+
+Result:
+- Call succeeded (`200`).
+- Model responded: `gpt-5-mini-2025-08-07`.
+- Completion payload returned JSON content.
+
+Conclusion:
+- Key/quota path is now working.
+- Next step is to rerun the live `/spike/email` test to confirm `llmStatus: ok`.
+
+---
+
+Turn 57
+User:
+ok great lets go
+
+Assistant:
+Attempted live `/spike/email` LLM validation and diagnosed remaining fallback causes:
+1. Initial retry still returned `llmStatus: fallback`.
+2. Deep-dive diagnosis revealed two sequential issues:
+   - OpenAI model rejected explicit temperature for `gpt-5-mini`.
+   - After patching that, requests still timed out at default `LLM_TIMEOUT_MS=4000`.
+3. Fixes applied:
+   - Removed `temperature` from `app/src/llm-adapter.js` request payload for model compatibility.
+   - Kept deterministic fallback behavior.
+   - Deployed code patch.
+4. Config update applied:
+   - Redeployed with `LlmTimeoutMs=15000`.
+5. Final live verification:
+   - `/spike/email` returned:
+     - `deliveryStatus: sent`
+     - `llmStatus: ok`
+     - `requestId: 93a1e7fe-7874-46d4-b0b3-c5cad43b1e26`
+   - Trace metadata verified:
+     - `llmMode: openai`
+     - `llmStatus: ok`
+     - `status: completed`
+     - `calendarMode: connection`
+
+---
+
+Turn 58
+User:
+yes go ahead
+
+Assistant:
+Executed requested next actions:
+- Set `LlmTimeoutMs` template default to `15000`.
+- Updated README to reflect `15000ms` default timeout.
+- Re-ran verification before check-in:
+  - `npm test` passed (`27/27`).
+  - `sam validate` passed.
+  - `sam build` passed.

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { parseSchedulingRequest } from "./intent-parser.js";
 import { generateCandidateSlots } from "./slot-generator.js";
 import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adapter.js";
+import { draftResponseWithOpenAi, parseOpenAiConfigSecret } from "./llm-adapter.js";
 import { buildClientResponse } from "./response-builder.js";
 import { createRuntimeDeps } from "./runtime-deps.js";
 
@@ -99,6 +100,9 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const responseMode = (env.RESPONSE_MODE ?? "log").toLowerCase();
   const calendarMode = (env.CALENDAR_MODE ?? "mock").toLowerCase();
   const advisorId = env.ADVISOR_ID ?? "manoj";
+  const llmMode = (env.LLM_MODE ?? "disabled").toLowerCase();
+  const llmTimeoutMs = parseIntEnv(env.LLM_TIMEOUT_MS, 4000);
+  const llmProviderSecretArn = env.LLM_PROVIDER_SECRET_ARN ?? "";
 
   const parsed = parseSchedulingRequest({
     fromEmail,
@@ -199,12 +203,40 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     maxSuggestions
   });
 
-  const responseMessage = buildClientResponse({
+  const templateResponseMessage = buildClientResponse({
     suggestions,
     hostTimezone,
     clientTimezone: parsed.clientTimezone,
     subject: payload.subject
   });
+  let responseMessage = templateResponseMessage;
+  let llmStatus = "disabled";
+
+  if (llmMode === "openai") {
+    try {
+      if (!llmProviderSecretArn) {
+        throw new Error("LLM_PROVIDER_SECRET_ARN is required for LLM_MODE=openai");
+      }
+
+      const llmSecretString = await deps.getSecretString(llmProviderSecretArn);
+      const openAiConfig = parseOpenAiConfigSecret(llmSecretString);
+      responseMessage = await deps.draftResponseWithLlm({
+        openAiConfig,
+        suggestions,
+        hostTimezone,
+        clientTimezone: parsed.clientTimezone,
+        originalSubject: payload.subject,
+        fetchImpl: deps.fetchImpl,
+        timeoutMs: llmTimeoutMs
+      });
+      llmStatus = "ok";
+    } catch {
+      llmStatus = "fallback";
+      responseMessage = templateResponseMessage;
+    }
+  } else if (llmMode !== "disabled") {
+    llmStatus = "unsupported";
+  }
 
   let deliveryStatus = "logged";
 
@@ -236,6 +268,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     durationMinutes: parsed.durationMinutes,
     responseMode,
     calendarMode,
+    llmMode,
+    llmStatus,
     createdAt: startedAtIso,
     updatedAt: new Date(completedAtMs).toISOString(),
     latencyMs: completedAtMs - startedAtMs,
@@ -247,6 +281,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       requestId,
       responseId,
       deliveryStatus,
+      llmStatus,
       suggestionCount: suggestions.length,
       suggestions
     })
@@ -258,6 +293,7 @@ export function createHandler(overrides = {}) {
   const deps = {
     ...runtimeDeps,
     lookupBusyIntervals: lookupGoogleBusyIntervals,
+    draftResponseWithLlm: draftResponseWithOpenAi,
     ...overrides
   };
 

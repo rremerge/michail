@@ -63,10 +63,48 @@ Parameters:
   AdvisorId:
     Type: String
     Default: manoj
+  LlmMode:
+    Type: String
+    AllowedValues:
+      - disabled
+      - openai
+    Default: disabled
+  LlmTimeoutMs:
+    Type: Number
+    Default: 15000
+  LlmProviderSecretName:
+    Type: String
+    Default: ""
+    Description: Optional secret name for LLM provider settings.
+  AdvisorPortalAuthMode:
+    Type: String
+    AllowedValues:
+      - none
+      - secret_basic
+      - google_oauth
+    Default: google_oauth
+  AdvisorPortalAuthUsername:
+    Type: String
+    Default: manoj
+  AdvisorPortalAuthSecretName:
+    Type: String
+    Default: ""
+    Description: Optional secret name for advisor portal basic auth credentials.
+  AdvisorPortalSessionSecretName:
+    Type: String
+    Default: ""
+    Description: Optional secret name for advisor portal session signing key.
+  AdvisorAllowedEmail:
+    Type: String
+    Default: ""
+    Description: Optional advisor email allowlist entry for Google portal login.
 
 Conditions:
   HasCustomSecretName: !Not [!Equals [!Ref GoogleOAuthSecretName, ""]]
   HasCustomAppSecretName: !Not [!Equals [!Ref GoogleOAuthAppSecretName, ""]]
+  HasCustomLlmProviderSecretName: !Not [!Equals [!Ref LlmProviderSecretName, ""]]
+  HasCustomAdvisorPortalAuthSecretName: !Not [!Equals [!Ref AdvisorPortalAuthSecretName, ""]]
+  HasCustomAdvisorPortalSessionSecretName: !Not [!Equals [!Ref AdvisorPortalSessionSecretName, ""]]
 
 Resources:
   TraceTable:
@@ -163,6 +201,59 @@ Resources:
         - Key: stage
           Value: !Ref Stage
 
+  LlmProviderSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !If
+        - HasCustomLlmProviderSecretName
+        - !Ref LlmProviderSecretName
+        - !Sub /${AppName}/${Stage}/${AWS::StackName}/llm-provider
+      Description: LLM provider configuration for response drafting.
+      SecretString: '{"provider":"openai","api_key":"","model":"gpt-5-mini","endpoint":"https://api.openai.com/v1/chat/completions"}'
+      Tags:
+        - Key: application
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  AdvisorPortalAuthSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !If
+        - HasCustomAdvisorPortalAuthSecretName
+        - !Ref AdvisorPortalAuthSecretName
+        - !Sub /${AppName}/${Stage}/${AWS::StackName}/advisor-portal-auth
+      Description: Basic auth credentials for advisor portal access.
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username":"${AdvisorPortalAuthUsername}"}'
+        GenerateStringKey: password
+        PasswordLength: 24
+        ExcludePunctuation: true
+      Tags:
+        - Key: application
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  AdvisorPortalSessionSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !If
+        - HasCustomAdvisorPortalSessionSecretName
+        - !Ref AdvisorPortalSessionSecretName
+        - !Sub /${AppName}/${Stage}/${AWS::StackName}/advisor-portal-session
+      Description: Session signing key for advisor portal Google login.
+      GenerateSecretString:
+        SecretStringTemplate: "{}"
+        GenerateStringKey: signing_key
+        PasswordLength: 48
+        ExcludePunctuation: true
+      Tags:
+        - Key: application
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
   SpikeApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -206,6 +297,9 @@ Resources:
           WORKDAY_END_HOUR: !Ref WorkdayEndHour
           DEFAULT_DURATION_MINUTES: !Ref DefaultDurationMinutes
           MAX_DURATION_MINUTES: !Ref MaxDurationMinutes
+          LLM_MODE: !Ref LlmMode
+          LLM_TIMEOUT_MS: !Ref LlmTimeoutMs
+          LLM_PROVIDER_SECRET_ARN: !Ref LlmProviderSecret
       Events:
         SpikeApiRequest:
           Type: HttpApi
@@ -230,6 +324,11 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref GoogleOAuthSecret
+            - Sid: ReadLlmProviderSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref LlmProviderSecret
             - Sid: ReadConnectionOAuthSecrets
               Effect: Allow
               Action:
@@ -264,6 +363,10 @@ Resources:
           CONNECTIONS_TABLE_NAME: !Ref ConnectionsTable
           OAUTH_STATE_TABLE_NAME: !Ref OAuthStateTable
           GOOGLE_OAUTH_APP_SECRET_ARN: !Ref GoogleOAuthAppSecret
+          ADVISOR_PORTAL_AUTH_MODE: !Ref AdvisorPortalAuthMode
+          ADVISOR_PORTAL_AUTH_SECRET_ARN: !Ref AdvisorPortalAuthSecret
+          ADVISOR_PORTAL_SESSION_SECRET_ARN: !Ref AdvisorPortalSessionSecret
+          ADVISOR_ALLOWED_EMAIL: !Ref AdvisorAllowedEmail
       Events:
         AdvisorHome:
           Type: HttpApi
@@ -301,6 +404,24 @@ Resources:
             ApiId: !Ref SpikeApi
             Method: GET
             Path: /advisor/api/connections/google/callback
+        AdvisorAuthGoogleStart:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /advisor/auth/google/start
+        AdvisorAuthGoogleCallback:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /advisor/auth/google/callback
+        AdvisorLogout:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: POST
+            Path: /advisor/logout
         AdvisorConnectionsDelete:
           Type: HttpApi
           Properties:
@@ -329,6 +450,16 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref GoogleOAuthAppSecret
+            - Sid: ReadAdvisorPortalAuthSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref AdvisorPortalAuthSecret
+            - Sid: ReadAdvisorPortalSessionSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref AdvisorPortalSessionSecret
             - Sid: ManageConnectionSecrets
               Effect: Allow
               Action:
@@ -349,6 +480,15 @@ Outputs:
   GoogleOAuthAppSecretArn:
     Description: Secret ARN for OAuth app credentials (client_id/client_secret).
     Value: !Ref GoogleOAuthAppSecret
+  LlmProviderSecretArn:
+    Description: Secret ARN for LLM provider credentials/settings.
+    Value: !Ref LlmProviderSecret
+  AdvisorPortalAuthSecretArn:
+    Description: Secret ARN for advisor portal basic auth credentials.
+    Value: !Ref AdvisorPortalAuthSecret
+  AdvisorPortalSessionSecretArn:
+    Description: Secret ARN for advisor portal session signing key.
+    Value: !Ref AdvisorPortalSessionSecret
   TraceTableName:
     Description: DynamoDB table for content-free request traces.
     Value: !Ref TraceTable

@@ -35,12 +35,13 @@ function htmlResponse(statusCode, html) {
   };
 }
 
-function redirectResponse(location) {
+function redirectResponse(location, headers = {}) {
   return {
     statusCode: 302,
     headers: {
       location,
-      "cache-control": "no-store"
+      "cache-control": "no-store",
+      ...headers
     },
     body: ""
   };
@@ -58,6 +59,17 @@ function serverError(message) {
   return jsonResponse(500, { error: message });
 }
 
+function unauthorized() {
+  return {
+    statusCode: 401,
+    headers: {
+      "cache-control": "no-store",
+      "www-authenticate": 'Basic realm="Advisor Portal", charset="UTF-8"'
+    },
+    body: "Unauthorized"
+  };
+}
+
 function parseGoogleAppSecret(secretString) {
   const parsed = JSON.parse(secretString);
   const clientId = parsed.client_id;
@@ -68,6 +80,28 @@ function parseGoogleAppSecret(secretString) {
   }
 
   return { clientId, clientSecret };
+}
+
+function parsePortalAuthSecret(secretString) {
+  const parsed = JSON.parse(secretString);
+  const username = String(parsed.username ?? "").trim();
+  const password = String(parsed.password ?? "");
+
+  if (!username || !password) {
+    throw new Error("Advisor portal auth secret is missing username or password");
+  }
+
+  return { username, password };
+}
+
+function parsePortalSessionSecret(secretString) {
+  const parsed = JSON.parse(secretString);
+  const signingKey = String(parsed.signing_key ?? "").trim();
+  if (!signingKey) {
+    throw new Error("Advisor portal session secret is missing signing_key");
+  }
+
+  return { signingKey };
 }
 
 function getBaseUrl(event) {
@@ -103,6 +137,310 @@ function normalizeRawPath(rawPath, stage) {
   return path;
 }
 
+function shouldProtectPath(rawPath) {
+  if (!rawPath.startsWith("/advisor")) {
+    return false;
+  }
+
+  return ![
+    "/advisor/auth/google/start",
+    "/advisor/auth/google/callback",
+    "/advisor/api/connections/google/callback"
+  ].includes(rawPath);
+}
+
+function parseBasicAuthorizationHeader(headers) {
+  const authorizationHeader = headers?.authorization ?? headers?.Authorization;
+  if (!authorizationHeader || !authorizationHeader.startsWith("Basic ")) {
+    return null;
+  }
+
+  const encoded = authorizationHeader.slice("Basic ".length).trim();
+  if (!encoded) {
+    return null;
+  }
+
+  let decoded;
+  try {
+    decoded = Buffer.from(encoded, "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+
+  const separatorIndex = decoded.indexOf(":");
+  if (separatorIndex < 0) {
+    return null;
+  }
+
+  return {
+    username: decoded.slice(0, separatorIndex),
+    password: decoded.slice(separatorIndex + 1)
+  };
+}
+
+function constantTimeEquals(left, right) {
+  const leftBuffer = Buffer.from(String(left), "utf8");
+  const rightBuffer = Buffer.from(String(right), "utf8");
+  if (leftBuffer.length !== rightBuffer.length) {
+    return false;
+  }
+
+  return crypto.timingSafeEqual(leftBuffer, rightBuffer);
+}
+
+const portalAuthSecretCache = {
+  secretArn: null,
+  credentials: null
+};
+
+const portalSessionSecretCache = {
+  secretArn: null,
+  secretValue: null
+};
+
+async function getPortalAuthCredentials(deps, secretArn) {
+  if (portalAuthSecretCache.secretArn === secretArn && portalAuthSecretCache.credentials) {
+    return portalAuthSecretCache.credentials;
+  }
+
+  const secretString = await deps.getSecretString(secretArn);
+  const credentials = parsePortalAuthSecret(secretString);
+  portalAuthSecretCache.secretArn = secretArn;
+  portalAuthSecretCache.credentials = credentials;
+  return credentials;
+}
+
+async function getPortalSessionSecret(deps, secretArn) {
+  if (portalSessionSecretCache.secretArn === secretArn && portalSessionSecretCache.secretValue) {
+    return portalSessionSecretCache.secretValue;
+  }
+
+  const secretString = await deps.getSecretString(secretArn);
+  const secretValue = parsePortalSessionSecret(secretString);
+  portalSessionSecretCache.secretArn = secretArn;
+  portalSessionSecretCache.secretValue = secretValue;
+  return secretValue;
+}
+
+function encodeBase64Url(input) {
+  return Buffer.from(input, "utf8").toString("base64url");
+}
+
+function decodeBase64Url(input) {
+  return Buffer.from(input, "base64url").toString("utf8");
+}
+
+function createPortalSessionToken(payload, signingKey) {
+  const payloadEncoded = encodeBase64Url(JSON.stringify(payload));
+  const signature = crypto.createHmac("sha256", signingKey).update(payloadEncoded).digest("base64url");
+  return `${payloadEncoded}.${signature}`;
+}
+
+function validatePortalSessionToken(token, signingKey, nowMs = Date.now()) {
+  if (!token || typeof token !== "string") {
+    return null;
+  }
+
+  const splitIndex = token.lastIndexOf(".");
+  if (splitIndex <= 0) {
+    return null;
+  }
+
+  const payloadEncoded = token.slice(0, splitIndex);
+  const suppliedSignature = token.slice(splitIndex + 1);
+  const expectedSignature = crypto.createHmac("sha256", signingKey).update(payloadEncoded).digest("base64url");
+  if (!constantTimeEquals(suppliedSignature, expectedSignature)) {
+    return null;
+  }
+
+  let payload;
+  try {
+    payload = JSON.parse(decodeBase64Url(payloadEncoded));
+  } catch {
+    return null;
+  }
+
+  if (typeof payload.expiresAtMs !== "number" || payload.expiresAtMs <= nowMs) {
+    return null;
+  }
+
+  return payload;
+}
+
+function parseCookies(event) {
+  if (Array.isArray(event?.cookies) && event.cookies.length > 0) {
+    return event.cookies.reduce((accumulator, pair) => {
+      const separator = pair.indexOf("=");
+      if (separator < 0) {
+        return accumulator;
+      }
+
+      const key = pair.slice(0, separator).trim();
+      const value = pair.slice(separator + 1).trim();
+      accumulator[key] = value;
+      return accumulator;
+    }, {});
+  }
+
+  const cookieHeader = event?.headers?.cookie ?? event?.headers?.Cookie;
+  if (!cookieHeader) {
+    return {};
+  }
+
+  return cookieHeader
+    .split(";")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .reduce((accumulator, pair) => {
+      const separator = pair.indexOf("=");
+      if (separator < 0) {
+        return accumulator;
+      }
+
+      const key = pair.slice(0, separator).trim();
+      const value = pair.slice(separator + 1).trim();
+      accumulator[key] = value;
+      return accumulator;
+    }, {});
+}
+
+function isApiRoute(rawPath) {
+  return rawPath.startsWith("/advisor/api/");
+}
+
+function buildPathWithQuery(event, normalizedRawPath) {
+  const query = event.rawQueryString;
+  if (!query) {
+    return normalizedRawPath;
+  }
+
+  return `${normalizedRawPath}?${query}`;
+}
+
+async function authorizePortalRequest({ event, rawPath, deps }) {
+  if (!shouldProtectPath(rawPath)) {
+    return null;
+  }
+
+  const authMode = (process.env.ADVISOR_PORTAL_AUTH_MODE ?? "none").toLowerCase();
+  if (authMode === "none") {
+    return null;
+  }
+
+  if (authMode === "secret_basic") {
+    const authSecretArn = process.env.ADVISOR_PORTAL_AUTH_SECRET_ARN;
+    if (!authSecretArn) {
+      return serverError("ADVISOR_PORTAL_AUTH_SECRET_ARN is required when auth mode is secret_basic");
+    }
+
+    let expectedCredentials;
+    try {
+      expectedCredentials = await getPortalAuthCredentials(deps, authSecretArn);
+    } catch (error) {
+      return serverError(error.message);
+    }
+
+    const suppliedCredentials = parseBasicAuthorizationHeader(event.headers);
+    if (!suppliedCredentials) {
+      return unauthorized();
+    }
+
+    const usernameMatches = constantTimeEquals(suppliedCredentials.username, expectedCredentials.username);
+    const passwordMatches = constantTimeEquals(suppliedCredentials.password, expectedCredentials.password);
+    if (!usernameMatches || !passwordMatches) {
+      return unauthorized();
+    }
+
+    return null;
+  }
+
+  if (authMode === "google_oauth") {
+    const sessionSecretArn = process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
+    if (!sessionSecretArn) {
+      return serverError("ADVISOR_PORTAL_SESSION_SECRET_ARN is required when auth mode is google_oauth");
+    }
+
+    let sessionSecret;
+    try {
+      sessionSecret = await getPortalSessionSecret(deps, sessionSecretArn);
+    } catch (error) {
+      return serverError(error.message);
+    }
+
+    const cookies = parseCookies(event);
+    const sessionToken = cookies.advisor_portal_session;
+    const sessionPayload = validatePortalSessionToken(sessionToken, sessionSecret.signingKey);
+    if (sessionPayload?.email) {
+      return null;
+    }
+
+    if (isApiRoute(rawPath)) {
+      return jsonResponse(401, { error: "Unauthorized" });
+    }
+
+    const returnTo = encodeURIComponent(buildPathWithQuery(event, rawPath));
+    return redirectResponse(`${getBaseUrl(event)}/advisor/auth/google/start?returnTo=${returnTo}`);
+  }
+
+  return serverError(`Unsupported ADVISOR_PORTAL_AUTH_MODE value: ${authMode}`);
+}
+
+function buildSessionCookie(sessionToken, maxAgeSeconds) {
+  return [
+    `advisor_portal_session=${sessionToken}`,
+    "Path=/",
+    `Max-Age=${maxAgeSeconds}`,
+    "HttpOnly",
+    "Secure",
+    "SameSite=Lax"
+  ].join("; ");
+}
+
+function buildClearSessionCookie() {
+  return [
+    "advisor_portal_session=",
+    "Path=/",
+    "Max-Age=0",
+    "HttpOnly",
+    "Secure",
+    "SameSite=Lax"
+  ].join("; ");
+}
+
+function isAuthorizedAdvisorEmail(profileEmail) {
+  const normalizedEmail = String(profileEmail ?? "").trim().toLowerCase();
+  if (!normalizedEmail) {
+    return false;
+  }
+
+  const allowedEmail = String(process.env.ADVISOR_ALLOWED_EMAIL ?? "").trim().toLowerCase();
+  if (!allowedEmail) {
+    return true;
+  }
+
+  return normalizedEmail === allowedEmail;
+}
+
+function parseReturnTo(queryStringParameters) {
+  const candidate = queryStringParameters?.returnTo;
+  if (!candidate || typeof candidate !== "string") {
+    return "/advisor";
+  }
+
+  if (!candidate.startsWith("/advisor")) {
+    return "/advisor";
+  }
+
+  return candidate;
+}
+
+function advisorAuthErrorPage(message) {
+  return htmlResponse(
+    403,
+    `<!doctype html><html><body><h1>Advisor Access Denied</h1><p>${message}</p></body></html>`
+  );
+}
+
 function buildAdvisorPage() {
   return `<!doctype html>
 <html lang="en">
@@ -135,6 +473,7 @@ function buildAdvisorPage() {
       <p class="muted">Add calendars for availability checks without manually editing AWS secrets.</p>
       <button id="addMock">Add Mock Calendar (Test)</button>
       <button id="googleConnect">Connect Google (Sign In)</button>
+      <button id="logout">Logout</button>
       <span class="muted">Google flow requires app credentials configured in backend secret.</span>
     </div>
 
@@ -220,6 +559,11 @@ function buildAdvisorPage() {
         window.location.href = './advisor/api/connections/google/start';
       });
 
+      document.getElementById('logout').addEventListener('click', async () => {
+        await fetch('./advisor/logout', { method: 'POST' });
+        window.location.href = './advisor';
+      });
+
       showStatusFromQuery();
       loadConnections().catch((error) => {
         console.error(error);
@@ -292,9 +636,144 @@ export function createPortalHandler(overrides = {}) {
     const stage = process.env.STAGE ?? "dev";
     const connectionsTableName = process.env.CONNECTIONS_TABLE_NAME;
     const oauthStateTableName = process.env.OAUTH_STATE_TABLE_NAME;
+    const googleAppSecretArn = process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
+    const sessionSecretArn = process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
 
-    if (!connectionsTableName) {
-      return serverError("CONNECTIONS_TABLE_NAME is required");
+    const authFailure = await authorizePortalRequest({ event, rawPath, deps });
+    if (authFailure) {
+      return authFailure;
+    }
+
+    if (method === "GET" && rawPath === "/advisor/auth/google/start") {
+      if (!oauthStateTableName) {
+        return serverError("OAUTH_STATE_TABLE_NAME is required");
+      }
+
+      if (!googleAppSecretArn) {
+        return serverError("GOOGLE_OAUTH_APP_SECRET_ARN is required");
+      }
+
+      let appSecret;
+      try {
+        appSecret = parseGoogleAppSecret(await deps.getSecretString(googleAppSecretArn));
+      } catch (error) {
+        return serverError(error.message);
+      }
+
+      const returnTo = parseReturnTo(event.queryStringParameters);
+      const state = crypto.randomUUID();
+      const nowMs = Date.now();
+      await deps.putOauthState(oauthStateTableName, state, {
+        advisorId,
+        purpose: "portal_login",
+        returnTo,
+        createdAt: new Date(nowMs).toISOString(),
+        expiresAt: Math.floor((nowMs + 15 * 60 * 1000) / 1000)
+      });
+
+      const redirectUri = `${getBaseUrl(event)}/advisor/auth/google/callback`;
+      const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+      authUrl.searchParams.set("client_id", appSecret.clientId);
+      authUrl.searchParams.set("redirect_uri", redirectUri);
+      authUrl.searchParams.set("response_type", "code");
+      authUrl.searchParams.set("scope", "openid email profile");
+      authUrl.searchParams.set("access_type", "offline");
+      authUrl.searchParams.set("prompt", "consent");
+      authUrl.searchParams.set("state", state);
+
+      return redirectResponse(authUrl.toString());
+    }
+
+    if (method === "GET" && rawPath === "/advisor/auth/google/callback") {
+      if (!oauthStateTableName) {
+        return serverError("OAUTH_STATE_TABLE_NAME is required");
+      }
+
+      if (!googleAppSecretArn) {
+        return serverError("GOOGLE_OAUTH_APP_SECRET_ARN is required");
+      }
+
+      if (!sessionSecretArn) {
+        return serverError("ADVISOR_PORTAL_SESSION_SECRET_ARN is required");
+      }
+
+      const code = event.queryStringParameters?.code;
+      const state = event.queryStringParameters?.state;
+      if (!code || !state) {
+        return badRequest("Missing OAuth callback code/state");
+      }
+
+      const stateItem = await deps.getOauthState(oauthStateTableName, state);
+      if (!stateItem || stateItem.advisorId !== advisorId || stateItem.purpose !== "portal_login") {
+        return badRequest("Invalid or expired OAuth state");
+      }
+
+      await deps.deleteOauthState(oauthStateTableName, state);
+
+      let appSecret;
+      try {
+        appSecret = parseGoogleAppSecret(await deps.getSecretString(googleAppSecretArn));
+      } catch (error) {
+        return serverError(error.message);
+      }
+
+      const redirectUri = `${getBaseUrl(event)}/advisor/auth/google/callback`;
+      const tokenPayload = await exchangeCodeForTokens({
+        clientId: appSecret.clientId,
+        clientSecret: appSecret.clientSecret,
+        code,
+        redirectUri,
+        fetchImpl: deps.fetchImpl
+      });
+
+      if (!tokenPayload.access_token) {
+        return serverError("Google login did not return access_token");
+      }
+
+      const profile = await fetchGoogleUserProfile(tokenPayload.access_token, deps.fetchImpl);
+      if (!isAuthorizedAdvisorEmail(profile.email)) {
+        return advisorAuthErrorPage("The signed-in Google account is not authorized for this advisor portal.");
+      }
+
+      let sessionSecret;
+      try {
+        sessionSecret = await getPortalSessionSecret(deps, sessionSecretArn);
+      } catch (error) {
+        return serverError(error.message);
+      }
+
+      const nowMs = Date.now();
+      const sessionToken = createPortalSessionToken(
+        {
+          email: String(profile.email).trim().toLowerCase(),
+          expiresAtMs: nowMs + 12 * 60 * 60 * 1000
+        },
+        sessionSecret.signingKey
+      );
+
+      const returnTo = parseReturnTo({ returnTo: stateItem.returnTo });
+      const location = `${getBaseUrl(event)}${returnTo}`;
+      return {
+        statusCode: 302,
+        headers: {
+          location,
+          "cache-control": "no-store"
+        },
+        cookies: [buildSessionCookie(sessionToken, 12 * 60 * 60)],
+        body: ""
+      };
+    }
+
+    if (method === "POST" && rawPath === "/advisor/logout") {
+      return {
+        statusCode: 200,
+        headers: {
+          "content-type": "application/json",
+          "cache-control": "no-store"
+        },
+        cookies: [buildClearSessionCookie()],
+        body: JSON.stringify({ loggedOut: true })
+      };
     }
 
     if (method === "GET" && rawPath === "/advisor") {
@@ -302,6 +781,10 @@ export function createPortalHandler(overrides = {}) {
     }
 
     if (method === "GET" && rawPath === "/advisor/api/connections") {
+      if (!connectionsTableName) {
+        return serverError("CONNECTIONS_TABLE_NAME is required");
+      }
+
       const connections = await deps.listConnections(connectionsTableName, advisorId);
       connections.sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
 
@@ -319,6 +802,10 @@ export function createPortalHandler(overrides = {}) {
     }
 
     if (method === "POST" && rawPath === "/advisor/api/connections/mock") {
+      if (!connectionsTableName) {
+        return serverError("CONNECTIONS_TABLE_NAME is required");
+      }
+
       const nowIso = new Date().toISOString();
       const connectionId = `mock-${crypto.randomUUID()}`;
 
@@ -374,6 +861,7 @@ export function createPortalHandler(overrides = {}) {
 
       await deps.putOauthState(oauthStateTableName, state, {
         advisorId,
+        purpose: "calendar_connection",
         createdAt: new Date(nowMs).toISOString(),
         expiresAt: Math.floor((nowMs + 15 * 60 * 1000) / 1000)
       });
@@ -396,6 +884,10 @@ export function createPortalHandler(overrides = {}) {
         return serverError("OAUTH_STATE_TABLE_NAME is required");
       }
 
+      if (!connectionsTableName) {
+        return serverError("CONNECTIONS_TABLE_NAME is required");
+      }
+
       const code = event.queryStringParameters?.code;
       const state = event.queryStringParameters?.state;
       if (!code || !state) {
@@ -403,7 +895,7 @@ export function createPortalHandler(overrides = {}) {
       }
 
       const stateItem = await deps.getOauthState(oauthStateTableName, state);
-      if (!stateItem || stateItem.advisorId !== advisorId) {
+      if (!stateItem || stateItem.advisorId !== advisorId || stateItem.purpose !== "calendar_connection") {
         return badRequest("Invalid or expired OAuth state");
       }
 
@@ -468,6 +960,10 @@ export function createPortalHandler(overrides = {}) {
     }
 
     if (method === "DELETE" && rawPath.startsWith("/advisor/api/connections/")) {
+      if (!connectionsTableName) {
+        return serverError("CONNECTIONS_TABLE_NAME is required");
+      }
+
       const connectionId = rawPath.split("/").at(-1);
       if (!connectionId) {
         return badRequest("Missing connectionId");

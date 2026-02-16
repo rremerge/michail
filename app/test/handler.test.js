@@ -168,3 +168,107 @@ test("processSchedulingEmail uses primary connection in CALENDAR_MODE=connection
   assert.equal(traceItems.length, 1);
   assert.equal(traceItems[0].calendarMode, "connection");
 });
+
+test("processSchedulingEmail uses LLM draft when LLM_MODE=openai", async () => {
+  const sentMessages = [];
+  const traceItems = [];
+
+  const deps = {
+    async getSecretString(secretArn) {
+      assert.equal(secretArn, "arn:llm-secret");
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5-mini"
+      });
+    },
+    async draftResponseWithLlm() {
+      return {
+        subject: "Re: Chat request",
+        bodyText: "LLM drafted body"
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "manoj@example.com",
+    LLM_MODE: "openai",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Chat"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.llmStatus, "ok");
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].subject, "Re: Chat request");
+  assert.equal(sentMessages[0].bodyText, "LLM drafted body");
+  assert.equal(traceItems[0].llmStatus, "ok");
+  assert.equal(traceItems[0].llmMode, "openai");
+});
+
+test("processSchedulingEmail falls back to template response when LLM draft fails", async () => {
+  const sentMessages = [];
+  const traceItems = [];
+
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5-mini"
+      });
+    },
+    async draftResponseWithLlm() {
+      throw new Error("simulated llm error");
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "manoj@example.com",
+    LLM_MODE: "openai",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Chat"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.llmStatus, "fallback");
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0].subject, /^Re:/);
+  assert.match(sentMessages[0].bodyText, /Thanks for reaching out/);
+  assert.equal(traceItems[0].llmStatus, "fallback");
+  assert.equal(traceItems[0].llmMode, "openai");
+});
