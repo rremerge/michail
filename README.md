@@ -258,6 +258,22 @@ sam deploy \
 
 3. Run the end-to-end call and confirm response includes `llmStatus: "ok"` (falls back to template when unavailable).
 Default LLM timeout is `15000ms` (`LlmTimeoutMs` parameter).
+
+## Prompt-Injection Guardrails (FR-15 Slice)
+Inbound email now runs through a hybrid prompt-injection guard before any LLM intent extraction or drafting.
+
+- Default mode: `PROMPT_GUARD_MODE=heuristic_llm`
+- Supported modes:
+  - `off`
+  - `heuristic`
+  - `llm`
+  - `heuristic_llm`
+- Block threshold: `PROMPT_GUARD_BLOCK_LEVEL` (`high` default, optional `medium`)
+- LLM guard timeout: `PROMPT_GUARD_LLM_TIMEOUT_MS` (default `3000`)
+
+Behavior:
+- High-risk requests trigger a safe fallback response and skip LLM scheduling paths.
+- Trace metadata includes guard outcomes (risk level, decision, LLM guard status) without persisting raw email content.
 Default intent extraction timeout is `10000ms` (`IntentLlmTimeoutMs`) with confidence threshold `0.65` (`IntentLlmConfidenceThreshold`).
 
 Intent extraction modes:

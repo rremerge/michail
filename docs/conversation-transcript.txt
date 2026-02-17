@@ -2819,3 +2819,161 @@ Actions:
 - Committed PRD changes for prompt-injection requirements and the updated reference user story paragraph.
 - Included transcript updates in the same checkpoint.
 - Pushed the commit to `origin/main`.
+
+---
+
+Turn 122
+User:
+ok so what was next on our list?
+
+Assistant:
+Current status:
+- FR-6 slice (calendar-style availability page + signed links + week navigation) is implemented.
+- Client directory/policies (`FR-13`/`FR-14`) are implemented in the advisor portal.
+- LLM-based drafting and hybrid intent extraction are in place.
+- PRD now includes `FR-15` prompt-injection requirements.
+
+Next on the list (priority order):
+1. Implement `FR-15` prompt-injection guardrails in runtime:
+   - Add inbound email sanitization + normalization pipeline before any LLM call.
+   - Add strict prompt-boundary packaging (system instructions isolated from user content).
+   - Add risk scoring/heuristics and safe fallback when high-risk content is detected.
+2. Add tests for security behavior:
+   - Unit tests with known injection patterns.
+   - E2E test proving malicious instructions do not alter allowed agent actions.
+   - Verify metadata-only security telemetry (no raw content persistence).
+3. Deploy and run live validation:
+   - Send crafted adversarial test emails.
+   - Confirm safe responses, no unsafe tool execution, and complete trace diagnostics.
+4. After that, checkpoint commit + push.
+
+---
+
+Turn 123
+User:
+yes excellent. lets go ahead with that
+
+Assistant:
+Implemented step 1 of FR-15: inbound untrusted email sanitization plus strict prompt-boundary packaging before all LLM calls.
+
+Code changes:
+- `app/src/llm-adapter.js`
+  - Added `sanitizeUntrustedText(...)` for subject/body normalization and prompt-injection token redaction.
+  - Added sanitization rules for role-like prefixes (`system:`, `assistant:`, etc.), common override phrases (for example `ignore previous instructions`), and instruction-tag patterns.
+  - Added hard caps for untrusted content lengths (`MAX_SUBJECT_CHARS`, `MAX_BODY_CHARS`).
+  - Added explicit untrusted content wrappers (`<<BEGIN_EMAIL_SUBJECT>>...<<END_EMAIL_SUBJECT>>`, `<<BEGIN_EMAIL_BODY>>...<<END_EMAIL_BODY>>`).
+  - Updated both LLM pathways to use sanitized content with strict structured envelopes:
+    - `draftResponseWithOpenAi(...)`
+    - `extractSchedulingIntentWithOpenAi(...)`
+  - Strengthened system prompts to explicitly treat `untrustedEmail` fields as data, never instructions.
+
+Tests added:
+- `app/test/llm-adapter.test.js`
+  - `draftResponseWithOpenAi sanitizes untrusted subject in prompt payload`
+  - `extractSchedulingIntentWithOpenAi sanitizes untrusted email body before LLM call`
+
+Validation:
+- Full local suite passed:
+  - `cd app && npm test` -> `60/60` passing.
+
+Status:
+- Step 1 complete.
+- Next is step 2 (injection risk scoring + safe fallback behavior and trace metadata).
+
+---
+
+Turn 124
+User:
+yes and maybe also use the LLM to validate the content as being non malicous
+
+Assistant:
+Implemented step 2 of FR-15 with hybrid prompt-injection defense, including optional LLM-based risk validation.
+
+Code changes:
+- `app/src/llm-adapter.js`
+  - Added heuristic risk analyzer: `assessPromptInjectionRisk({ subject, body })`.
+  - Added LLM risk classifier: `analyzePromptInjectionRiskWithOpenAi(...)` with structured JSON output (`riskLevel`, `confidence`, `signals`).
+  - Added normalization/clamping for risk levels and confidence.
+  - Retained prior sanitization/boundary wrapping for untrusted email fields.
+- `app/src/handler.js`
+  - Added prompt-guard runtime controls:
+    - `PROMPT_GUARD_MODE` (`off|heuristic|llm|heuristic_llm`, default `heuristic_llm`)
+    - `PROMPT_GUARD_BLOCK_LEVEL` (`high` default, optional `medium`)
+    - `PROMPT_GUARD_LLM_TIMEOUT_MS` (default `3000`)
+  - Added pre-LLM guard flow that computes risk (heuristic + optional LLM) and blocks high-risk requests with safe fallback response.
+  - On guarded requests, LLM intent extraction and LLM drafting are skipped.
+  - Added content-free trace fields for supportability/debugging:
+    - `promptGuardMode`, `promptGuardDecision`, `promptGuardLlmStatus`, `promptInjectionRiskLevel`, `promptInjectionSignalCount`.
+  - Wired default dependency mapping:
+    - `analyzePromptInjectionRiskWithLlm: analyzePromptInjectionRiskWithOpenAi`.
+- `README.md`
+  - Added `Prompt-Injection Guardrails (FR-15 Slice)` section documenting modes and behavior.
+
+Tests added/updated:
+- `app/test/llm-adapter.test.js`
+  - `assessPromptInjectionRisk classifies obvious override patterns as high risk`
+  - `analyzePromptInjectionRiskWithOpenAi parses classifier output`
+- `app/test/handler.test.js`
+  - `processSchedulingEmail falls back safely on high-risk prompt-injection input`
+  - `processSchedulingEmail uses LLM prompt guard classification when enabled`
+
+Validation:
+- Full local test suite passed:
+  - `cd app && npm test` -> `64/64` passing.
+
+---
+
+Turn 125
+User:
+ok great lets go ahead.
+
+Assistant:
+Executed deployment + live validation for FR-15 prompt-injection guardrails.
+
+Actions performed:
+1. Re-ran local tests before deployment:
+   - `cd app && npm test` -> `64/64` passing.
+2. Deployed to AWS dev stack (`us-east-1`):
+   - Stack: `calendar-agent-spike-dev`
+   - Result: `UPDATE_COMPLETE`
+   - Note: `sam build` failed due SAM NodejsNpmBuilder/npm cache issue, so deployment proceeded via direct `sam deploy --resolve-s3 --region us-east-1`.
+3. Ran live benign API check:
+   - Endpoint: `POST https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev/spike/email`
+   - Response:
+     - `requestId`: `be5f12a3-54a8-4ae9-913e-c78a58c5dfdc`
+     - `llmStatus`: `ok`
+     - `suggestionCount`: `3`
+     - `deliveryStatus`: `sent`
+4. Ran live adversarial API check (prompt-injection style content):
+   - Endpoint: same as above
+   - Response:
+     - `requestId`: `03404cf1-0d08-418a-b5cb-a0ac1ae63d72`
+     - `llmStatus`: `guarded`
+     - `promptGuarded`: `true`
+     - `promptInjectionRiskLevel`: `high`
+     - `suggestionCount`: `0`
+5. Verified trace metadata in DynamoDB (`calendar-agent-spike-dev-TraceTable-1DEK59G2YX0UP`):
+   - Benign trace confirms normal allow-path:
+     - `status=completed`, `promptGuardDecision=allow`, `promptInjectionRiskLevel=low`, `promptGuardLlmStatus=ok`
+   - Adversarial trace confirms safe fallback path:
+     - `status=guarded`, `stage=prompt_guard`, `promptGuardDecision=fallback`, `promptInjectionRiskLevel=high`, `intentLlmStatus=skipped_guarded`, `llmStatus=guarded`, `providerStatus=skipped`
+
+Outcome:
+- FR-15 runtime guardrails are now deployed and validated live for both benign and malicious-style inputs.
+
+---
+
+Turn 126
+User:
+yes
+
+Assistant:
+Checked in and pushed the FR-15 prompt-guard implementation checkpoint.
+
+Included in this checkpoint:
+- Hybrid prompt-injection defense (heuristic + optional LLM classifier).
+- Safe fallback behavior for high-risk input (`status=guarded`, `stage=prompt_guard`).
+- Content-free trace metadata for guard decisions/risk outcomes.
+- Unit/integration test coverage for guard behavior.
+- README updates for prompt-guard configuration.
+- Live deployment + benign/adversarial verification results documented in transcript.

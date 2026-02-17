@@ -2,7 +2,13 @@ import crypto from "node:crypto";
 import { parseSchedulingRequest } from "./intent-parser.js";
 import { generateCandidateSlots } from "./slot-generator.js";
 import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adapter.js";
-import { draftResponseWithOpenAi, extractSchedulingIntentWithOpenAi, parseOpenAiConfigSecret } from "./llm-adapter.js";
+import {
+  analyzePromptInjectionRiskWithOpenAi,
+  assessPromptInjectionRisk,
+  draftResponseWithOpenAi,
+  extractSchedulingIntentWithOpenAi,
+  parseOpenAiConfigSecret
+} from "./llm-adapter.js";
 import { buildClientResponse } from "./response-builder.js";
 import { buildClientReference, createShortAvailabilityTokenId } from "./availability-link.js";
 import {
@@ -18,6 +24,15 @@ import { simpleParser } from "mailparser";
 
 const DEFAULT_INTENT_CONFIDENCE_THRESHOLD = 0.65;
 const DEFAULT_AVAILABILITY_LINK_TTL_MINUTES = 7 * 24 * 60;
+const DEFAULT_PROMPT_GUARD_MODE = "heuristic_llm";
+const DEFAULT_PROMPT_GUARD_BLOCK_LEVEL = "high";
+const DEFAULT_PROMPT_GUARD_LLM_TIMEOUT_MS = 3000;
+const PROMPT_GUARD_LEVEL_RANK = {
+  low: 0,
+  medium: 1,
+  high: 2
+};
+const PROMPT_GUARD_ALLOWED_MODES = new Set(["off", "heuristic", "llm", "heuristic_llm"]);
 
 function parseIntEnv(value, fallback) {
   const parsed = Number.parseInt(value ?? "", 10);
@@ -27,6 +42,49 @@ function parseIntEnv(value, fallback) {
 function parseClampedIntEnv(value, fallback, minimum, maximum) {
   const parsed = parseIntEnv(value, fallback);
   return Math.min(Math.max(parsed, minimum), maximum);
+}
+
+function normalizePromptGuardMode(value) {
+  const candidate = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (PROMPT_GUARD_ALLOWED_MODES.has(candidate)) {
+    return candidate;
+  }
+
+  return DEFAULT_PROMPT_GUARD_MODE;
+}
+
+function normalizePromptGuardLevel(value, fallback = DEFAULT_PROMPT_GUARD_BLOCK_LEVEL) {
+  const candidate = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (Object.hasOwn(PROMPT_GUARD_LEVEL_RANK, candidate)) {
+    return candidate;
+  }
+
+  return fallback;
+}
+
+function mergePromptGuardSignals({ heuristicSignals, llmSignals }) {
+  const merged = [];
+  const seen = new Set();
+  for (const signal of [...heuristicSignals, ...llmSignals]) {
+    const normalized = String(signal ?? "")
+      .trim()
+      .toLowerCase();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+
+    merged.push(normalized);
+    seen.add(normalized);
+    if (merged.length >= 8) {
+      break;
+    }
+  }
+
+  return merged;
 }
 
 function normalizeRequestedWindowsToUtc(requestedWindows) {
@@ -319,6 +377,14 @@ function buildAccessDeniedResponseMessage() {
     subject: "Re: Scheduling request",
     bodyText:
       "This scheduling interface is currently unavailable for your account.\nPlease contact the advisor directly if you need help booking time."
+  };
+}
+
+function buildPromptGuardFallbackResponseMessage() {
+  return {
+    subject: "Re: Scheduling request",
+    bodyText:
+      "I could not safely process that message automatically.\nPlease resend using only scheduling details such as preferred days, time windows, timezone, and duration."
   };
 }
 
@@ -637,6 +703,9 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const llmMode = (env.LLM_MODE ?? "disabled").toLowerCase();
   const llmTimeoutMs = parseIntEnv(env.LLM_TIMEOUT_MS, 4000);
   const llmProviderSecretArn = env.LLM_PROVIDER_SECRET_ARN ?? "";
+  const promptGuardMode = normalizePromptGuardMode(env.PROMPT_GUARD_MODE);
+  const promptGuardBlockLevel = normalizePromptGuardLevel(env.PROMPT_GUARD_BLOCK_LEVEL);
+  const promptGuardLlmTimeoutMs = parseIntEnv(env.PROMPT_GUARD_LLM_TIMEOUT_MS, DEFAULT_PROMPT_GUARD_LLM_TIMEOUT_MS);
   const intentExtractionMode = (env.INTENT_EXTRACTION_MODE ?? "llm_hybrid").toLowerCase();
   const intentLlmTimeoutMs = parseIntEnv(env.INTENT_LLM_TIMEOUT_MS, 10000);
   const intentConfidenceThreshold = Number.parseFloat(
@@ -644,6 +713,10 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   );
   const clientProfilesTableName = String(env.CLIENT_PROFILES_TABLE_NAME ?? "").trim();
   const policyPresets = parseClientPolicyPresets(env.CLIENT_POLICY_PRESETS_JSON, defaultAdvisingDays);
+  let promptGuardDecision = "not_run";
+  let promptGuardLlmStatus = "disabled";
+  let promptInjectionRiskLevel = "low";
+  let promptInjectionSignals = [];
 
   let clientProfile = null;
   if (clientProfilesTableName && typeof deps.getClientProfile === "function") {
@@ -688,6 +761,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       bodySource,
       intentSource: "parser",
       intentLlmStatus: "disabled",
+      promptGuardMode,
+      promptGuardDecision,
+      promptGuardLlmStatus,
+      promptInjectionRiskLevel,
+      promptInjectionSignalCount: 0,
       availabilityLinkStatus: "not_applicable",
       requestedWindowCount: 0,
       accessState,
@@ -709,6 +787,166 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         accessState
       })
     };
+  }
+
+  if (promptGuardMode !== "off") {
+    const heuristicAssessment = assessPromptInjectionRisk({
+      subject: payload.subject ?? "",
+      body: bodyText
+    });
+    promptInjectionRiskLevel = heuristicAssessment.riskLevel;
+    const heuristicSignals = heuristicAssessment.matchedSignals ?? [];
+    let llmRiskLevel = "low";
+    let llmSignals = [];
+    const shouldUsePromptGuardLlm = promptGuardMode === "llm" || promptGuardMode === "heuristic_llm";
+
+    if (shouldUsePromptGuardLlm) {
+      if (!llmProviderSecretArn || typeof deps.analyzePromptInjectionRiskWithLlm !== "function") {
+        promptGuardLlmStatus = "skipped";
+      } else {
+        try {
+          const llmSecretString = await deps.getSecretString(llmProviderSecretArn);
+          const openAiConfig = parseOpenAiConfigSecret(llmSecretString);
+          const llmAssessment = await deps.analyzePromptInjectionRiskWithLlm({
+            openAiConfig,
+            subject: payload.subject ?? "",
+            body: bodyText,
+            fetchImpl: deps.fetchImpl,
+            timeoutMs: promptGuardLlmTimeoutMs
+          });
+          promptGuardLlmStatus = "ok";
+          llmRiskLevel = normalizePromptGuardLevel(llmAssessment.riskLevel, "medium");
+          llmSignals = Array.isArray(llmAssessment.signals) ? llmAssessment.signals : [];
+        } catch {
+          promptGuardLlmStatus = "fallback";
+        }
+      }
+    }
+
+    promptInjectionSignals = mergePromptGuardSignals({
+      heuristicSignals,
+      llmSignals
+    });
+
+    if (PROMPT_GUARD_LEVEL_RANK[llmRiskLevel] > PROMPT_GUARD_LEVEL_RANK[promptInjectionRiskLevel]) {
+      promptInjectionRiskLevel = llmRiskLevel;
+    }
+
+    if (PROMPT_GUARD_LEVEL_RANK[promptInjectionRiskLevel] >= PROMPT_GUARD_LEVEL_RANK[promptGuardBlockLevel]) {
+      promptGuardDecision = "fallback";
+      let responseMessage = buildPromptGuardFallbackResponseMessage();
+      let availabilityLinkStatus = "pending";
+      try {
+        const availabilityLinkResult = await buildAvailabilityLink({
+          env,
+          deps,
+          advisorId,
+          clientTimezone: null,
+          durationMinutes: durationDefault,
+          issuedAtMs: startedAtMs,
+          normalizedClientEmail: fromEmail,
+          clientDisplayName,
+          clientId
+        });
+        availabilityLinkStatus = availabilityLinkResult.status;
+        responseMessage = appendAvailabilityLinkSection({
+          responseMessage,
+          availabilityLink: availabilityLinkResult.availabilityLink
+        });
+      } catch {
+        availabilityLinkStatus = "error";
+      }
+
+      responseMessage = ensurePersonalizedGreetingAndSignature({
+        responseMessage,
+        clientDisplayName,
+        advisorDisplayName
+      });
+
+      let deliveryStatus = "logged";
+      if (responseMode === "send") {
+        if (!env.SENDER_EMAIL) {
+          return { http: badRequest("SENDER_EMAIL is required when RESPONSE_MODE=send") };
+        }
+
+        await deps.sendResponseEmail({
+          senderEmail: env.SENDER_EMAIL,
+          recipientEmail: fromEmail,
+          subject: responseMessage.subject,
+          bodyText: responseMessage.bodyText
+        });
+        deliveryStatus = "sent";
+      }
+
+      const completedAtMs = now();
+      await deps.writeTrace(env.TRACE_TABLE_NAME, {
+        requestId,
+        responseId,
+        advisorId,
+        accessState,
+        status: "guarded",
+        stage: "prompt_guard",
+        providerStatus: "skipped",
+        channel: payload.channel ?? "email",
+        fromDomain,
+        responseMode,
+        calendarMode,
+        llmMode,
+        llmStatus: "guarded",
+        bodySource,
+        intentSource: "parser",
+        intentLlmStatus: "skipped_guarded",
+        promptGuardMode,
+        promptGuardDecision,
+        promptGuardLlmStatus,
+        promptInjectionRiskLevel,
+        promptInjectionSignalCount: promptInjectionSignals.length,
+        availabilityLinkStatus,
+        requestedWindowCount: 0,
+        createdAt: startedAtIso,
+        updatedAt: new Date(completedAtMs).toISOString(),
+        latencyMs: completedAtMs - startedAtMs,
+        expiresAt: Math.floor((startedAtMs + 7 * 24 * 60 * 60 * 1000) / 1000)
+      });
+
+      if (clientProfilesTableName && typeof deps.recordClientEmailInteraction === "function") {
+        try {
+          await deps.recordClientEmailInteraction(clientProfilesTableName, {
+            advisorId,
+            clientId,
+            clientEmail: fromEmail,
+            clientDisplayName,
+            accessState,
+            policyId: clientProfile?.policyId ?? "default",
+            updatedAt: new Date(completedAtMs).toISOString()
+          });
+        } catch {
+          // Best-effort client analytics tracking.
+        }
+      }
+
+      return {
+        http: ok({
+          requestId,
+          responseId,
+          deliveryStatus,
+          llmStatus: "guarded",
+          suggestionCount: 0,
+          suggestions: [],
+          promptGuarded: true,
+          promptInjectionRiskLevel
+        })
+      };
+    }
+  } else {
+    promptGuardDecision = "allow";
+    promptGuardLlmStatus = "disabled";
+    promptInjectionRiskLevel = "low";
+    promptInjectionSignals = [];
+  }
+
+  if (promptGuardDecision !== "fallback") {
+    promptGuardDecision = "allow";
   }
 
   const advisingDays = resolveClientAdvisingDays({
@@ -837,6 +1075,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       bodySource,
       intentSource,
       intentLlmStatus,
+      promptGuardMode,
+      promptGuardDecision,
+      promptGuardLlmStatus,
+      promptInjectionRiskLevel,
+      promptInjectionSignalCount: promptInjectionSignals.length,
       requestedWindowCount: parsed.requestedWindows.length,
       createdAt: startedAtIso,
       updatedAt: new Date(now()).toISOString(),
@@ -962,6 +1205,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     bodySource,
     intentSource,
     intentLlmStatus,
+    promptGuardMode,
+    promptGuardDecision,
+    promptGuardLlmStatus,
+    promptInjectionRiskLevel,
+    promptInjectionSignalCount: promptInjectionSignals.length,
     availabilityLinkStatus,
     requestedWindowCount: parsed.requestedWindows.length,
     createdAt: startedAtIso,
@@ -1005,6 +1253,7 @@ export function createHandler(overrides = {}) {
     lookupBusyIntervals: lookupGoogleBusyIntervals,
     draftResponseWithLlm: draftResponseWithOpenAi,
     extractSchedulingIntentWithLlm: extractSchedulingIntentWithOpenAi,
+    analyzePromptInjectionRiskWithLlm: analyzePromptInjectionRiskWithOpenAi,
     ...overrides
   };
 
