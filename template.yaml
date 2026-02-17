@@ -187,6 +187,27 @@ Resources:
         - Key: stage
           Value: !Ref Stage
 
+  AvailabilityLinkTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: tokenId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: tokenId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: application
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
   OAuthStateTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -360,7 +381,7 @@ Resources:
           RAW_EMAIL_BUCKET_REGION: !Ref InboundRawEmailBucketRegion
           RAW_EMAIL_OBJECT_PREFIX: !Ref InboundRawEmailObjectPrefix
           AVAILABILITY_LINK_BASE_URL: !Ref AvailabilityLinkBaseUrl
-          AVAILABILITY_LINK_SECRET_ARN: !Ref AvailabilityLinkSecret
+          AVAILABILITY_LINK_TABLE_NAME: !Ref AvailabilityLinkTable
           AVAILABILITY_LINK_TTL_MINUTES: !Ref AvailabilityLinkTtlMinutes
       Events:
         SpikeApiRequest:
@@ -398,11 +419,11 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref LlmProviderSecret
-            - Sid: ReadAvailabilityLinkSecret
+            - Sid: WriteAvailabilityLinks
               Effect: Allow
               Action:
-                - secretsmanager:GetSecretValue
-              Resource: !Ref AvailabilityLinkSecret
+                - dynamodb:PutItem
+              Resource: !GetAtt AvailabilityLinkTable.Arn
             - Sid: ReadConnectionOAuthSecrets
               Effect: Allow
               Action:
@@ -452,6 +473,7 @@ Resources:
           DEFAULT_DURATION_MINUTES: !Ref DefaultDurationMinutes
           MAX_DURATION_MINUTES: !Ref MaxDurationMinutes
           AVAILABILITY_LINK_SECRET_ARN: !Ref AvailabilityLinkSecret
+          AVAILABILITY_LINK_TABLE_NAME: !Ref AvailabilityLinkTable
           AVAILABILITY_VIEW_MAX_SLOTS: !Ref AvailabilityViewMaxSlots
           GOOGLE_OAUTH_SECRET_ARN: !Ref GoogleOAuthSecret
           CONNECTIONS_TABLE_NAME: !Ref ConnectionsTable
@@ -594,6 +616,11 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/${AppName}/${Stage}/*
+            - Sid: ReadAvailabilityLinks
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+              Resource: !GetAtt AvailabilityLinkTable.Arn
             - Sid: ManageConnectionSecrets
               Effect: Allow
               Action:
@@ -632,6 +659,9 @@ Outputs:
   ConnectionsTableName:
     Description: DynamoDB table for advisor calendar connections.
     Value: !Ref ConnectionsTable
+  AvailabilityLinkTableName:
+    Description: DynamoDB table for short-lived client availability links.
+    Value: !Ref AvailabilityLinkTable
   AdvisorPortalUrl:
     Description: Advisor portal URL for managing connected calendars.
     Value: !Sub https://${SpikeApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/advisor

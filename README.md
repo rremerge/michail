@@ -77,13 +77,19 @@ After deploy, open `AdvisorPortalUrl` output:
 - Click `Connect Google (Sign In)` to launch Google login/consent and create a secure refresh-token connection.
 
 ## Client Availability Link (FR-6 Slice)
-When the agent sends slot suggestions, it now appends a signed availability URL so clients can browse open slots in the web view.
+When the agent sends slot suggestions, it now appends a signed availability URL so clients can browse a calendar-style free/busy view in the web UI.
 
-- Public route: `GET /availability?token=...`
-- Signature: HMAC token with expiry (default `AvailabilityLinkTtlMinutes=10080`, i.e. 7 days)
-- Privacy: page shows open slots only; no meeting details are exposed
+- Public route: `GET /availability?t=...`
+- Token expiry: TTL-backed availability links (default `AvailabilityLinkTtlMinutes=10080`, i.e. 7 days)
+- Privacy: page shows open and busy blocks only; no meeting details are exposed
 - Calendar source: same connected advisor calendars used by scheduling flow
 - Email link injection requires `AvailabilityLinkBaseUrl` stack parameter to be set
+- Week navigation: clients can move to prior/future weeks via Previous/Next controls on the page
+
+Current format:
+- Short link token id: `t=<16-char-id>` (server lookup with TTL in DynamoDB)
+- Optional client reference hint in URL: `for=<client-ref>`
+- The page can display who the availability link is for using stored per-link metadata.
 
 Output:
 - `AvailabilityUrl` (base URL; requires signed `token` query parameter)

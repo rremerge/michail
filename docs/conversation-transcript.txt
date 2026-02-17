@@ -2276,3 +2276,133 @@ Live verification:
 Operational safety checks:
 - Verified `AvailabilityLinkBaseUrl` parameter is set.
 - Verified LLM secret preserved (`model=gpt-5.2`, `apiKeyPresent=true`).
+
+---
+
+Turn 102
+User:
+Could we make the free and busy times page look more like a calendar.. say like google calendar to make it more intuitive for clients to read it.
+
+Assistant:
+Implemented a calendar-style availability UI (Google-calendar-like grid) and deployed.
+
+What changed:
+- Reworked `/availability` rendering in `app/src/portal-handler.js`:
+  - Added time-grid calendar layout with day columns and time rows.
+  - Each cell now shows status pill: `Open` or `Busy`.
+  - Added legend, open/busy counts, sticky header, and horizontal scroll for multi-day readability.
+  - Preserved privacy: only busy/free blocks are shown, no meeting titles/details.
+  - Added slot/day capping for rendering scale via existing `AVAILABILITY_VIEW_MAX_SLOTS`.
+- Added stronger FR-6 tests in `app/test/portal-handler.test.js`:
+  - Valid token renders calendar grid with free/busy legend.
+  - Busy blocks render when busy intervals exist.
+  - Asserted meeting details are not exposed on page.
+- Updated README wording to reflect calendar-style free/busy view.
+
+Validation:
+- Local tests: `cd app && npm test` -> `51/51` passing.
+
+Deployment:
+- Deployed to `calendar-agent-spike-dev` in `us-east-1`.
+- Live verification against `/dev/availability?token=...` confirmed:
+  - `calendar-grid` markup present
+  - text: "Calendar-style view of open and busy blocks"
+  - multiple `slot busy` cells rendered
+
+---
+
+Turn 103
+User:
+Great job. now in that page, can you make it possible to look at other weeks. Say put an arrow on the right side that indicates to the client that they can look at future weeks, and a back arrow for prior weeks.
+
+Assistant:
+Implemented week navigation for the calendar-style availability page and deployed.
+
+Changes:
+- `app/src/portal-handler.js`
+  - Added `weekOffset` query parsing (`-8` to `+52` clamp).
+  - Availability window now anchors to advisor local week start and shifts by `weekOffset` weeks.
+  - Added Previous/Next week controls with links preserving signed token:
+    - `?token=...&weekOffset=<n-1>`
+    - `?token=...&weekOffset=<n+1>`
+  - Added centered week range label in UI.
+  - Keeps privacy-safe free/busy rendering with no meeting detail leakage.
+- `app/test/portal-handler.test.js`
+  - Validated nav controls and expected `weekOffset` links render.
+  - Retained busy-block privacy assertions.
+- `README.md`
+  - Documented prior/future week navigation support.
+
+Validation:
+- Local tests: `cd app && npm test` -> `51/51` passing.
+- Deployed to `calendar-agent-spike-dev` (`us-east-1`).
+- Live `/availability` probe with signed token and `weekOffset=2` confirmed:
+  - `Previous Week` and `Next Week` links present
+  - links include `weekOffset=1` and `weekOffset=3`
+  - week range header displayed.
+
+---
+
+Turn 104
+User:
+Great job. The link token that can expire is way too long. Can we shorten it to maybe no more than 16 characters to the URL does not become unweildy. Ideally encode the client email or name in the URL so that the calendar display page mentions who this calendar is for since the link is uniquely generated for each client.
+
+Assistant:
+Implemented short availability link tokens and client-identifying hints, with backward compatibility.
+
+What changed:
+- `app/src/availability-link.js`
+  - Added `createShortAvailabilityTokenId()` to generate 16-char base64url token IDs.
+  - Added `buildClientReference()` to derive short client slug (`for=` query hint).
+  - Kept legacy signed token helpers for compatibility.
+- `app/src/handler.js`
+  - Replaced long signed-link generation for new emails with short links:
+    - `.../availability?t=<16-char-token>&for=<client-ref>`
+  - Derived `clientDisplayName` from formatted sender name, fallback to email local-part.
+  - Persisted per-link metadata via DynamoDB (`tokenId`, advisor, client display/ref, timezone, duration, issued/expiry).
+  - Added collision-safe retry when generating token IDs.
+- `app/src/runtime-deps.js`
+  - Added `putAvailabilityLink()` and `getAvailabilityLink()` DynamoDB helpers.
+- `app/src/portal-handler.js`
+  - `/availability` now supports short token lookup via `t=`.
+  - Retained legacy `token=` signed-token path as fallback.
+  - Page now renders `Availability for <client>` when metadata available.
+  - Week navigation preserves `t` + `for` query params.
+- `template.yaml`
+  - Added `AvailabilityLinkTable` DynamoDB resource with TTL.
+  - Wired env and IAM:
+    - Email Lambda: `PutItem` on link table.
+    - Portal Lambda: `GetItem` on link table.
+  - Added output `AvailabilityLinkTableName`.
+- Tests updated:
+  - `app/test/handler.test.js`
+  - `app/test/portal-handler.test.js`
+  - `app/test/template-smoke.test.js`
+- `README.md` updated for short-token format and client reference behavior.
+
+Validation:
+- Local tests: `cd app && npm test` -> `51/51` passing.
+
+---
+
+Turn 105
+User:
+go
+
+Assistant:
+Completed deployment and live smoke checks for the short-token release.
+
+Actions and results:
+- Deployed stack `calendar-agent-spike-dev` in `us-east-1` with updated resources:
+  - Added `AvailabilityLinkTable` and Lambda/IAM updates.
+- Ran live spike request to generate links.
+- Verified new availability link metadata in DynamoDB:
+  - example `tokenId`: `yhbyNia69PRzgr4e` (16 chars)
+  - `clientReference`: `titoneeda`
+  - `clientDisplayName`: `Titoneeda`
+- Verified live availability page rendering:
+  - `Availability for Titoneeda`
+  - week navigation links preserve `t` and `for` params.
+
+Status:
+- Feature is deployed and active.

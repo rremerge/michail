@@ -4,7 +4,7 @@ import { generateCandidateSlots } from "./slot-generator.js";
 import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adapter.js";
 import { draftResponseWithOpenAi, extractSchedulingIntentWithOpenAi, parseOpenAiConfigSecret } from "./llm-adapter.js";
 import { buildClientResponse, buildHumanReadableOptions } from "./response-builder.js";
-import { createAvailabilityLinkToken, parseAvailabilityLinkSecret } from "./availability-link.js";
+import { buildClientReference, createShortAvailabilityTokenId } from "./availability-link.js";
 import { createRuntimeDeps } from "./runtime-deps.js";
 import { simpleParser } from "mailparser";
 
@@ -134,17 +134,58 @@ function appendAvailabilityLinkSection({ responseMessage, availabilityLink }) {
   };
 }
 
+function titleCaseWords(input) {
+  return String(input ?? "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => {
+      if (!word) {
+        return "";
+      }
+
+      return word[0].toUpperCase() + word.slice(1);
+    })
+    .join(" ");
+}
+
+function deriveClientDisplayName(rawFromEmail, normalizedFromEmail) {
+  const rawValue = String(rawFromEmail ?? "").trim();
+  const bracketIndex = rawValue.indexOf("<");
+  if (bracketIndex > 0) {
+    const namePart = rawValue
+      .slice(0, bracketIndex)
+      .trim()
+      .replace(/^["']+|["']+$/g, "");
+    if (namePart && !namePart.includes("@")) {
+      return namePart.slice(0, 64);
+    }
+  }
+
+  const localPart = String(normalizedFromEmail ?? "")
+    .split("@")[0]
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!localPart) {
+    return "Client";
+  }
+
+  return titleCaseWords(localPart).slice(0, 64);
+}
+
 async function buildAvailabilityLink({
   env,
   deps,
   advisorId,
   clientTimezone,
   durationMinutes,
-  issuedAtMs
+  issuedAtMs,
+  normalizedClientEmail,
+  rawFromEmail
 }) {
   const baseUrl = String(env.AVAILABILITY_LINK_BASE_URL ?? "").trim();
-  const secretArn = String(env.AVAILABILITY_LINK_SECRET_ARN ?? "").trim();
-  if (!baseUrl || !secretArn) {
+  const tableName = String(env.AVAILABILITY_LINK_TABLE_NAME ?? "").trim();
+  if (!baseUrl || !tableName) {
     return {
       availabilityLink: null,
       status: "unconfigured"
@@ -158,21 +199,41 @@ async function buildAvailabilityLink({
     14 * 24 * 60
   );
   const expiresAtMs = issuedAtMs + ttlMinutes * 60 * 1000;
-  const secretString = await deps.getSecretString(secretArn);
-  const linkSecret = parseAvailabilityLinkSecret(secretString);
-  const token = createAvailabilityLinkToken(
-    {
-      advisorId,
-      clientTimezone: clientTimezone ?? null,
-      durationMinutes,
-      issuedAtMs,
-      expiresAtMs
-    },
-    linkSecret.signingKey
-  );
+  const clientDisplayName = deriveClientDisplayName(rawFromEmail, normalizedClientEmail);
+  const clientReference = buildClientReference(clientDisplayName, normalizedClientEmail);
+  const issuedAtIso = new Date(issuedAtMs).toISOString();
+  const expiresAt = Math.floor(expiresAtMs / 1000);
+
+  let tokenId = null;
+  for (let attempt = 0; attempt < 3 && !tokenId; attempt += 1) {
+    const candidateId = createShortAvailabilityTokenId();
+    try {
+      await deps.putAvailabilityLink(tableName, {
+        tokenId: candidateId,
+        advisorId,
+        clientDisplayName,
+        clientReference,
+        clientTimezone: clientTimezone ?? null,
+        durationMinutes,
+        issuedAt: issuedAtIso,
+        expiresAtMs,
+        expiresAt
+      });
+      tokenId = candidateId;
+    } catch (error) {
+      if (error?.name !== "ConditionalCheckFailedException") {
+        throw error;
+      }
+    }
+  }
+
+  if (!tokenId) {
+    throw new Error("Failed to allocate unique availability token ID");
+  }
 
   const availabilityUrl = new URL(baseUrl);
-  availabilityUrl.searchParams.set("token", token);
+  availabilityUrl.searchParams.set("t", tokenId);
+  availabilityUrl.searchParams.set("for", clientReference);
   return {
     availabilityLink: availabilityUrl.toString(),
     status: "included"
@@ -712,7 +773,9 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         advisorId,
         clientTimezone: parsed.clientTimezone,
         durationMinutes: parsed.durationMinutes,
-        issuedAtMs: startedAtMs
+        issuedAtMs: startedAtMs,
+        normalizedClientEmail: fromEmail,
+        rawFromEmail: payload.fromEmail
       });
       availabilityLinkStatus = availabilityLinkResult.status;
       responseMessage = appendAvailabilityLinkSection({

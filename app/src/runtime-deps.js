@@ -234,6 +234,27 @@ export function createRuntimeDeps() {
       );
     },
 
+    async putAvailabilityLink(availabilityLinkTableName, item) {
+      await ddbClient.send(
+        new PutCommand({
+          TableName: availabilityLinkTableName,
+          Item: item,
+          ConditionExpression: "attribute_not_exists(tokenId)"
+        })
+      );
+    },
+
+    async getAvailabilityLink(availabilityLinkTableName, tokenId) {
+      const response = await ddbClient.send(
+        new GetCommand({
+          TableName: availabilityLinkTableName,
+          Key: { tokenId }
+        })
+      );
+
+      return response.Item ?? null;
+    },
+
     async createSecret(secretName, secretString) {
       const response = await secretsClient.send(
         new CreateSecretCommand({

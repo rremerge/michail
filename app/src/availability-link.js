@@ -18,6 +18,21 @@ function constantTimeEquals(left, right) {
   return crypto.timingSafeEqual(leftBuffer, rightBuffer);
 }
 
+export function createShortAvailabilityTokenId() {
+  // 12 random bytes in base64url yields a compact 16-char opaque ID.
+  return crypto.randomBytes(12).toString("base64url");
+}
+
+export function buildClientReference(displayName, fallbackEmail = "") {
+  const fallbackLocalPart = String(fallbackEmail ?? "").split("@")[0];
+  const source = String(displayName ?? "").trim() || fallbackLocalPart || "client";
+  const normalized = source
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return (normalized || "client").slice(0, 16);
+}
+
 export function parseAvailabilityLinkSecret(secretString) {
   const parsed = JSON.parse(secretString);
   const signingKey = String(parsed.signing_key ?? "").trim();

@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import { createRuntimeDeps } from "./runtime-deps.js";
-import { generateCandidateSlots } from "./slot-generator.js";
+import { DateTime, Interval } from "luxon";
 import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adapter.js";
 import { parseAvailabilityLinkSecret, validateAvailabilityLinkToken } from "./availability-link.js";
 
@@ -38,6 +38,48 @@ function parseAdvisingDays(value) {
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+function parseWeekOffset(queryStringParameters) {
+  const rawValue = String(queryStringParameters?.weekOffset ?? "0").trim();
+  const parsed = Number.parseInt(rawValue, 10);
+  if (Number.isNaN(parsed)) {
+    return 0;
+  }
+
+  return Math.min(Math.max(parsed, -8), 52);
+}
+
+function decodeClientHint(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  return raw
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 64);
+}
+
+function sanitizeClientDisplayName(value) {
+  const candidate = String(value ?? "").trim();
+  if (!candidate) {
+    return null;
+  }
+
+  return candidate.replace(/\s+/g, " ").slice(0, 64);
+}
+
+function normalizeClientReference(value) {
+  const candidate = String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 16);
+  return candidate || null;
 }
 
 function parseBody(event) {
@@ -482,45 +524,144 @@ function escapeHtml(rawValue) {
     .replaceAll("'", "&#39;");
 }
 
-function formatInTimezone(isoUtc, timezone) {
-  return new Intl.DateTimeFormat("en-US", {
-    timeZone: timezone,
-    weekday: "short",
-    month: "short",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: true,
-    timeZoneName: "short"
-  }).format(new Date(isoUtc));
-}
-
-function groupAvailabilityByDay({ suggestions, hostTimezone, clientTimezone }) {
-  const grouped = new Map();
-
-  for (const suggestion of suggestions) {
-    const dayLabel = new Intl.DateTimeFormat("en-US", {
-      timeZone: hostTimezone,
-      weekday: "long",
-      month: "long",
-      day: "2-digit",
-      year: "numeric"
-    }).format(new Date(suggestion.startIsoUtc));
-
-    if (!grouped.has(dayLabel)) {
-      grouped.set(dayLabel, []);
-    }
-
-    grouped.get(dayLabel).push({
-      hostLabel: formatInTimezone(suggestion.startIsoUtc, hostTimezone),
-      clientLabel: clientTimezone ? formatInTimezone(suggestion.startIsoUtc, clientTimezone) : null
-    });
+function normalizeWeekdays(weekdays) {
+  const accepted = new Set();
+  for (const weekday of weekdays) {
+    accepted.add(String(weekday ?? "").slice(0, 3).toLowerCase());
   }
 
-  return grouped;
+  return accepted;
 }
 
-function buildAvailabilityPage({ suggestions, hostTimezone, clientTimezone, expiresAtMs }) {
+function buildAvailabilityCalendarModel({
+  busyIntervalsUtc,
+  hostTimezone,
+  clientTimezone,
+  advisingDays,
+  searchStartIso,
+  searchEndIso,
+  workdayStartHour,
+  workdayEndHour,
+  slotMinutes,
+  maxCells
+}) {
+  const acceptedWeekdays = normalizeWeekdays(advisingDays);
+  const searchStartUtc = DateTime.fromISO(searchStartIso, { zone: "utc" });
+  const searchEndUtc = DateTime.fromISO(searchEndIso, { zone: "utc" });
+  if (!searchStartUtc.isValid || !searchEndUtc.isValid || searchEndUtc <= searchStartUtc) {
+    return {
+      days: [],
+      rows: [],
+      openSlotCount: 0,
+      busySlotCount: 0
+    };
+  }
+
+  const busyIntervals = busyIntervalsUtc
+    .map((item) =>
+      Interval.fromDateTimes(
+        DateTime.fromISO(item.startIso, { zone: "utc" }),
+        DateTime.fromISO(item.endIso, { zone: "utc" })
+      )
+    )
+    .filter((interval) => interval.isValid);
+
+  let days = [];
+  let localDay = searchStartUtc.setZone(hostTimezone).startOf("day");
+  const finalLocalDay = searchEndUtc.setZone(hostTimezone).endOf("day");
+  while (localDay <= finalLocalDay) {
+    const localWeekday = localDay.toFormat("ccc").toLowerCase();
+    if (acceptedWeekdays.has(localWeekday)) {
+      days.push({
+        isoDate: localDay.toISODate(),
+        weekdayLabel: localDay.toFormat("EEE"),
+        dateLabel: localDay.toFormat("MMM dd"),
+        fullLabel: localDay.toFormat("cccc, MMMM dd, yyyy")
+      });
+    }
+
+    localDay = localDay.plus({ days: 1 });
+  }
+
+  if (days.length === 0) {
+    return {
+      days,
+      rows: [],
+      openSlotCount: 0,
+      busySlotCount: 0
+    };
+  }
+
+  const firstDay = DateTime.fromISO(days[0].isoDate, { zone: hostTimezone });
+  const dayStart = firstDay.set({ hour: workdayStartHour, minute: 0, second: 0, millisecond: 0 });
+  const dayEnd = firstDay.set({ hour: workdayEndHour, minute: 0, second: 0, millisecond: 0 });
+  const slotsPerDay = Math.max(1, Math.floor(dayEnd.diff(dayStart, "minutes").minutes / slotMinutes));
+  const safeMaxCells = Number.isFinite(maxCells) ? Math.max(24, Math.trunc(maxCells)) : 240;
+  if (days.length * slotsPerDay > safeMaxCells) {
+    const maxDays = Math.max(1, Math.floor(safeMaxCells / slotsPerDay));
+    days = days.slice(0, maxDays);
+  }
+
+  const rows = [];
+  let openSlotCount = 0;
+  let busySlotCount = 0;
+
+  let rowStart = dayStart;
+  while (rowStart.plus({ minutes: slotMinutes }) <= dayEnd) {
+    const rowOffsetMinutes = rowStart.diff(dayStart, "minutes").minutes;
+    const cells = days.map((day) => {
+      const dayDate = DateTime.fromISO(day.isoDate, { zone: hostTimezone });
+      const slotStartLocal = dayDate
+        .set({ hour: workdayStartHour, minute: 0, second: 0, millisecond: 0 })
+        .plus({ minutes: rowOffsetMinutes });
+      const slotEndLocal = slotStartLocal.plus({ minutes: slotMinutes });
+      const intervalUtc = Interval.fromDateTimes(slotStartLocal.toUTC(), slotEndLocal.toUTC());
+      const isBusy = busyIntervals.some((busyInterval) => busyInterval.overlaps(intervalUtc));
+      const hostLabel = slotStartLocal.toFormat("h:mm a");
+      const clientLabel = clientTimezone ? slotStartLocal.setZone(clientTimezone).toFormat("h:mm a") : null;
+
+      if (isBusy) {
+        busySlotCount += 1;
+      } else {
+        openSlotCount += 1;
+      }
+
+      return {
+        status: isBusy ? "busy" : "open",
+        hostLabel,
+        clientLabel
+      };
+    });
+
+    rows.push({
+      hostLabel: rowStart.toFormat("h:mm a"),
+      clientLabel: clientTimezone ? rowStart.setZone(clientTimezone).toFormat("h:mm a") : null,
+      cells
+    });
+
+    rowStart = rowStart.plus({ minutes: slotMinutes });
+  }
+
+  return {
+    days,
+    rows,
+    openSlotCount,
+    busySlotCount
+  };
+}
+
+function buildAvailabilityPage({
+  calendarModel,
+  hostTimezone,
+  clientTimezone,
+  expiresAtMs,
+  tokenParamName,
+  token,
+  weekOffset,
+  windowLabel,
+  clientDisplayName,
+  clientReference
+}) {
   const expiresAtLabel = new Date(expiresAtMs).toLocaleString("en-US", {
     timeZone: hostTimezone,
     year: "numeric",
@@ -530,26 +671,72 @@ function buildAvailabilityPage({ suggestions, hostTimezone, clientTimezone, expi
     minute: "2-digit",
     hour12: true
   });
-  const grouped = groupAvailabilityByDay({ suggestions, hostTimezone, clientTimezone });
-  const sections = [];
+  const headerCells = calendarModel.days
+    .map(
+      (day) =>
+        `<th scope="col" title="${escapeHtml(day.fullLabel)}"><div class="weekday">${escapeHtml(
+          day.weekdayLabel
+        )}</div><div class="date">${escapeHtml(day.dateLabel)}</div></th>`
+    )
+    .join("");
+  const bodyRows = calendarModel.rows
+    .map((row) => {
+      const slotCells = row.cells
+        .map((slot) => {
+          const clientSlotLabel = slot.clientLabel
+            ? `<div class="slot-client">${escapeHtml(slot.clientLabel)}</div>`
+            : "";
+          return `<td class="slot ${slot.status}">
+            <div class="slot-pill ${slot.status}">${slot.status === "busy" ? "Busy" : "Open"}</div>
+            <div class="slot-host">${escapeHtml(slot.hostLabel)}</div>
+            ${clientSlotLabel}
+          </td>`;
+        })
+        .join("");
 
-  for (const [dayLabel, daySlots] of grouped.entries()) {
-    const slotRows = daySlots
-      .map((slot) => {
-        const clientLine = slot.clientLabel
-          ? `<div class="client-time">Your timezone: ${escapeHtml(slot.clientLabel)} (${escapeHtml(clientTimezone)})</div>`
-          : "";
-        return `<li><div class="host-time">${escapeHtml(slot.hostLabel)} (${escapeHtml(hostTimezone)})</div>${clientLine}</li>`;
-      })
-      .join("");
-
-    sections.push(`<section class="day-card"><h2>${escapeHtml(dayLabel)}</h2><ul>${slotRows}</ul></section>`);
-  }
+      const rowClientLabel = row.clientLabel
+        ? `<div class="time-client">${escapeHtml(row.clientLabel)} client</div>`
+        : "";
+      return `<tr>
+        <th scope="row" class="time-cell">
+          <div class="time-host">${escapeHtml(row.hostLabel)}</div>
+          ${rowClientLabel}
+        </th>
+        ${slotCells}
+      </tr>`;
+    })
+    .join("");
 
   const availabilityBody =
-    sections.length > 0
-      ? sections.join("")
-      : '<section class="day-card"><h2>No open slots found</h2><p>Try again later for updated availability.</p></section>';
+    calendarModel.days.length > 0 && calendarModel.rows.length > 0
+      ? `<div class="calendar-scroll">
+          <table class="calendar-grid">
+            <thead>
+              <tr>
+                <th class="time-header">Time</th>
+                ${headerCells}
+              </tr>
+            </thead>
+            <tbody>${bodyRows}</tbody>
+          </table>
+        </div>`
+      : '<section class="empty"><h2>No advising windows configured</h2><p>No calendar columns were generated for the configured advising days.</p></section>';
+
+  const encodedToken = encodeURIComponent(token);
+  const encodedClientReference = clientReference ? encodeURIComponent(clientReference) : "";
+  const clientReferenceQuery = encodedClientReference ? `&for=${encodedClientReference}` : "";
+  const previousWeekOffset = weekOffset - 1;
+  const nextWeekOffset = weekOffset + 1;
+  const previousHref = `?${tokenParamName}=${encodedToken}&weekOffset=${previousWeekOffset}${clientReferenceQuery}`;
+  const nextHref = `?${tokenParamName}=${encodedToken}&weekOffset=${nextWeekOffset}${clientReferenceQuery}`;
+  const previousButton =
+    previousWeekOffset < -8
+      ? '<span class="nav-link disabled" aria-disabled="true">&lt; Previous Week</span>'
+      : `<a class="nav-link" href="${escapeHtml(previousHref)}">&lt; Previous Week</a>`;
+  const nextButton =
+    nextWeekOffset > 52
+      ? '<span class="nav-link disabled" aria-disabled="true">Next Week &gt;</span>'
+      : `<a class="nav-link" href="${escapeHtml(nextHref)}">Next Week &gt;</a>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -559,27 +746,66 @@ function buildAvailabilityPage({ suggestions, hostTimezone, clientTimezone, expi
     <title>Advisor Availability</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 24px; color: #111827; background: #f8fafc; }
-      main { max-width: 920px; margin: 0 auto; }
+      main { max-width: 1200px; margin: 0 auto; }
       h1 { margin-bottom: 8px; }
-      .muted { color: #4b5563; margin-top: 0; }
-      .day-card { background: #fff; border: 1px solid #d1d5db; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
-      .day-card h2 { margin-top: 0; font-size: 18px; }
-      ul { margin: 0; padding-left: 20px; }
-      li { margin-bottom: 10px; }
-      .host-time { font-weight: 600; }
-      .client-time { font-size: 14px; color: #374151; margin-top: 2px; }
-      .note { font-size: 13px; color: #4b5563; margin-top: 18px; }
       code { background: #eef2ff; border-radius: 4px; padding: 1px 4px; }
+      .muted { color: #4b5563; margin-top: 0; }
+      .legend { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; color: #374151; font-size: 14px; }
+      .legend-pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font-weight: 600; font-size: 12px; border: 1px solid; }
+      .legend-pill.open { background: #e8f5e9; color: #065f46; border-color: #9dd7a6; }
+      .legend-pill.busy { background: #eceff1; color: #374151; border-color: #cbd5e1; }
+      .summary { font-size: 14px; color: #374151; margin-bottom: 12px; }
+      .week-nav { display: flex; align-items: center; justify-content: space-between; margin: 14px 0; gap: 10px; }
+      .week-range { font-size: 14px; font-weight: 700; color: #0f172a; text-align: center; flex: 1; }
+      .nav-link { text-decoration: none; color: #1d4ed8; font-size: 14px; font-weight: 600; }
+      .nav-link:hover { text-decoration: underline; }
+      .nav-link.disabled { color: #94a3b8; pointer-events: none; }
+      .calendar-scroll { overflow: auto; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; }
+      .calendar-grid { width: 100%; min-width: 920px; border-collapse: separate; border-spacing: 0; }
+      .calendar-grid thead th { position: sticky; top: 0; background: #f1f5f9; z-index: 2; border-bottom: 1px solid #cbd5e1; }
+      .calendar-grid th, .calendar-grid td { border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; padding: 8px; vertical-align: top; }
+      .calendar-grid th:last-child, .calendar-grid td:last-child { border-right: 0; }
+      .weekday { font-size: 12px; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; }
+      .date { font-size: 14px; font-weight: 700; color: #0f172a; }
+      .time-header { width: 110px; min-width: 110px; text-align: left; }
+      .time-cell { width: 110px; min-width: 110px; background: #f8fafc; }
+      .time-host { font-size: 12px; font-weight: 700; color: #0f172a; }
+      .time-client { font-size: 11px; color: #64748b; margin-top: 2px; }
+      .slot { min-height: 60px; }
+      .slot.open { background: #f4fbf6; }
+      .slot.busy { background: #f8fafc; }
+      .slot-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid; }
+      .slot-pill.open { color: #065f46; background: #dcfce7; border-color: #86efac; }
+      .slot-pill.busy { color: #334155; background: #e2e8f0; border-color: #cbd5e1; }
+      .slot-host { margin-top: 6px; font-size: 12px; font-weight: 600; color: #1f2937; }
+      .slot-client { font-size: 11px; color: #475569; margin-top: 2px; }
+      .empty { background: #fff; border: 1px solid #d1d5db; border-radius: 10px; padding: 16px; }
+      .note { font-size: 13px; color: #4b5563; margin-top: 16px; }
     </style>
   </head>
   <body>
     <main>
       <h1>Available Times</h1>
-      <p class="muted">These are open slots only. Busy meeting details are hidden for privacy.</p>
+      ${
+        clientDisplayName
+          ? `<p class="muted">Availability for <code>${escapeHtml(clientDisplayName)}</code></p>`
+          : ""
+      }
+      <p class="muted">Calendar-style view of open and busy blocks. Busy meeting details are hidden for privacy.</p>
       <p class="muted">Advisor timezone: <code>${escapeHtml(hostTimezone)}</code>${
         clientTimezone ? ` | Your timezone: <code>${escapeHtml(clientTimezone)}</code>` : ""
       }</p>
       <p class="muted">Link expires: ${escapeHtml(expiresAtLabel)} (${escapeHtml(hostTimezone)})</p>
+      <div class="legend">
+        <span class="legend-pill open">Open</span>
+        <span class="legend-pill busy">Busy</span>
+      </div>
+      <p class="summary">Open slots: ${calendarModel.openSlotCount} | Busy blocks: ${calendarModel.busySlotCount}</p>
+      <div class="week-nav">
+        ${previousButton}
+        <div class="week-range">${escapeHtml(windowLabel)}</div>
+        ${nextButton}
+      </div>
       ${availabilityBody}
       <p class="note">Reply to the email with the time that works best and the agent will continue the booking flow.</p>
     </main>
@@ -1117,6 +1343,7 @@ export function createPortalHandler(overrides = {}) {
     const googleAppSecretArn = process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
     const sessionSecretArn = process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
     const availabilityLinkSecretArn = process.env.AVAILABILITY_LINK_SECRET_ARN;
+    const availabilityLinkTableName = process.env.AVAILABILITY_LINK_TABLE_NAME;
     const googleOauthSecretArn = process.env.GOOGLE_OAUTH_SECRET_ARN;
     const calendarMode = (process.env.CALENDAR_MODE ?? "connection").toLowerCase();
     const hostTimezone = normalizeTimezone(process.env.HOST_TIMEZONE, "America/Los_Angeles");
@@ -1124,6 +1351,7 @@ export function createPortalHandler(overrides = {}) {
     const searchDays = parseClampedIntEnv(process.env.SEARCH_DAYS, 14, 1, 31);
     const workdayStartHour = parseClampedIntEnv(process.env.WORKDAY_START_HOUR, 9, 0, 23);
     const workdayEndHour = parseClampedIntEnv(process.env.WORKDAY_END_HOUR, 17, 1, 24);
+    const normalizedWorkdayEndHour = Math.min(24, Math.max(workdayEndHour, workdayStartHour + 1));
     const defaultDurationMinutes = parseClampedIntEnv(process.env.DEFAULT_DURATION_MINUTES, 30, 15, 180);
     const maxDurationMinutes = parseClampedIntEnv(process.env.MAX_DURATION_MINUTES, 120, 15, 240);
     const availabilityViewMaxSlots = parseClampedIntEnv(process.env.AVAILABILITY_VIEW_MAX_SLOTS, 240, 24, 1200);
@@ -1134,38 +1362,89 @@ export function createPortalHandler(overrides = {}) {
     }
 
     if (method === "GET" && rawPath === "/availability") {
-      const token = String(event.queryStringParameters?.token ?? "").trim();
-      if (!token) {
+      const shortToken = String(event.queryStringParameters?.t ?? "").trim();
+      const legacyToken = String(event.queryStringParameters?.token ?? "").trim();
+      if (!shortToken && !legacyToken) {
         return availabilityErrorPage("Missing availability token.");
       }
+      const weekOffset = parseWeekOffset(event.queryStringParameters);
+      const clientHint = decodeClientHint(event.queryStringParameters?.for);
+      const clientHintReference = normalizeClientReference(event.queryStringParameters?.for);
 
-      if (!availabilityLinkSecretArn) {
-        return serverError("AVAILABILITY_LINK_SECRET_ARN is required");
+      let tokenParamName = "token";
+      let linkClientDisplayName = clientHint;
+      let linkClientReference = clientHintReference;
+      let linkClientTimezone = null;
+      let requestedDuration = null;
+      let linkExpiresAtMs = Date.now();
+      let effectiveToken = legacyToken;
+
+      if (shortToken) {
+        tokenParamName = "t";
+        effectiveToken = shortToken;
+
+        if (!availabilityLinkTableName) {
+          return serverError("AVAILABILITY_LINK_TABLE_NAME is required");
+        }
+
+        const linkRecord = await deps.getAvailabilityLink(availabilityLinkTableName, shortToken);
+        if (!linkRecord) {
+          return availabilityErrorPage("Invalid or expired availability link.");
+        }
+
+        const recordExpiresAtMs = Number(linkRecord.expiresAtMs ?? 0);
+        if (!Number.isFinite(recordExpiresAtMs) || recordExpiresAtMs <= Date.now()) {
+          return availabilityErrorPage("Invalid or expired availability link.");
+        }
+
+        if (String(linkRecord.advisorId ?? "") !== advisorId) {
+          return availabilityErrorPage("This availability link is not valid for this advisor.");
+        }
+
+        linkClientDisplayName = sanitizeClientDisplayName(linkRecord.clientDisplayName) ?? clientHint;
+        linkClientReference = normalizeClientReference(linkRecord.clientReference) ?? clientHintReference;
+        linkClientTimezone = normalizeOptionalTimezone(linkRecord.clientTimezone);
+        requestedDuration = Number(linkRecord.durationMinutes);
+        linkExpiresAtMs = recordExpiresAtMs;
+      } else {
+        if (!availabilityLinkSecretArn) {
+          return serverError("AVAILABILITY_LINK_SECRET_ARN is required");
+        }
+
+        let linkSecret;
+        try {
+          linkSecret = parseAvailabilityLinkSecret(await deps.getSecretString(availabilityLinkSecretArn));
+        } catch (error) {
+          return serverError(error.message);
+        }
+
+        const tokenPayload = validateAvailabilityLinkToken(legacyToken, linkSecret.signingKey);
+        if (!tokenPayload) {
+          return availabilityErrorPage("Invalid or expired availability link.");
+        }
+
+        if (tokenPayload.advisorId !== advisorId) {
+          return availabilityErrorPage("This availability link is not valid for this advisor.");
+        }
+
+        requestedDuration = Number(tokenPayload.durationMinutes);
+        linkClientTimezone = normalizeOptionalTimezone(tokenPayload.clientTimezone);
+        linkExpiresAtMs = Number(tokenPayload.expiresAtMs);
       }
 
-      let linkSecret;
-      try {
-        linkSecret = parseAvailabilityLinkSecret(await deps.getSecretString(availabilityLinkSecretArn));
-      } catch (error) {
-        return serverError(error.message);
-      }
-
-      const tokenPayload = validateAvailabilityLinkToken(token, linkSecret.signingKey);
-      if (!tokenPayload) {
-        return availabilityErrorPage("Invalid or expired availability link.");
-      }
-
-      if (tokenPayload.advisorId !== advisorId) {
-        return availabilityErrorPage("This availability link is not valid for this advisor.");
-      }
-
-      const requestedDuration = Number(tokenPayload.durationMinutes);
       const durationMinutes = Number.isFinite(requestedDuration)
         ? Math.min(Math.max(requestedDuration, 15), maxDurationMinutes)
         : defaultDurationMinutes;
       const nowMs = Date.now();
-      const searchStartIso = new Date(nowMs).toISOString();
-      const searchEndIso = new Date(nowMs + searchDays * 24 * 60 * 60 * 1000).toISOString();
+      const baseWeekStartLocal = DateTime.fromMillis(nowMs, { zone: hostTimezone }).startOf("week");
+      const searchStartLocal = baseWeekStartLocal.plus({ weeks: weekOffset });
+      const searchEndLocal = searchStartLocal.plus({ days: searchDays });
+      const searchStartIso = searchStartLocal.toUTC().toISO();
+      const searchEndIso = searchEndLocal.toUTC().toISO();
+      const windowEndLabelLocal = searchEndLocal.minus({ days: 1 });
+      const windowLabel = `${searchStartLocal.toFormat("MMM dd, yyyy")} - ${windowEndLabelLocal.toFormat(
+        "MMM dd, yyyy"
+      )}`;
 
       let busyIntervals;
       try {
@@ -1182,26 +1461,32 @@ export function createPortalHandler(overrides = {}) {
         return serverError(`availability lookup failed: ${error.message}`);
       }
 
-      const suggestions = generateCandidateSlots({
+      const calendarModel = buildAvailabilityCalendarModel({
         busyIntervalsUtc: busyIntervals,
-        requestedWindowsUtc: [],
         hostTimezone,
-        advisingWeekdays: advisingDays,
-        searchStartUtc: searchStartIso,
-        searchEndUtc: searchEndIso,
+        clientTimezone: linkClientTimezone,
+        advisingDays,
+        searchStartIso,
+        searchEndIso,
         workdayStartHour,
-        workdayEndHour,
-        durationMinutes,
-        maxSuggestions: availabilityViewMaxSlots
+        workdayEndHour: normalizedWorkdayEndHour,
+        slotMinutes: durationMinutes,
+        maxCells: availabilityViewMaxSlots
       });
 
       return htmlResponse(
         200,
         buildAvailabilityPage({
-          suggestions,
+          calendarModel,
           hostTimezone,
-          clientTimezone: normalizeOptionalTimezone(tokenPayload.clientTimezone),
-          expiresAtMs: tokenPayload.expiresAtMs
+          clientTimezone: linkClientTimezone,
+          expiresAtMs: linkExpiresAtMs,
+          tokenParamName,
+          token: effectiveToken,
+          weekOffset,
+          windowLabel,
+          clientDisplayName: linkClientDisplayName,
+          clientReference: linkClientReference
         })
       );
     }

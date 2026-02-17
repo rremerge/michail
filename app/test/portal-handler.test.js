@@ -1,8 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
+import { DateTime } from "luxon";
 import { createPortalHandler } from "../src/portal-handler.js";
-import { createAvailabilityLinkToken } from "../src/availability-link.js";
 
 function toBasicAuthorization(username, password) {
   return `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}`;
@@ -707,15 +707,22 @@ test("advisor portal can submit feedback for a trace", async () => {
   }
 });
 
-test("availability page renders open slots for valid signed token", async () => {
-  const signingKey = "availability-signing-key";
+test("availability page renders open slots for valid short token", async () => {
+  const tokenId = "abcdefghijklmnop";
+  const nowMs = Date.now();
   const handler = createPortalHandler({
-    async getSecretString(secretArn) {
-      if (secretArn.endsWith(":secret:availability")) {
-        return JSON.stringify({ signing_key: signingKey });
-      }
-
-      throw new Error(`unexpected secret arn: ${secretArn}`);
+    async getAvailabilityLink(tableName, suppliedTokenId) {
+      assert.equal(tableName, "AvailabilityLinkTable");
+      assert.equal(suppliedTokenId, tokenId);
+      return {
+        tokenId,
+        advisorId: "manoj",
+        clientDisplayName: "Tito Needa",
+        clientReference: "tito-needa",
+        clientTimezone: "America/New_York",
+        durationMinutes: 30,
+        expiresAtMs: nowMs + 60 * 60 * 1000
+      };
     },
     async getPrimaryConnection(tableName, suppliedAdvisorId) {
       assert.equal(tableName, "ConnectionsTable");
@@ -731,7 +738,7 @@ test("availability page renders open slots for valid signed token", async () => 
   const previousValues = {
     ADVISOR_ID: process.env.ADVISOR_ID,
     ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
-    AVAILABILITY_LINK_SECRET_ARN: process.env.AVAILABILITY_LINK_SECRET_ARN,
+    AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
     CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
     CALENDAR_MODE: process.env.CALENDAR_MODE,
     HOST_TIMEZONE: process.env.HOST_TIMEZONE,
@@ -746,7 +753,7 @@ test("availability page renders open slots for valid signed token", async () => 
 
   process.env.ADVISOR_ID = "manoj";
   process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
-  process.env.AVAILABILITY_LINK_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:availability";
+  process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
   process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
   process.env.CALENDAR_MODE = "connection";
   process.env.HOST_TIMEZONE = "America/Los_Angeles";
@@ -758,22 +765,12 @@ test("availability page renders open slots for valid signed token", async () => 
   process.env.MAX_DURATION_MINUTES = "120";
   process.env.AVAILABILITY_VIEW_MAX_SLOTS = "96";
 
-  const nowMs = Date.now();
-  const token = createAvailabilityLinkToken(
-    {
-      advisorId: "manoj",
-      issuedAtMs: nowMs,
-      expiresAtMs: nowMs + 60 * 60 * 1000,
-      clientTimezone: "America/New_York",
-      durationMinutes: 30
-    },
-    signingKey
-  );
-
   try {
     const response = await handler({
       queryStringParameters: {
-        token
+        t: tokenId,
+        for: "tito-needa",
+        weekOffset: "2"
       },
       requestContext: {
         stage: "dev",
@@ -785,8 +782,17 @@ test("availability page renders open slots for valid signed token", async () => 
     assert.equal(response.statusCode, 200);
     assert.match(response.headers["content-type"], /text\/html/);
     assert.match(response.body, /Available Times/);
-    assert.match(response.body, /open slots only/i);
+    assert.match(response.body, /open and busy blocks/i);
+    assert.match(response.body, /calendar-grid/);
+    assert.match(response.body, />Open</);
+    assert.match(response.body, />Busy</);
+    assert.match(response.body, /Previous Week/);
+    assert.match(response.body, /Next Week/);
+    assert.match(response.body, /weekOffset=1/);
+    assert.match(response.body, /weekOffset=3/);
     assert.match(response.body, /Your timezone/);
+    assert.match(response.body, /Availability for/);
+    assert.match(response.body, /Tito Needa/);
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {
@@ -800,20 +806,20 @@ test("availability page renders open slots for valid signed token", async () => 
 
 test("availability page rejects invalid token", async () => {
   const handler = createPortalHandler({
-    async getSecretString() {
-      return JSON.stringify({ signing_key: "availability-signing-key" });
+    async getAvailabilityLink() {
+      return null;
     }
   });
 
   const previousAuthMode = process.env.ADVISOR_PORTAL_AUTH_MODE;
-  const previousSecretArn = process.env.AVAILABILITY_LINK_SECRET_ARN;
+  const previousTableName = process.env.AVAILABILITY_LINK_TABLE_NAME;
   process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
-  process.env.AVAILABILITY_LINK_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:availability";
+  process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
 
   try {
     const response = await handler({
       queryStringParameters: {
-        token: "invalid-token"
+        t: "invalidtoken1234"
       },
       requestContext: {
         stage: "dev",
@@ -831,10 +837,103 @@ test("availability page rejects invalid token", async () => {
       process.env.ADVISOR_PORTAL_AUTH_MODE = previousAuthMode;
     }
 
-    if (previousSecretArn === undefined) {
-      delete process.env.AVAILABILITY_LINK_SECRET_ARN;
+    if (previousTableName === undefined) {
+      delete process.env.AVAILABILITY_LINK_TABLE_NAME;
     } else {
-      process.env.AVAILABILITY_LINK_SECRET_ARN = previousSecretArn;
+      process.env.AVAILABILITY_LINK_TABLE_NAME = previousTableName;
+    }
+  }
+});
+
+test("availability page shows busy blocks without exposing meeting details", async () => {
+  const tokenId = "busybusybusybusy";
+  const nowMs = Date.now();
+  const handler = createPortalHandler({
+    async getAvailabilityLink(tableName, suppliedTokenId) {
+      assert.equal(tableName, "AvailabilityLinkTable");
+      assert.equal(suppliedTokenId, tokenId);
+      return {
+        tokenId,
+        advisorId: "manoj",
+        clientDisplayName: "Titoneeda",
+        durationMinutes: 30,
+        expiresAtMs: nowMs + 60 * 60 * 1000
+      };
+    },
+    async getSecretString(secretArn) {
+      if (secretArn.endsWith(":secret:google")) {
+        return JSON.stringify({
+          client_id: "google-client-id",
+          client_secret: "google-client-secret",
+          refresh_token: "refresh-token",
+          calendar_ids: ["primary"]
+        });
+      }
+
+      throw new Error(`unexpected secret arn: ${secretArn}`);
+    },
+    async lookupBusyIntervals({ windowStartIso }) {
+      const busyStart = DateTime.fromISO(windowStartIso, { zone: "utc" })
+        .setZone("America/Los_Angeles")
+        .set({ hour: 9, minute: 0, second: 0, millisecond: 0 })
+        .toUTC();
+      return [
+        {
+          startIso: busyStart.toISO(),
+          endIso: busyStart.plus({ minutes: 30 }).toISO(),
+          title: "Quarterly Board Review"
+        }
+      ];
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    CALENDAR_MODE: process.env.CALENDAR_MODE,
+    GOOGLE_OAUTH_SECRET_ARN: process.env.GOOGLE_OAUTH_SECRET_ARN,
+    HOST_TIMEZONE: process.env.HOST_TIMEZONE,
+    ADVISING_DAYS: process.env.ADVISING_DAYS,
+    SEARCH_DAYS: process.env.SEARCH_DAYS,
+    WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR
+  };
+
+  process.env.ADVISOR_ID = "manoj";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  process.env.CALENDAR_MODE = "google";
+  process.env.GOOGLE_OAUTH_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:google";
+  process.env.HOST_TIMEZONE = "America/Los_Angeles";
+  process.env.ADVISING_DAYS = "Mon,Tue,Wed,Thu,Fri,Sat,Sun";
+  process.env.SEARCH_DAYS = "7";
+  process.env.WORKDAY_START_HOUR = "9";
+  process.env.WORKDAY_END_HOUR = "11";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        t: tokenId
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/availability"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.body, /class="slot busy"/);
+    assert.match(response.body, /Busy blocks: [1-9]/);
+    assert.equal(response.body.includes("Quarterly Board Review"), false);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
     }
   }
 });

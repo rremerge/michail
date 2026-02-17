@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DateTime } from "luxon";
 import { createHandler, processSchedulingEmail, processSchedulingFeedback } from "../src/handler.js";
-import { validateAvailabilityLinkToken } from "../src/availability-link.js";
 
 const baseEnv = {
   TRACE_TABLE_NAME: "TraceTable",
@@ -274,14 +273,14 @@ test("processSchedulingEmail sends email when RESPONSE_MODE=send", async () => {
   assert.equal(sentMessages[0].recipientEmail, "client@example.com");
 });
 
-test("processSchedulingEmail appends signed availability link when configured", async () => {
+test("processSchedulingEmail appends short availability link when configured", async () => {
   const sentMessages = [];
   const traceItems = [];
-  const signingKey = "test-availability-signing-key";
+  const savedLinks = [];
   const deps = {
-    async getSecretString(secretArn) {
-      assert.equal(secretArn, "arn:availability-link-secret");
-      return JSON.stringify({ signing_key: signingKey });
+    async putAvailabilityLink(tableName, item) {
+      assert.equal(tableName, "AvailabilityLinkTable");
+      savedLinks.push(item);
     },
     async writeTrace(_tableName, item) {
       traceItems.push(item);
@@ -296,14 +295,14 @@ test("processSchedulingEmail appends signed availability link when configured", 
     RESPONSE_MODE: "send",
     SENDER_EMAIL: "manoj@example.com",
     AVAILABILITY_LINK_BASE_URL: "https://example.test/availability",
-    AVAILABILITY_LINK_SECRET_ARN: "arn:availability-link-secret",
+    AVAILABILITY_LINK_TABLE_NAME: "AvailabilityLinkTable",
     AVAILABILITY_LINK_TTL_MINUTES: "60"
   };
 
   const startedAtMs = Date.parse("2026-03-03T00:00:00Z");
   const result = await processSchedulingEmail({
     payload: {
-      fromEmail: "client@example.com",
+      fromEmail: "\"Tito Needa\" <titoneeda@gmail.com>",
       subject: "Chat"
     },
     env,
@@ -314,18 +313,21 @@ test("processSchedulingEmail appends signed availability link when configured", 
   assert.equal(result.http.statusCode, 200);
   assert.equal(sentMessages.length, 1);
   assert.equal(traceItems.length, 1);
+  assert.equal(savedLinks.length, 1);
   assert.equal(traceItems[0].availabilityLinkStatus, "included");
-  assert.match(sentMessages[0].bodyText, /Availability link:\s+https:\/\/example\.test\/availability\?token=/);
+  assert.match(sentMessages[0].bodyText, /Availability link:\s+https:\/\/example\.test\/availability\?t=/);
 
   const linkMatch = sentMessages[0].bodyText.match(/Availability link:\s+(https:\/\/\S+)/);
   assert.ok(linkMatch);
   const link = new URL(linkMatch[1]);
-  const token = link.searchParams.get("token");
-  assert.ok(token);
-  const tokenPayload = validateAvailabilityLinkToken(token, signingKey, startedAtMs + 5 * 60 * 1000);
-  assert.ok(tokenPayload);
-  assert.equal(tokenPayload.advisorId, "manoj");
-  assert.equal(tokenPayload.durationMinutes, 30);
+  const tokenId = link.searchParams.get("t");
+  assert.ok(tokenId);
+  assert.equal(tokenId.length, 16);
+  assert.equal(link.searchParams.get("for"), "tito-needa");
+  assert.equal(savedLinks[0].tokenId, tokenId);
+  assert.equal(savedLinks[0].advisorId, "manoj");
+  assert.equal(savedLinks[0].clientDisplayName, "Tito Needa");
+  assert.equal(savedLinks[0].durationMinutes, 30);
 });
 
 test("processSchedulingEmail normalizes sender address and domain from formatted header", async () => {
