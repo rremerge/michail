@@ -23,6 +23,7 @@ test("template defines isolated serverless resources", () => {
   assert.match(template, /Path:\s*\/advisor\/api\/traces\/\{requestId\}/);
   assert.match(template, /Path:\s*\/advisor\/api\/traces\/\{requestId\}\/feedback/);
   assert.match(template, /TRACE_TABLE_NAME/);
+  assert.match(template, /INTENT_EXTRACTION_MODE/);
   assert.match(template, /InboundRawEmailBucket/);
   assert.match(template, /RAW_EMAIL_BUCKET/);
 

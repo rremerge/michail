@@ -132,6 +132,9 @@ Useful overrides:
 - `RULE_NAME=agent-inbound`
 - `RECIPIENT_EMAIL=agent@agent.letsconnect.ai`
 - `SENDER_EMAIL=agent@agent.letsconnect.ai`
+- `INTENT_EXTRACTION_MODE=llm_hybrid`
+- `INTENT_LLM_TIMEOUT_MS=10000`
+- `INTENT_LLM_CONFIDENCE_THRESHOLD=0.65`
 - `RAW_MAIL_PREFIX=raw/`
 
 ## Supportability Hooks (Feedback + Debug)
@@ -202,14 +205,19 @@ aws secretsmanager put-secret-value \
 3. Open `AdvisorPortalUrl`, click `Connect Google`, complete consent.
 
 ## LLM Integration For Email Drafting
-The scheduler remains deterministic; LLM is used only for drafting outbound email text.
+The scheduler remains deterministic for slot generation. LLM is used for:
+1. Drafting outbound email text.
+2. Hybrid intent extraction of requested time windows from natural language email.
+
+When LLM drafting is enabled, outbound email still appends a deterministic human-readable options block
+(weekday + date + local time labels) so recipients do not need to interpret UTC/ISO timestamps.
 
 1. Set provider secret in `LlmProviderSecretArn`:
 
 ```bash
 aws secretsmanager put-secret-value \
   --secret-id <LlmProviderSecretArn> \
-  --secret-string '{"provider":"openai","api_key":"<openai-api-key>","model":"gpt-5-mini","endpoint":"https://api.openai.com/v1/chat/completions"}'
+  --secret-string '{"provider":"openai","api_key":"<openai-api-key>","model":"gpt-5.2","endpoint":"https://api.openai.com/v1/chat/completions"}'
 ```
 
 2. Redeploy with LLM enabled:
@@ -218,11 +226,20 @@ aws secretsmanager put-secret-value \
 sam deploy \
   --stack-name calendar-agent-spike-dev \
   --capabilities CAPABILITY_IAM \
-  --parameter-overrides CalendarMode=connection ResponseMode=send LlmMode=openai
+  --parameter-overrides \
+    CalendarMode=connection \
+    ResponseMode=send \
+    LlmMode=openai \
+    IntentExtractionMode=llm_hybrid
 ```
 
 3. Run the end-to-end call and confirm response includes `llmStatus: "ok"` (falls back to template when unavailable).
 Default LLM timeout is `15000ms` (`LlmTimeoutMs` parameter).
+Default intent extraction timeout is `10000ms` (`IntentLlmTimeoutMs`) with confidence threshold `0.65` (`IntentLlmConfidenceThreshold`).
+
+Intent extraction modes:
+- `IntentExtractionMode=llm_hybrid` (default): parser + LLM extraction with validator and fallback.
+- `IntentExtractionMode=parser`: deterministic parser only.
 
 ## Switch to Real Google Calendar Lookup
 1. Update the secret value using `GoogleOAuthSecretArn` output:

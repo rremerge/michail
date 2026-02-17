@@ -2,10 +2,12 @@ import crypto from "node:crypto";
 import { parseSchedulingRequest } from "./intent-parser.js";
 import { generateCandidateSlots } from "./slot-generator.js";
 import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adapter.js";
-import { draftResponseWithOpenAi, parseOpenAiConfigSecret } from "./llm-adapter.js";
-import { buildClientResponse } from "./response-builder.js";
+import { draftResponseWithOpenAi, extractSchedulingIntentWithOpenAi, parseOpenAiConfigSecret } from "./llm-adapter.js";
+import { buildClientResponse, buildHumanReadableOptions } from "./response-builder.js";
 import { createRuntimeDeps } from "./runtime-deps.js";
 import { simpleParser } from "mailparser";
+
+const DEFAULT_INTENT_CONFIDENCE_THRESHOLD = 0.65;
 
 function parseIntEnv(value, fallback) {
   const parsed = Number.parseInt(value ?? "", 10);
@@ -27,6 +29,80 @@ function normalizeRequestedWindowsToUtc(requestedWindows) {
       };
     })
     .filter(Boolean);
+}
+
+function mergeParsedIntent({
+  parserIntent,
+  llmIntent,
+  confidenceThreshold = DEFAULT_INTENT_CONFIDENCE_THRESHOLD
+}) {
+  if (!llmIntent) {
+    return {
+      parsed: parserIntent,
+      intentSource: "parser"
+    };
+  }
+
+  const llmWindows = Array.isArray(llmIntent.requestedWindows) ? llmIntent.requestedWindows : [];
+  const parserWindows = Array.isArray(parserIntent.requestedWindows) ? parserIntent.requestedWindows : [];
+  const shouldUseLlmWindows =
+    llmWindows.length > 0 && (parserWindows.length === 0 || Number(llmIntent.confidence ?? 0) >= confidenceThreshold);
+
+  if (!shouldUseLlmWindows) {
+    return {
+      parsed: {
+        ...parserIntent,
+        clientTimezone: parserIntent.clientTimezone ?? llmIntent.clientTimezone ?? null
+      },
+      intentSource: "parser"
+    };
+  }
+
+  return {
+    parsed: {
+      ...parserIntent,
+      requestedWindows: llmWindows,
+      clientTimezone: parserIntent.clientTimezone ?? llmIntent.clientTimezone ?? null
+    },
+    intentSource: parserWindows.length > 0 ? "llm_override" : "llm"
+  };
+}
+
+function appendHumanReadableOptionsSection({
+  responseMessage,
+  suggestions,
+  hostTimezone,
+  clientTimezone
+}) {
+  if (!Array.isArray(suggestions) || suggestions.length === 0) {
+    return responseMessage;
+  }
+
+  const optionLines = buildHumanReadableOptions({
+    suggestions,
+    hostTimezone,
+    clientTimezone
+  });
+  if (!optionLines) {
+    return responseMessage;
+  }
+
+  const bodyText = String(responseMessage.bodyText ?? "").trim();
+  const bodyWithReadableOptions = [
+    bodyText,
+    "",
+    "Suggested options in local time:",
+    optionLines,
+    "",
+    "Reply with the option number that works for you."
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return {
+    ...responseMessage,
+    bodyText: bodyWithReadableOptions
+  };
 }
 
 function normalizeEmailAddress(rawValue) {
@@ -361,13 +437,59 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const llmMode = (env.LLM_MODE ?? "disabled").toLowerCase();
   const llmTimeoutMs = parseIntEnv(env.LLM_TIMEOUT_MS, 4000);
   const llmProviderSecretArn = env.LLM_PROVIDER_SECRET_ARN ?? "";
+  const intentExtractionMode = (env.INTENT_EXTRACTION_MODE ?? "llm_hybrid").toLowerCase();
+  const intentLlmTimeoutMs = parseIntEnv(env.INTENT_LLM_TIMEOUT_MS, 10000);
+  const intentConfidenceThreshold = Number.parseFloat(
+    env.INTENT_LLM_CONFIDENCE_THRESHOLD ?? String(DEFAULT_INTENT_CONFIDENCE_THRESHOLD)
+  );
 
-  const parsed = parseSchedulingRequest({
+  const parserIntent = parseSchedulingRequest({
     fromEmail,
     subject: payload.subject ?? "",
     body: bodyText,
-    defaultDurationMinutes: durationDefault
+    defaultDurationMinutes: durationDefault,
+    fallbackTimezone: hostTimezone,
+    referenceIso: startedAtIso
   });
+
+  let parsed = parserIntent;
+  let intentSource = "parser";
+  let intentLlmStatus = "disabled";
+
+  if (intentExtractionMode === "llm_hybrid") {
+    try {
+      if (!llmProviderSecretArn) {
+        throw new Error("LLM_PROVIDER_SECRET_ARN is required for INTENT_EXTRACTION_MODE=llm_hybrid");
+      }
+
+      const llmSecretString = await deps.getSecretString(llmProviderSecretArn);
+      const openAiConfig = parseOpenAiConfigSecret(llmSecretString);
+      const llmIntent = await deps.extractSchedulingIntentWithLlm({
+        openAiConfig,
+        subject: payload.subject ?? "",
+        body: bodyText,
+        hostTimezone,
+        referenceNowIso: startedAtIso,
+        fetchImpl: deps.fetchImpl,
+        timeoutMs: intentLlmTimeoutMs
+      });
+
+      const merged = mergeParsedIntent({
+        parserIntent,
+        llmIntent,
+        confidenceThreshold: Number.isFinite(intentConfidenceThreshold)
+          ? intentConfidenceThreshold
+          : DEFAULT_INTENT_CONFIDENCE_THRESHOLD
+      });
+      parsed = merged.parsed;
+      intentSource = merged.intentSource;
+      intentLlmStatus = "ok";
+    } catch {
+      parsed = parserIntent;
+      intentSource = "parser";
+      intentLlmStatus = "fallback";
+    }
+  }
 
   if (parsed.durationMinutes > durationLimit) {
     return { http: badRequest(`duration exceeds limit (${durationLimit} minutes)`) };
@@ -439,6 +561,9 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       providerStatus,
       errorCode: "CALENDAR_LOOKUP_FAILED",
       bodySource,
+      intentSource,
+      intentLlmStatus,
+      requestedWindowCount: parsed.requestedWindows.length,
       createdAt: startedAtIso,
       updatedAt: new Date(now()).toISOString(),
       fromDomain,
@@ -489,6 +614,12 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         fetchImpl: deps.fetchImpl,
         timeoutMs: llmTimeoutMs
       });
+      responseMessage = appendHumanReadableOptionsSection({
+        responseMessage,
+        suggestions,
+        hostTimezone,
+        clientTimezone: parsed.clientTimezone
+      });
       llmStatus = "ok";
     } catch {
       llmStatus = "fallback";
@@ -532,6 +663,9 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     llmMode,
     llmStatus,
     bodySource,
+    intentSource,
+    intentLlmStatus,
+    requestedWindowCount: parsed.requestedWindows.length,
     createdAt: startedAtIso,
     updatedAt: new Date(completedAtMs).toISOString(),
     latencyMs: completedAtMs - startedAtMs,
@@ -556,6 +690,7 @@ export function createHandler(overrides = {}) {
     ...runtimeDeps,
     lookupBusyIntervals: lookupGoogleBusyIntervals,
     draftResponseWithLlm: draftResponseWithOpenAi,
+    extractSchedulingIntentWithLlm: extractSchedulingIntentWithOpenAi,
     ...overrides
   };
 

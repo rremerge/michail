@@ -13,6 +13,9 @@ RULE_SET_NAME="${RULE_SET_NAME:-${SAM_STACK_NAME}-inbound}"
 RULE_NAME="${RULE_NAME:-agent-inbound}"
 RECIPIENT_EMAIL="${RECIPIENT_EMAIL:-agent@agent.letsconnect.ai}"
 SENDER_EMAIL="${SENDER_EMAIL:-agent@agent.letsconnect.ai}"
+INTENT_EXTRACTION_MODE="${INTENT_EXTRACTION_MODE:-llm_hybrid}"
+INTENT_LLM_TIMEOUT_MS="${INTENT_LLM_TIMEOUT_MS:-10000}"
+INTENT_LLM_CONFIDENCE_THRESHOLD="${INTENT_LLM_CONFIDENCE_THRESHOLD:-0.65}"
 RAW_MAIL_PREFIX="${RAW_MAIL_PREFIX:-raw/}"
 RAW_MAIL_BUCKET_NAME="${RAW_MAIL_BUCKET_NAME:-}"
 SES_PERMISSION_STATEMENT_ID="${SES_PERMISSION_STATEMENT_ID:-calendar-agent-spike-ses-inbound}"
@@ -152,6 +155,9 @@ sam deploy \
   --no-fail-on-empty-changeset \
   --parameter-overrides \
     SenderEmail="${SENDER_EMAIL}" \
+    IntentExtractionMode="${INTENT_EXTRACTION_MODE}" \
+    IntentLlmTimeoutMs="${INTENT_LLM_TIMEOUT_MS}" \
+    IntentLlmConfidenceThreshold="${INTENT_LLM_CONFIDENCE_THRESHOLD}" \
     InboundRawEmailBucket="${RAW_BUCKET}" \
     InboundRawEmailBucketRegion="${REGION}" \
     InboundRawEmailObjectPrefix="${RAW_MAIL_PREFIX}"
@@ -162,6 +168,9 @@ Inbound configuration complete.
 - Rule set: ${RULE_SET_NAME}
 - Rule name: ${RULE_NAME}
 - Sender email: ${SENDER_EMAIL}
+- Intent extraction mode: ${INTENT_EXTRACTION_MODE}
+- Intent timeout ms: ${INTENT_LLM_TIMEOUT_MS}
+- Intent confidence threshold: ${INTENT_LLM_CONFIDENCE_THRESHOLD}
 - Raw MIME bucket: ${RAW_BUCKET}
 - Raw MIME prefix: ${RAW_MAIL_PREFIX}
 EOF

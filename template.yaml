@@ -69,6 +69,18 @@ Parameters:
       - disabled
       - openai
     Default: disabled
+  IntentExtractionMode:
+    Type: String
+    AllowedValues:
+      - parser
+      - llm_hybrid
+    Default: llm_hybrid
+  IntentLlmTimeoutMs:
+    Type: Number
+    Default: 10000
+  IntentLlmConfidenceThreshold:
+    Type: Number
+    Default: 0.65
   LlmTimeoutMs:
     Type: Number
     Default: 15000
@@ -222,7 +234,7 @@ Resources:
         - !Ref LlmProviderSecretName
         - !Sub /${AppName}/${Stage}/${AWS::StackName}/llm-provider
       Description: LLM provider configuration for response drafting.
-      SecretString: '{"provider":"openai","api_key":"","model":"gpt-5-mini","endpoint":"https://api.openai.com/v1/chat/completions"}'
+      SecretString: '{"provider":"openai","api_key":"","model":"gpt-5.2","endpoint":"https://api.openai.com/v1/chat/completions"}'
       Tags:
         - Key: application
           Value: !Ref AppName
@@ -312,6 +324,9 @@ Resources:
           MAX_DURATION_MINUTES: !Ref MaxDurationMinutes
           LLM_MODE: !Ref LlmMode
           LLM_TIMEOUT_MS: !Ref LlmTimeoutMs
+          INTENT_EXTRACTION_MODE: !Ref IntentExtractionMode
+          INTENT_LLM_TIMEOUT_MS: !Ref IntentLlmTimeoutMs
+          INTENT_LLM_CONFIDENCE_THRESHOLD: !Ref IntentLlmConfidenceThreshold
           LLM_PROVIDER_SECRET_ARN: !Ref LlmProviderSecret
           RAW_EMAIL_BUCKET: !Ref InboundRawEmailBucket
           RAW_EMAIL_BUCKET_REGION: !Ref InboundRawEmailBucketRegion

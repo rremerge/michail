@@ -12,6 +12,31 @@ function formatInTimezone(isoUtc, timezone) {
   }).format(date);
 }
 
+export function buildHumanReadableOptions({
+  suggestions,
+  hostTimezone,
+  clientTimezone
+}) {
+  if (!Array.isArray(suggestions) || suggestions.length === 0) {
+    return "";
+  }
+
+  const lines = [];
+  for (const [index, suggestion] of suggestions.entries()) {
+    const hostLabel = formatInTimezone(suggestion.startIsoUtc, hostTimezone);
+    const clientLabel = clientTimezone
+      ? formatInTimezone(suggestion.startIsoUtc, clientTimezone)
+      : null;
+
+    lines.push(`${index + 1}. ${hostLabel} (${hostTimezone})`);
+    if (clientLabel) {
+      lines.push(`   Your timezone: ${clientLabel} (${clientTimezone})`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
 export function buildClientResponse({
   suggestions,
   hostTimezone,
@@ -27,18 +52,13 @@ export function buildClientResponse({
   } else {
     lines.push(`I found ${suggestions.length} option(s):`);
     lines.push("");
-
-    for (const [index, suggestion] of suggestions.entries()) {
-      const hostLabel = formatInTimezone(suggestion.startIsoUtc, hostTimezone);
-      const clientLabel = clientTimezone
-        ? formatInTimezone(suggestion.startIsoUtc, clientTimezone)
-        : null;
-
-      lines.push(`${index + 1}. ${hostLabel} (${hostTimezone})`);
-      if (clientLabel) {
-        lines.push(`   Your timezone: ${clientLabel} (${clientTimezone})`);
-      }
-    }
+    lines.push(
+      buildHumanReadableOptions({
+        suggestions,
+        hostTimezone,
+        clientTimezone
+      })
+    );
   }
 
   lines.push("");

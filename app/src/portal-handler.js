@@ -511,6 +511,9 @@ function selectTraceMetadata(trace) {
     calendarMode: trace.calendarMode,
     llmMode: trace.llmMode,
     llmStatus: trace.llmStatus,
+    intentSource: trace.intentSource,
+    intentLlmStatus: trace.intentLlmStatus,
+    requestedWindowCount: trace.requestedWindowCount,
     fromDomain: trace.fromDomain,
     latencyMs: trace.latencyMs,
     createdAt: trace.createdAt,
@@ -539,6 +542,11 @@ function buildTraceDiagnosis(trace) {
   if (trace.llmStatus === "fallback") {
     categories.push("llm_fallback");
     actions.push("Check LLM provider key, model availability, and timeout configuration.");
+  }
+
+  if (trace.intentLlmStatus === "fallback" && Number(trace.requestedWindowCount ?? 0) === 0) {
+    categories.push("intent_fallback");
+    actions.push("Intent extraction fell back to parser. Consider asking client for explicit time windows.");
   }
 
   if (latencyMs > 5 * 60 * 1000) {
