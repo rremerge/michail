@@ -28,6 +28,32 @@ function normalizeRequestedWindowsToUtc(requestedWindows) {
     .filter(Boolean);
 }
 
+function normalizeEmailAddress(rawValue) {
+  const candidate = String(rawValue ?? "")
+    .trim()
+    .toLowerCase();
+  if (!candidate) {
+    return "";
+  }
+
+  // Handles common header formats like: "Name <user@example.com>".
+  const emailMatch = candidate.match(/[a-z0-9._%+-]+@[a-z0-9.-]+/);
+  if (emailMatch) {
+    return emailMatch[0];
+  }
+
+  return candidate.replace(/[<>]/g, "").trim();
+}
+
+function extractDomainFromEmail(normalizedEmail) {
+  const atIndex = normalizedEmail.lastIndexOf("@");
+  if (atIndex < 0 || atIndex === normalizedEmail.length - 1) {
+    return "unknown";
+  }
+
+  return normalizedEmail.slice(atIndex + 1);
+}
+
 function parseIncomingPayload(event) {
   if (event?.version === "2.0") {
     if (!event.body) {
@@ -202,10 +228,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const startedAtMs = now();
   const startedAtIso = new Date(startedAtMs).toISOString();
 
-  const fromEmail = payload.fromEmail?.trim().toLowerCase();
+  const fromEmail = normalizeEmailAddress(payload.fromEmail);
   if (!fromEmail) {
     return { http: badRequest("fromEmail is required") };
   }
+  const fromDomain = extractDomainFromEmail(fromEmail);
 
   const hostTimezone = env.HOST_TIMEZONE ?? "America/Los_Angeles";
   const advisingDays = (env.ADVISING_DAYS ?? "Tue,Wed")
@@ -304,7 +331,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       errorCode: "CALENDAR_LOOKUP_FAILED",
       createdAt: startedAtIso,
       updatedAt: new Date(now()).toISOString(),
-      fromDomain: fromEmail.split("@")[1] ?? "unknown",
+      fromDomain,
       expiresAt: Math.floor((startedAtMs + 7 * 24 * 60 * 60 * 1000) / 1000)
     });
 
@@ -386,7 +413,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     status: "completed",
     providerStatus,
     channel: payload.channel ?? "email",
-    fromDomain: fromEmail.split("@")[1] ?? "unknown",
+    fromDomain,
     meetingType: parsed.meetingType,
     suggestionCount: suggestions.length,
     durationMinutes: parsed.durationMinutes,

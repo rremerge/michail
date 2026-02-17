@@ -122,6 +122,43 @@ test("processSchedulingEmail sends email when RESPONSE_MODE=send", async () => {
   assert.equal(sentMessages[0].recipientEmail, "client@example.com");
 });
 
+test("processSchedulingEmail normalizes sender address and domain from formatted header", async () => {
+  const traceItems = [];
+  const sentMessages = [];
+  const deps = {
+    async getSecretString() {
+      return "";
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "manoj@example.com"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "\"Titoneeda\" <titoneeda@gmail.com>",
+      subject: "Chat"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].recipientEmail, "titoneeda@gmail.com");
+  assert.equal(traceItems[0].fromDomain, "gmail.com");
+});
+
 test("processSchedulingEmail uses primary connection in CALENDAR_MODE=connection", async () => {
   const traceItems = [];
   const deps = {
@@ -365,6 +402,75 @@ test("createHandler routes /spike/feedback requests to feedback flow", async () 
       delete process.env.TRACE_TABLE_NAME;
     } else {
       process.env.TRACE_TABLE_NAME = previousTraceTable;
+    }
+  }
+});
+
+test("createHandler normalizes SES from header before processing", async () => {
+  const traceItems = [];
+  const sentMessages = [];
+  const handler = createHandler({
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  });
+
+  const previousTraceTable = process.env.TRACE_TABLE_NAME;
+  const previousResponseMode = process.env.RESPONSE_MODE;
+  const previousSenderEmail = process.env.SENDER_EMAIL;
+  const previousCalendarMode = process.env.CALENDAR_MODE;
+
+  process.env.TRACE_TABLE_NAME = "TraceTable";
+  process.env.RESPONSE_MODE = "send";
+  process.env.SENDER_EMAIL = "agent@letsconnect.ai";
+  process.env.CALENDAR_MODE = "mock";
+
+  try {
+    const response = await handler({
+      Records: [
+        {
+          ses: {
+            mail: {
+              commonHeaders: {
+                from: ["Titoneeda <titoneeda@gmail.com>"],
+                subject: "Need 30 min chat"
+              }
+            }
+          }
+        }
+      ]
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(sentMessages.length, 1);
+    assert.equal(sentMessages[0].recipientEmail, "titoneeda@gmail.com");
+    assert.equal(traceItems[0].fromDomain, "gmail.com");
+  } finally {
+    if (previousTraceTable === undefined) {
+      delete process.env.TRACE_TABLE_NAME;
+    } else {
+      process.env.TRACE_TABLE_NAME = previousTraceTable;
+    }
+
+    if (previousResponseMode === undefined) {
+      delete process.env.RESPONSE_MODE;
+    } else {
+      process.env.RESPONSE_MODE = previousResponseMode;
+    }
+
+    if (previousSenderEmail === undefined) {
+      delete process.env.SENDER_EMAIL;
+    } else {
+      process.env.SENDER_EMAIL = previousSenderEmail;
+    }
+
+    if (previousCalendarMode === undefined) {
+      delete process.env.CALENDAR_MODE;
+    } else {
+      process.env.CALENDAR_MODE = previousCalendarMode;
     }
   }
 });
