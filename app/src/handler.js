@@ -5,6 +5,7 @@ import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adap
 import { draftResponseWithOpenAi, parseOpenAiConfigSecret } from "./llm-adapter.js";
 import { buildClientResponse } from "./response-builder.js";
 import { createRuntimeDeps } from "./runtime-deps.js";
+import { simpleParser } from "mailparser";
 
 function parseIntEnv(value, fallback) {
   const parsed = Number.parseInt(value ?? "", 10);
@@ -54,6 +55,81 @@ function extractDomainFromEmail(normalizedEmail) {
   return normalizedEmail.slice(atIndex + 1);
 }
 
+async function parsePlainTextFromMime(rawMime) {
+  if (!rawMime) {
+    return "";
+  }
+
+  try {
+    const parsed = await simpleParser(rawMime);
+    return String(parsed.text ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
+function buildRawEmailLocation(payload, env) {
+  const sesReceiptMailStore = payload?.ses?.receipt?.mailStore;
+  if (sesReceiptMailStore?.bucket && sesReceiptMailStore?.key) {
+    return {
+      bucket: String(sesReceiptMailStore.bucket),
+      key: String(sesReceiptMailStore.key),
+      region: String(sesReceiptMailStore.region || env.RAW_EMAIL_BUCKET_REGION || "")
+    };
+  }
+
+  const messageId = String(payload?.ses?.messageId ?? "").trim();
+  const bucket = String(env.RAW_EMAIL_BUCKET ?? "").trim();
+  if (!messageId || !bucket) {
+    return null;
+  }
+
+  const prefix = String(env.RAW_EMAIL_OBJECT_PREFIX ?? "").trim();
+  return {
+    bucket,
+    key: `${prefix}${messageId}`,
+    region: String(env.RAW_EMAIL_BUCKET_REGION ?? "").trim()
+  };
+}
+
+async function resolveInboundEmailBody({ payload, env, deps }) {
+  const inlineBody = String(payload.body ?? "").trim();
+  if (inlineBody) {
+    return {
+      bodyText: inlineBody,
+      bodySource: "inline"
+    };
+  }
+
+  const rawEmailLocation = buildRawEmailLocation(payload, env);
+  if (!rawEmailLocation) {
+    return {
+      bodyText: "",
+      bodySource: "none"
+    };
+  }
+
+  try {
+    const rawMime = await deps.getRawEmailObject(rawEmailLocation);
+    const bodyText = await parsePlainTextFromMime(rawMime);
+    return {
+      bodyText,
+      bodySource: "mail_store"
+    };
+  } catch {
+    return {
+      bodyText: "",
+      bodySource: "mail_store_unavailable"
+    };
+  } finally {
+    try {
+      await deps.deleteRawEmailObject(rawEmailLocation);
+    } catch {
+      // Best-effort delete to keep raw email retention minimal.
+    }
+  }
+}
+
 function parseIncomingPayload(event) {
   if (event?.version === "2.0") {
     if (!event.body) {
@@ -65,11 +141,20 @@ function parseIncomingPayload(event) {
 
   if (event?.Records?.[0]?.ses) {
     const record = event.Records[0];
+    const sesMail = record.ses.mail ?? {};
+    const commonHeaders = sesMail.commonHeaders ?? {};
+
     return {
-      fromEmail: record.ses.mail.commonHeaders.from?.[0],
-      subject: record.ses.mail.commonHeaders.subject ?? "",
+      fromEmail: commonHeaders.from?.[0] ?? sesMail.source ?? "",
+      subject: commonHeaders.subject ?? "",
       body: "",
-      channel: "email"
+      channel: "email",
+      ses: {
+        messageId: sesMail.messageId ?? "",
+        source: sesMail.source ?? "",
+        destination: sesMail.destination ?? [],
+        receipt: record.ses.receipt ?? {}
+      }
     };
   }
 
@@ -233,6 +318,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     return { http: badRequest("fromEmail is required") };
   }
   const fromDomain = extractDomainFromEmail(fromEmail);
+  const { bodyText, bodySource } = await resolveInboundEmailBody({ payload, env, deps });
 
   const hostTimezone = env.HOST_TIMEZONE ?? "America/Los_Angeles";
   const advisingDays = (env.ADVISING_DAYS ?? "Tue,Wed")
@@ -256,7 +342,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const parsed = parseSchedulingRequest({
     fromEmail,
     subject: payload.subject ?? "",
-    body: payload.body ?? "",
+    body: bodyText,
     defaultDurationMinutes: durationDefault
   });
 
@@ -329,6 +415,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       stage: "calendar_lookup",
       providerStatus,
       errorCode: "CALENDAR_LOOKUP_FAILED",
+      bodySource,
       createdAt: startedAtIso,
       updatedAt: new Date(now()).toISOString(),
       fromDomain,
@@ -421,6 +508,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     calendarMode,
     llmMode,
     llmStatus,
+    bodySource,
     createdAt: startedAtIso,
     updatedAt: new Date(completedAtMs).toISOString(),
     latencyMs: completedAtMs - startedAtMs,

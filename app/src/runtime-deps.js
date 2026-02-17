@@ -14,11 +14,44 @@ import {
   UpdateCommand
 } from "@aws-sdk/lib-dynamodb";
 import { SESv2Client, SendEmailCommand } from "@aws-sdk/client-sesv2";
+import { DeleteObjectCommand, GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
+
+async function streamBodyToString(body) {
+  if (!body) {
+    return "";
+  }
+
+  if (typeof body === "string") {
+    return body;
+  }
+
+  if (typeof body.transformToString === "function") {
+    return body.transformToString();
+  }
+
+  const chunks = [];
+  for await (const chunk of body) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+
+  return Buffer.concat(chunks).toString("utf8");
+}
 
 export function createRuntimeDeps() {
   const secretsClient = new SecretsManagerClient({});
   const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
   const sesClient = new SESv2Client({});
+  const s3ClientsByRegion = new Map();
+
+  function getS3Client(region) {
+    const normalizedRegion = String(region || "").trim();
+    const regionKey = normalizedRegion || "default";
+    if (!s3ClientsByRegion.has(regionKey)) {
+      s3ClientsByRegion.set(regionKey, new S3Client(normalizedRegion ? { region: normalizedRegion } : {}));
+    }
+
+    return s3ClientsByRegion.get(regionKey);
+  }
 
   return {
     async getSecretString(secretArn) {
@@ -240,6 +273,28 @@ export function createRuntimeDeps() {
               }
             }
           }
+        })
+      );
+    },
+
+    async getRawEmailObject({ bucket, key, region }) {
+      const s3Client = getS3Client(region);
+      const response = await s3Client.send(
+        new GetObjectCommand({
+          Bucket: bucket,
+          Key: key
+        })
+      );
+
+      return streamBodyToString(response.Body);
+    },
+
+    async deleteRawEmailObject({ bucket, key, region }) {
+      const s3Client = getS3Client(region);
+      await s3Client.send(
+        new DeleteObjectCommand({
+          Bucket: bucket,
+          Key: key
         })
       );
     },

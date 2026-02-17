@@ -159,6 +159,103 @@ test("processSchedulingEmail normalizes sender address and domain from formatted
   assert.equal(traceItems[0].fromDomain, "gmail.com");
 });
 
+test("processSchedulingEmail loads body from transient mail store and deletes raw object", async () => {
+  const traceItems = [];
+  const calls = [];
+  const deps = {
+    async getRawEmailObject(location) {
+      calls.push(["get", location]);
+      return [
+        "From: Titoneeda <titoneeda@gmail.com>",
+        "Subject: Need appointment",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "Timezone: America/Los_Angeles",
+        "I can do 2026-03-03T10:00:00-08:00 to 2026-03-03T12:00:00-08:00"
+      ].join("\n");
+    },
+    async deleteRawEmailObject(location) {
+      calls.push(["delete", location]);
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    RAW_EMAIL_BUCKET: "mail-store-bucket",
+    RAW_EMAIL_BUCKET_REGION: "us-east-1",
+    RAW_EMAIL_OBJECT_PREFIX: "raw/"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "Titoneeda <titoneeda@gmail.com>",
+      subject: "Need appointment",
+      body: "",
+      ses: {
+        messageId: "message-123",
+        receipt: {}
+      }
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0], "get");
+  assert.deepEqual(calls[0][1], {
+    bucket: "mail-store-bucket",
+    key: "raw/message-123",
+    region: "us-east-1"
+  });
+  assert.equal(calls[1][0], "delete");
+  assert.deepEqual(calls[1][1], calls[0][1]);
+  assert.equal(traceItems[0].bodySource, "mail_store");
+});
+
+test("processSchedulingEmail continues when transient mail store is unavailable", async () => {
+  const traceItems = [];
+  const deps = {
+    async getRawEmailObject() {
+      throw new Error("s3 unavailable");
+    },
+    async deleteRawEmailObject() {},
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    RAW_EMAIL_BUCKET: "mail-store-bucket",
+    RAW_EMAIL_BUCKET_REGION: "us-east-1",
+    RAW_EMAIL_OBJECT_PREFIX: "raw/"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "titoneeda@gmail.com",
+      subject: "Need appointment",
+      ses: {
+        messageId: "message-456",
+        receipt: {}
+      }
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(traceItems[0].bodySource, "mail_store_unavailable");
+});
+
 test("processSchedulingEmail uses primary connection in CALENDAR_MODE=connection", async () => {
   const traceItems = [];
   const deps = {

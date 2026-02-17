@@ -1631,3 +1631,108 @@ Performed source-control sync for sender parsing fix:
 - Staged changed files (`app/src/handler.js`, `app/test/handler.test.js`, `docs/conversation-transcript.txt`).
 - Created commit for normalized sender parsing and regression tests.
 - Pushed updated `main` branch to GitHub remote.
+
+---
+
+Turn 73
+User:
+great what are our next steps
+
+Assistant:
+Provided prioritized next steps:
+1. Move manual SES/forwarder setup into IaC.
+2. Add integration tests for real inbound path and feedback loop.
+3. Harden security/secrets and rotate exposed credentials.
+4. Improve supportability UX and diagnostics.
+5. Run load/SLO validation and finalize go-live checklist.
+
+---
+
+Turn 74
+User:
+go ahead with steps 1 2 and 3.
+
+Assistant:
+Started implementation for step 1/2/3 (transient MIME parsing, inbound IaC, e2e scripts/tests).
+
+---
+
+Turn 75
+User:
+actually, hang on . It is unncessarily complicated to create a US-west to US-east flow only because mail.letsconnect.ai is pointing to US-west2.  Let us instead stay completely on US-East. Create a new subdomain agent.letsconnect.ai whose MX points to US-east where the lambda is hosted. I can go ahead and make the mx record changes on the DNS provider (porkbun) once you tell me what to do.
+
+Assistant:
+Confirmed AWS side in `us-east-1` with recipient `agent@agent.letsconnect.ai` on active receipt rule set `calendar-agent-spike-dev-inbound`.
+Provided Porkbun MX settings:
+- Type: `MX`
+- Host/Name: `agent`
+- Answer/Value: `inbound-smtp.us-east-1.amazonaws.com`
+- Priority: `10`
+- TTL: `600`
+
+---
+
+Turn 76
+User:
+ok please check  if you can see the mx record
+
+Assistant:
+Verified DNS:
+- `agent.letsconnect.ai MX 10 inbound-smtp.us-east-1.amazonaws.com.`
+
+---
+
+Turn 77
+User:
+ok sent a test email from titoneeda@gmail.com to agent@agent.letsconnect.ai
+
+Assistant:
+Validated end-to-end processing for the new subdomain route.
+Latest trace row:
+- `requestId`: `48d52124-2754-4c5c-b60a-30409319469f`
+- `responseId`: `877061fe-fd7d-47e0-9688-0c97174f84cb`
+- `createdAt`: `2026-02-17T00:34:53.759Z`
+- `status`: `completed`
+- `responseMode`: `send`
+- `providerStatus`: `ok`
+- `llmStatus`: `ok`
+- `suggestionCount`: `3`
+Outbound sender configured: `agent@letsconnect.ai`.
+
+---
+
+Turn 78
+User:
+yes got the response to titoneeda correctly. So all this works. Lets remove any US-west configurations we did and keep it as a us-east only deployment.
+
+Assistant:
+Completed us-west cleanup and retained us-east-only inbound flow.
+
+Local repo cleanup:
+- Removed west inbound IaC file: `infrastructure/us-west-2-inbound/template.yaml`.
+- Removed west deployment helper: `scripts/deploy-inbound-mail-stack.sh`.
+- Updated `README.md` to remove west bridge instructions and use `agent@agent.letsconnect.ai`.
+- Updated e2e inbound default recipient in `app/scripts/e2e-inbound-email.mjs` to `agent@agent.letsconnect.ai`.
+- Updated test fixture region values in `app/test/handler.test.js` to `us-east-1`.
+- Verified tests: `cd app && npm test` passed (`36/36`).
+
+AWS cleanup (`us-west-2`):
+- Deleted SES rule `agentSpikeInbound` from rule set `michael`.
+- Deleted manual Lambda `calendar-agent-spike-mail-forwarder`.
+- Deleted manual IAM role `calendar-agent-spike-mail-forwarder-role`.
+- Deleted managed bridge stack `calendar-agent-spike-mail-inbound-dev` (after emptying transient S3 bucket).
+- Verified no remaining spike forwarder Lambdas, managed role, or bridge bucket.
+- Verified active west rule set now contains only pre-existing rules (`michaelLetsConnect`, `michaelInbound`, `allrule`).
+
+Final state:
+- `us-east-1` remains active with rule set `calendar-agent-spike-dev-inbound` and recipient `agent@agent.letsconnect.ai`.
+
+---
+
+Turn 79
+User:
+yes go ahead
+
+Assistant:
+Started checkpoint sync:
+- Preparing git checkpoint commit and push for the us-east-only cleanup and related tested changes.

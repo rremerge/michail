@@ -98,6 +98,18 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional advisor email allowlist entry for Google portal login.
+  InboundRawEmailBucket:
+    Type: String
+    Default: ""
+    Description: Optional S3 bucket containing transient raw inbound email MIME objects.
+  InboundRawEmailBucketRegion:
+    Type: String
+    Default: ""
+    Description: Region for the transient raw inbound email S3 bucket.
+  InboundRawEmailObjectPrefix:
+    Type: String
+    Default: raw/
+    Description: Prefix used for transient raw inbound email object keys.
 
 Conditions:
   HasCustomSecretName: !Not [!Equals [!Ref GoogleOAuthSecretName, ""]]
@@ -105,6 +117,7 @@ Conditions:
   HasCustomLlmProviderSecretName: !Not [!Equals [!Ref LlmProviderSecretName, ""]]
   HasCustomAdvisorPortalAuthSecretName: !Not [!Equals [!Ref AdvisorPortalAuthSecretName, ""]]
   HasCustomAdvisorPortalSessionSecretName: !Not [!Equals [!Ref AdvisorPortalSessionSecretName, ""]]
+  HasInboundRawEmailBucket: !Not [!Equals [!Ref InboundRawEmailBucket, ""]]
 
 Resources:
   TraceTable:
@@ -300,6 +313,9 @@ Resources:
           LLM_MODE: !Ref LlmMode
           LLM_TIMEOUT_MS: !Ref LlmTimeoutMs
           LLM_PROVIDER_SECRET_ARN: !Ref LlmProviderSecret
+          RAW_EMAIL_BUCKET: !Ref InboundRawEmailBucket
+          RAW_EMAIL_BUCKET_REGION: !Ref InboundRawEmailBucketRegion
+          RAW_EMAIL_OBJECT_PREFIX: !Ref InboundRawEmailObjectPrefix
       Events:
         SpikeApiRequest:
           Type: HttpApi
@@ -347,6 +363,15 @@ Resources:
                 - ses:SendEmail
                 - ses:SendRawEmail
               Resource: "*"
+            - !If
+              - HasInboundRawEmailBucket
+              - Sid: AccessInboundRawEmailObjects
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:DeleteObject
+                Resource: !Sub arn:aws:s3:::${InboundRawEmailBucket}/${InboundRawEmailObjectPrefix}*
+              - !Ref AWS::NoValue
       Tags:
         application: !Ref AppName
         stage: !Ref Stage

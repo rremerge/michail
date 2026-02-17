@@ -15,7 +15,8 @@ This repository contains the first executable spike for the calendar agent:
 
 ## Isolation and Safety Guarantees
 - The stack creates isolated resources under its own CloudFormation stack.
-- No account-level SES inbound receipt rule or receipt rule set is created.
+- The primary SAM stack does not create account-level SES inbound receipt rule sets.
+- Inbound routing is configured in `us-east-1` for `agent@agent.letsconnect.ai`.
 - Default mode is `CalendarMode=mock` and `ResponseMode=log` for safe dry-run testing.
 - OAuth tokens are stored only in AWS Secrets Manager (KMS encrypted).
 - Advisor portal runs as a separate serverless Lambda and stores only connection metadata plus token secrets.
@@ -94,6 +95,15 @@ Expected result:
 - A metadata-only trace row is written to DynamoDB.
 - The selected advisor connection (mock/google) is used for availability.
 
+## Inbound MIME Parsing (Transient Raw Email)
+For real SES inbound emails, this spike now supports transient MIME retrieval:
+- SES inbound can store raw MIME to a short-lived S3 bucket in `us-east-1`.
+- Spike Lambda reads and parses the MIME body text for scheduling intent extraction.
+- Raw MIME object is deleted immediately after processing (best effort).
+- Bucket lifecycle policy expires any leftover objects in 1 day.
+
+Trace metadata includes `bodySource` (`inline`, `mail_store`, `mail_store_unavailable`, `none`) without storing email content.
+
 ## Supportability Hooks (Feedback + Debug)
 Client feedback endpoint (no raw content persistence):
 
@@ -124,6 +134,28 @@ curl -sS -X POST "https://<api-id>.execute-api.<region>.amazonaws.com/<stage>/ad
 ```
 
 The advisor UI now includes a request-ID debug section to inspect trace metadata and record feedback.
+
+## Repeatable End-to-End Integration Scripts
+Send real inbound test mail and verify trace completion:
+
+```bash
+cd app
+npm run test:e2e:inbound -- \
+  --from titoneeda@gmail.com \
+  --to agent@agent.letsconnect.ai \
+  --trace-table calendar-agent-spike-dev-TraceTable-1DEK59G2YX0UP
+```
+
+Verify feedback flow against a known request/response ID:
+
+```bash
+cd app
+npm run test:e2e:feedback -- \
+  --api-base https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev \
+  --request-id <request-id> \
+  --response-id <response-id> \
+  --trace-table calendar-agent-spike-dev-TraceTable-1DEK59G2YX0UP
+```
 
 ## Configure Google OAuth For Portal Flow
 1. Set app credentials in `GoogleOAuthAppSecretArn`:
@@ -203,6 +235,7 @@ sam deploy \
   - `secretsmanager:GetSecretValue` on advisor connection secrets.
   - `dynamodb:PutItem|UpdateItem` on spike trace table.
   - `dynamodb:Query` on connection table for connection mode.
+  - `s3:GetObject|DeleteObject` on transient inbound raw-mail objects (when configured).
   - `ses:SendEmail`/`ses:SendRawEmail` when response mode is send.
 - Advisor portal Lambda IAM role:
   - `dynamodb:GetItem|PutItem|DeleteItem|Query` on connection + oauth state tables.
@@ -221,5 +254,6 @@ sam deploy \
   - No tokens in logs/traces.
 
 ## Data Privacy Guardrails
-- No raw email or calendar content is persisted after processing.
+- No email body/calendar content is persisted in trace tables or logs.
+- Raw inbound MIME is transiently stored only long enough to parse and is deleted immediately after use (best effort).
 - Trace table stores only metadata (request IDs, status, timing, result counts, provider status).
