@@ -332,6 +332,54 @@ test("processSchedulingEmail appends short availability link when configured", a
   assert.equal(savedLinks[0].durationMinutes, 30);
 });
 
+test("processSchedulingEmail appends availability link even when no slots are found", async () => {
+  const sentMessages = [];
+  const traceItems = [];
+  const savedLinks = [];
+  const deps = {
+    async putAvailabilityLink(tableName, item) {
+      assert.equal(tableName, "AvailabilityLinkTable");
+      savedLinks.push(item);
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "manoj@example.com",
+    AVAILABILITY_LINK_BASE_URL: "https://example.test/availability",
+    AVAILABILITY_LINK_TABLE_NAME: "AvailabilityLinkTable",
+    AVAILABILITY_LINK_TTL_MINUTES: "60"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "tito@example.com",
+      subject: "Saturday only",
+      body: "I can do 2026-03-07T10:00:00-08:00 to 2026-03-07T12:00:00-08:00 only."
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const body = JSON.parse(result.http.body);
+  assert.equal(body.suggestionCount, 0);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].availabilityLinkStatus, "included");
+  assert.equal(savedLinks.length, 1);
+  assert.match(sentMessages[0].bodyText, /I could not find open slots in the requested window\./);
+  assert.match(sentMessages[0].bodyText, /Availability link:\s+https:\/\/example\.test\/availability\?t=/);
+});
+
 test("processSchedulingEmail uses client policy days and records email interaction metadata", async () => {
   const traceItems = [];
   const interactionUpdates = [];

@@ -92,6 +92,7 @@ function appendAvailabilityLinkSection({ responseMessage, availabilityLink }) {
   const bodyWithLink = [
     bodyText,
     "",
+    "",
     "Want to browse all currently open times?",
     `Availability link: ${availabilityLink}`,
     "This secure link expires automatically."
@@ -869,7 +870,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   });
   let responseMessage = templateResponseMessage;
   let llmStatus = "disabled";
-  let availabilityLinkStatus = suggestions.length > 0 ? "pending" : "not_applicable";
+  let availabilityLinkStatus = "pending";
 
   if (llmMode === "openai") {
     try {
@@ -897,27 +898,25 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     llmStatus = "unsupported";
   }
 
-  if (suggestions.length > 0) {
-    try {
-      const availabilityLinkResult = await buildAvailabilityLink({
-        env,
-        deps,
-        advisorId,
-        clientTimezone: parsed.clientTimezone,
-        durationMinutes: parsed.durationMinutes,
-        issuedAtMs: startedAtMs,
-        normalizedClientEmail: fromEmail,
-        clientDisplayName,
-        clientId
-      });
-      availabilityLinkStatus = availabilityLinkResult.status;
-      responseMessage = appendAvailabilityLinkSection({
-        responseMessage,
-        availabilityLink: availabilityLinkResult.availabilityLink
-      });
-    } catch {
-      availabilityLinkStatus = "error";
-    }
+  try {
+    const availabilityLinkResult = await buildAvailabilityLink({
+      env,
+      deps,
+      advisorId,
+      clientTimezone: parsed.clientTimezone,
+      durationMinutes: parsed.durationMinutes,
+      issuedAtMs: startedAtMs,
+      normalizedClientEmail: fromEmail,
+      clientDisplayName,
+      clientId
+    });
+    availabilityLinkStatus = availabilityLinkResult.status;
+    responseMessage = appendAvailabilityLinkSection({
+      responseMessage,
+      availabilityLink: availabilityLinkResult.availabilityLink
+    });
+  } catch {
+    availabilityLinkStatus = "error";
   }
 
   responseMessage = ensurePersonalizedGreetingAndSignature({

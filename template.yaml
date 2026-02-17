@@ -36,7 +36,7 @@ Parameters:
     Default: Tue,Wed
   SearchDays:
     Type: Number
-    Default: 14
+    Default: 120
   MaxSuggestions:
     Type: Number
     Default: 3

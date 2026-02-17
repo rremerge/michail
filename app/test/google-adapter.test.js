@@ -124,3 +124,57 @@ test("lookupGoogleBusyIntervals exchanges token and fetches busy windows", async
   assert.equal(calls.length, 2);
   assert.equal(busy.length, 0);
 });
+
+test("lookupGoogleBusyIntervals splits long windows into multiple freeBusy calls", async () => {
+  const freeBusyBodies = [];
+  const mockFetch = async (url, options) => {
+    if (url.includes("oauth2.googleapis.com")) {
+      return {
+        ok: true,
+        async json() {
+          return { access_token: "access" };
+        }
+      };
+    }
+
+    const parsedBody = JSON.parse(options.body);
+    freeBusyBodies.push(parsedBody);
+    return {
+      ok: true,
+      async json() {
+        return {
+          calendars: {
+            primary: {
+              busy: [
+                {
+                  start: parsedBody.timeMin,
+                  end: parsedBody.timeMax
+                }
+              ]
+            }
+          }
+        };
+      }
+    };
+  };
+
+  const busy = await lookupGoogleBusyIntervals({
+    oauthConfig: {
+      clientId: "client",
+      clientSecret: "secret",
+      refreshToken: "refresh",
+      calendarIds: ["primary"]
+    },
+    windowStartIso: "2026-02-17T00:00:00Z",
+    windowEndIso: "2026-06-17T00:00:00Z",
+    fetchImpl: mockFetch
+  });
+
+  assert.equal(freeBusyBodies.length > 1, true);
+  assert.equal(busy.length, freeBusyBodies.length);
+
+  const firstWindowStart = Date.parse(freeBusyBodies[0].timeMin);
+  const firstWindowEnd = Date.parse(freeBusyBodies[0].timeMax);
+  const firstWindowDays = (firstWindowEnd - firstWindowStart) / (24 * 60 * 60 * 1000);
+  assert.equal(firstWindowDays <= 85, true);
+});

@@ -4,6 +4,36 @@ function assertRequired(value, key) {
   }
 }
 
+const MAX_FREEBUSY_WINDOW_DAYS = 85;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function splitBusyWindow(windowStartIso, windowEndIso, maxWindowDays = MAX_FREEBUSY_WINDOW_DAYS) {
+  const startMs = Date.parse(windowStartIso);
+  const endMs = Date.parse(windowEndIso);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+    return [
+      {
+        timeMinIso: windowStartIso,
+        timeMaxIso: windowEndIso
+      }
+    ];
+  }
+
+  const maxWindowMs = Math.max(1, Math.floor(maxWindowDays)) * DAY_MS;
+  const windows = [];
+  let cursorMs = startMs;
+  while (cursorMs < endMs) {
+    const chunkEndMs = Math.min(endMs, cursorMs + maxWindowMs);
+    windows.push({
+      timeMinIso: new Date(cursorMs).toISOString(),
+      timeMaxIso: new Date(chunkEndMs).toISOString()
+    });
+    cursorMs = chunkEndMs;
+  }
+
+  return windows;
+}
+
 export function parseGoogleOauthSecret(secretString) {
   if (!secretString || typeof secretString !== "string") {
     throw new Error("Google OAuth secret is empty");
@@ -119,11 +149,19 @@ export async function lookupGoogleBusyIntervals({
     fetchImpl
   });
 
-  return fetchBusyIntervals({
-    accessToken,
-    calendarIds: oauthConfig.calendarIds,
-    timeMinIso: windowStartIso,
-    timeMaxIso: windowEndIso,
-    fetchImpl
-  });
+  const intervals = [];
+  const windows = splitBusyWindow(windowStartIso, windowEndIso);
+  for (const window of windows) {
+    const chunkIntervals = await fetchBusyIntervals({
+      accessToken,
+      calendarIds: oauthConfig.calendarIds,
+      timeMinIso: window.timeMinIso,
+      timeMaxIso: window.timeMaxIso,
+      fetchImpl
+    });
+    intervals.push(...chunkIntervals);
+  }
+
+  intervals.sort((a, b) => Date.parse(a.startIso) - Date.parse(b.startIso));
+  return intervals;
 }

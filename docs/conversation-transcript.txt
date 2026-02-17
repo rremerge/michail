@@ -2654,3 +2654,129 @@ Actions:
   - `app/src/handler.js`
   - `app/test/handler.test.js`
   - `docs/conversation-transcript.txt`
+
+---
+
+Turn 115
+User:
+Check the last email from titoneeda@gmail.com .   "The email body was: can i get some time on your calendar in march 2nd week?
+Thanks
+tito". But the agent incorrectly did not find any proposed times in that email. please check what happened.
+
+Assistant:
+Investigated production trace data and identified root cause.
+
+Findings:
+- Matching latest Gmail trace is:
+  - `requestId`: `f5be26db-3e5b-4ebd-a7d6-46904056d245`
+  - `createdAt`: `2026-02-17T06:54:49.945Z`
+  - `status=completed`, `llmStatus=ok`, `intentLlmStatus=ok`, `intentSource=llm`
+  - `requestedWindowCount=1`
+  - `suggestionCount=0`
+- This means the agent DID extract one requested timeframe from the email, but no candidate slots were returned.
+- Deployed Lambda config shows `SEARCH_DAYS=14`.
+- For this request, search window was effectively from Feb 17, 2026 to Mar 3, 2026.
+- “March 2nd week” corresponds roughly to Mar 9-15, 2026, which is outside that 14-day search horizon.
+
+Conclusion:
+- The failure was not “could not understand timeframe”; it was a scheduling search horizon mismatch (`SEARCH_DAYS` too short for that request).
+
+---
+
+Turn 116
+User:
+Yes we should increase SEARCH_DAYS to be 120 Days
+
+Assistant:
+Applied and deployed `SearchDays=120`.
+
+Actions:
+- Updated template default:
+  - `template.yaml` `SearchDays` default changed from `14` to `120`.
+- Ran local tests:
+  - `cd app && npm test` -> `56/56` passing.
+- Deployed stack with explicit parameter override to update existing stack value:
+  - `sam deploy ... --parameter-overrides SearchDays=120`
+- Verified live Lambda environment:
+  - `SEARCH_DAYS=120` on `calendar-agent-spike-dev-EmailSpikeFunction-o4guEUUHXerT`.
+
+---
+
+Turn 117
+User:
+yes please do a the live email check. Also when the agent does not find time slots, it should still include the link to the web based calendar for the client to pick times on their own.
+
+Assistant:
+Implemented requested behavior and completed live validation.
+
+Code changes:
+- `app/src/handler.js`
+  - Availability link generation now runs for all completed scheduling responses (not only when `suggestionCount > 0`).
+  - `availabilityLinkStatus` now reflects actual link generation outcome even in no-slot cases.
+- `app/test/handler.test.js`
+  - Added test: `processSchedulingEmail appends availability link even when no slots are found`.
+- During live validation, a new production issue surfaced after `SearchDays=120`:
+  - Google freeBusy returned `timeRangeTooLong` for wide windows.
+  - Implemented fix in `app/src/google-adapter.js`:
+    - Split long freeBusy windows into chunked requests (85-day chunks) and merge results.
+- `app/test/google-adapter.test.js`
+  - Added test for long-window chunking behavior.
+
+Validation:
+- Local tests: `cd app && npm test` -> `58/58` passing.
+- Deployed stack with `SearchDays=120` and updated code.
+
+Live checks:
+1. March 2nd week request (same scenario)
+   - Request body: "can i get some time on your calendar in march 2nd week?"
+   - Result: `suggestionCount=3` (fixed)
+   - `requestId`: `49d8058e-758c-49d3-9a2d-32422e2790ce`
+2. No-slot scenario check
+   - Request body constrained to Saturday-only window.
+   - Result: `suggestionCount=0`
+   - Trace metadata confirmed `availabilityLinkStatus=included`
+   - `requestId`: `cfad9d63-6d39-4c2e-afb2-76f4a311ce21`
+
+Outcome:
+- Agent now still includes the web availability link even when no slots are found.
+- March second-week parsing+search now returns suggestions under the 120-day horizon without Google API errors.
+
+---
+
+Turn 118
+User:
+ok the email response looks good. Add two empty lines between the advisors name in the signoff and "Want to browse all currently open times?" . to create a better visual separation.
+
+Assistant:
+Implemented formatting tweak for better visual separation.
+
+Change:
+- `app/src/handler.js`
+  - In `appendAvailabilityLinkSection(...)`, inserted one additional blank line before:
+    - "Want to browse all currently open times?"
+  - Net effect: there are now two empty lines separating the sign-off name and the availability-link section.
+
+Validation:
+- Local tests: `cd app && npm test` -> `58/58` passing.
+
+---
+
+Turn 119
+User:
+yes
+
+Assistant:
+Completed deployment and checkpoint preparation.
+
+Actions:
+- Deployed updated stack in `us-east-1`:
+  - `calendar-agent-spike-dev` update status: `UPDATE_COMPLETE`.
+- Verified CloudFormation outputs and endpoints remained available after deploy.
+- Re-ran local test suite:
+  - `cd app && npm test` -> `58/58` passing.
+- Confirmed email formatting change is present:
+  - Two empty lines now separate advisor sign-off name and:
+    - "Want to browse all currently open times?"
+
+Next:
+- Commit and push these changes as the requested checkpoint.
