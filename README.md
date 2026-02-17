@@ -75,6 +75,8 @@ After deploy, open `AdvisorPortalUrl` output:
 
 - Add `Mock Calendar (Test)` for immediate end-to-end testing.
 - Click `Connect Google (Sign In)` to launch Google login/consent and create a secure refresh-token connection.
+- Use the **Client Directory** table to view first/last interaction timestamps, email/web usage counters, and update client access policy (`active`, `blocked`, `deleted`).
+- Assign client policy groups (`default`, `weekend`, `monday`) to control which advising days a given client can view.
 
 ## Client Availability Link (FR-6 Slice)
 When the agent sends slot suggestions, it now appends a signed availability URL so clients can browse a calendar-style free/busy view in the web UI.
@@ -90,6 +92,7 @@ Current format:
 - Short link token id: `t=<16-char-id>` (server lookup with TTL in DynamoDB)
 - Optional client reference hint in URL: `for=<client-ref>`
 - The page can display who the availability link is for using stored per-link metadata.
+- Availability link access now checks client profile state. `blocked`/`deleted` clients are denied.
 
 Output:
 - `AvailabilityUrl` (base URL; requires signed `token` query parameter)

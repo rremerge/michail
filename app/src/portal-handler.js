@@ -3,6 +3,15 @@ import { createRuntimeDeps } from "./runtime-deps.js";
 import { DateTime, Interval } from "luxon";
 import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adapter.js";
 import { parseAvailabilityLinkSecret, validateAvailabilityLinkToken } from "./availability-link.js";
+import {
+  isClientAccessRestricted,
+  normalizeClientAccessState,
+  normalizeClientId,
+  normalizePolicyId,
+  parseAdvisingDaysList,
+  parseClientPolicyPresets,
+  resolveClientAdvisingDays
+} from "./client-profile.js";
 
 function parseIntEnv(value, fallback) {
   const parsed = Number.parseInt(value ?? "", 10);
@@ -34,10 +43,7 @@ function normalizeOptionalTimezone(value) {
 }
 
 function parseAdvisingDays(value) {
-  return String(value ?? "Tue,Wed")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+  return parseAdvisingDaysList(value ?? "Tue,Wed", ["Tue", "Wed"]);
 }
 
 function parseWeekOffset(queryStringParameters) {
@@ -943,6 +949,41 @@ function isValidRequestId(requestId) {
   return typeof requestId === "string" && /^[A-Za-z0-9-]{8,128}$/.test(requestId);
 }
 
+function parseClientProfilePath(rawPath) {
+  const match = rawPath.match(/^\/advisor\/api\/clients\/([^/]+)$/);
+  return match?.[1] ?? null;
+}
+
+function parseClientAdvisingDaysOverride(rawValue) {
+  if (rawValue === null || rawValue === undefined || rawValue === "") {
+    return null;
+  }
+
+  const parsed = parseAdvisingDaysList(rawValue, []);
+  if (parsed.length === 0) {
+    throw new Error("advisingDaysOverride must include at least one valid weekday");
+  }
+
+  return parsed;
+}
+
+function normalizeClientProfileForApi(clientProfile) {
+  return {
+    clientId: clientProfile.clientId,
+    clientEmail: clientProfile.clientEmail ?? "",
+    clientDisplayName: clientProfile.clientDisplayName ?? "Client",
+    accessState: normalizeClientAccessState(clientProfile.accessState, "active"),
+    policyId: normalizePolicyId(clientProfile.policyId) ?? "default",
+    advisingDaysOverride: Array.isArray(clientProfile.advisingDaysOverride) ? clientProfile.advisingDaysOverride : [],
+    firstInteractionAt: clientProfile.firstInteractionAt ?? null,
+    lastInteractionAt: clientProfile.lastInteractionAt ?? null,
+    emailAgentCount: Number(clientProfile.emailAgentCount ?? 0),
+    availabilityWebCount: Number(clientProfile.availabilityWebCount ?? 0),
+    totalInteractionCount: Number(clientProfile.totalInteractionCount ?? 0),
+    updatedAt: clientProfile.updatedAt ?? null
+  };
+}
+
 function selectTraceMetadata(trace) {
   return {
     requestId: trace.requestId,
@@ -1061,6 +1102,9 @@ function buildAdvisorPage() {
       code { background: #eef2ff; padding: 2px 6px; border-radius: 4px; }
       pre { background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 12px; overflow: auto; font-size: 12px; }
       .row { margin-top: 10px; }
+      .inline-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+      .small-button { padding: 4px 8px; font-size: 12px; }
+      .small-select { padding: 4px 8px; font-size: 12px; }
     </style>
   </head>
   <body>
@@ -1088,6 +1132,27 @@ function buildAdvisorPage() {
           </tr>
         </thead>
         <tbody id="connectionsBody"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0;">Client Directory</h2>
+      <p class="muted">Metadata-only client list with first contact, usage counters, and access policy controls.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th>Access</th>
+            <th>Policy</th>
+            <th>First Contact</th>
+            <th>Last Activity</th>
+            <th>Email Uses</th>
+            <th>Web Uses</th>
+            <th>Total</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="clientsBody"></tbody>
       </table>
     </div>
 
@@ -1187,6 +1252,104 @@ function buildAdvisorPage() {
         }
       }
 
+      function escapeHtml(value) {
+        return String(value || '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
+      }
+
+      function formatCount(value) {
+        const parsed = Number(value || 0);
+        return Number.isFinite(parsed) ? String(parsed) : '0';
+      }
+
+      async function updateClientProfile(clientId, patch) {
+        const response = await fetch('./advisor/api/clients/' + encodeURIComponent(clientId), {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(patch || {})
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || 'Client update failed');
+        }
+        return payload;
+      }
+
+      async function loadClients() {
+        const tbody = document.getElementById('clientsBody');
+        tbody.innerHTML = '';
+        const response = await fetch('./advisor/api/clients');
+        const payload = await response.json();
+        if (!response.ok) {
+          const row = document.createElement('tr');
+          row.innerHTML = '<td colspan="9" class="error">' + escapeHtml(payload.error || 'Unable to load clients.') + '</td>';
+          tbody.appendChild(row);
+          return;
+        }
+
+        const clients = Array.isArray(payload.clients) ? payload.clients : [];
+        const policyOptions = Array.isArray(payload.policyOptions) && payload.policyOptions.length > 0
+          ? payload.policyOptions
+          : ['default', 'weekend', 'monday'];
+
+        if (clients.length === 0) {
+          const row = document.createElement('tr');
+          row.innerHTML = '<td colspan="9" class="muted">No clients yet.</td>';
+          tbody.appendChild(row);
+          return;
+        }
+
+        for (const client of clients) {
+          const row = document.createElement('tr');
+          const accessClass = client.accessState === 'active' ? 'ok' : client.accessState === 'blocked' ? 'warn' : 'error';
+          const optionsHtml = policyOptions
+            .map((policyId) => {
+              const selected = policyId === client.policyId ? ' selected' : '';
+              return '<option value="' + escapeHtml(policyId) + '"' + selected + '>' + escapeHtml(policyId) + '</option>';
+            })
+            .join('');
+
+          row.innerHTML =
+            '<td><div>' + escapeHtml(client.clientDisplayName || 'Client') + '</div><div class="muted"><code>' + escapeHtml(client.clientEmail || client.clientId) + '</code></div></td>' +
+            '<td><span class="status ' + accessClass + '">' + escapeHtml(client.accessState || 'active') + '</span></td>' +
+            '<td><div class="inline-controls"><select class="small-select" data-role="policy">' + optionsHtml + '</select><button class="small-button" data-action="save-policy">Save</button></div></td>' +
+            '<td>' + escapeHtml(client.firstInteractionAt || '-') + '</td>' +
+            '<td>' + escapeHtml(client.lastInteractionAt || '-') + '</td>' +
+            '<td>' + formatCount(client.emailAgentCount) + '</td>' +
+            '<td>' + formatCount(client.availabilityWebCount) + '</td>' +
+            '<td>' + formatCount(client.totalInteractionCount) + '</td>' +
+            '<td><div class="inline-controls"><button class="small-button" data-action="activate">Activate</button><button class="small-button" data-action="block">Block</button><button class="small-button" data-action="delete">Delete</button></div></td>';
+
+          row.querySelector('[data-action="save-policy"]').addEventListener('click', async () => {
+            const policySelector = row.querySelector('[data-role="policy"]');
+            const policyId = String(policySelector.value || '').trim();
+            await updateClientProfile(client.clientId, { policyId });
+            await loadClients();
+          });
+
+          row.querySelector('[data-action="activate"]').addEventListener('click', async () => {
+            await updateClientProfile(client.clientId, { accessState: 'active' });
+            await loadClients();
+          });
+
+          row.querySelector('[data-action="block"]').addEventListener('click', async () => {
+            await updateClientProfile(client.clientId, { accessState: 'blocked' });
+            await loadClients();
+          });
+
+          row.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+            await updateClientProfile(client.clientId, { accessState: 'deleted' });
+            await loadClients();
+          });
+
+          tbody.appendChild(row);
+        }
+      }
+
       document.getElementById('addMock').addEventListener('click', async () => {
         await fetch('./advisor/api/connections/mock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
         await loadConnections();
@@ -1270,6 +1433,9 @@ function buildAdvisorPage() {
       loadConnections().catch((error) => {
         console.error(error);
       });
+      loadClients().catch((error) => {
+        console.error(error);
+      });
     </script>
   </body>
 </html>`;
@@ -1338,6 +1504,7 @@ export function createPortalHandler(overrides = {}) {
     const appName = process.env.APP_NAME ?? "calendar-agent-spike";
     const stage = process.env.STAGE ?? "dev";
     const connectionsTableName = process.env.CONNECTIONS_TABLE_NAME;
+    const clientProfilesTableName = process.env.CLIENT_PROFILES_TABLE_NAME;
     const traceTableName = process.env.TRACE_TABLE_NAME;
     const oauthStateTableName = process.env.OAUTH_STATE_TABLE_NAME;
     const googleAppSecretArn = process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
@@ -1348,6 +1515,7 @@ export function createPortalHandler(overrides = {}) {
     const calendarMode = (process.env.CALENDAR_MODE ?? "connection").toLowerCase();
     const hostTimezone = normalizeTimezone(process.env.HOST_TIMEZONE, "America/Los_Angeles");
     const advisingDays = parseAdvisingDays(process.env.ADVISING_DAYS ?? "Tue,Wed");
+    const policyPresets = parseClientPolicyPresets(process.env.CLIENT_POLICY_PRESETS_JSON, advisingDays);
     const searchDays = parseClampedIntEnv(process.env.SEARCH_DAYS, 14, 1, 31);
     const workdayStartHour = parseClampedIntEnv(process.env.WORKDAY_START_HOUR, 9, 0, 23);
     const workdayEndHour = parseClampedIntEnv(process.env.WORKDAY_END_HOUR, 17, 1, 24);
@@ -1374,6 +1542,8 @@ export function createPortalHandler(overrides = {}) {
       let tokenParamName = "token";
       let linkClientDisplayName = clientHint;
       let linkClientReference = clientHintReference;
+      let linkClientId = null;
+      let linkClientEmail = null;
       let linkClientTimezone = null;
       let requestedDuration = null;
       let linkExpiresAtMs = Date.now();
@@ -1403,6 +1573,8 @@ export function createPortalHandler(overrides = {}) {
 
         linkClientDisplayName = sanitizeClientDisplayName(linkRecord.clientDisplayName) ?? clientHint;
         linkClientReference = normalizeClientReference(linkRecord.clientReference) ?? clientHintReference;
+        linkClientId = normalizeClientId(linkRecord.clientId ?? linkRecord.clientEmail ?? "");
+        linkClientEmail = String(linkRecord.clientEmail ?? "").trim().toLowerCase();
         linkClientTimezone = normalizeOptionalTimezone(linkRecord.clientTimezone);
         requestedDuration = Number(linkRecord.durationMinutes);
         linkExpiresAtMs = recordExpiresAtMs;
@@ -1430,6 +1602,20 @@ export function createPortalHandler(overrides = {}) {
         requestedDuration = Number(tokenPayload.durationMinutes);
         linkClientTimezone = normalizeOptionalTimezone(tokenPayload.clientTimezone);
         linkExpiresAtMs = Number(tokenPayload.expiresAtMs);
+      }
+
+      let effectiveAdvisingDays = advisingDays;
+      if (clientProfilesTableName && linkClientId && typeof deps.getClientProfile === "function") {
+        const clientProfile = await deps.getClientProfile(clientProfilesTableName, advisorId, linkClientId);
+        if (isClientAccessRestricted(clientProfile)) {
+          return availabilityErrorPage("This client no longer has access to advisor availability.");
+        }
+
+        effectiveAdvisingDays = resolveClientAdvisingDays({
+          clientProfile,
+          defaultAdvisingDays: advisingDays,
+          policyPresets
+        });
       }
 
       const durationMinutes = Number.isFinite(requestedDuration)
@@ -1465,7 +1651,7 @@ export function createPortalHandler(overrides = {}) {
         busyIntervalsUtc: busyIntervals,
         hostTimezone,
         clientTimezone: linkClientTimezone,
-        advisingDays,
+        advisingDays: effectiveAdvisingDays,
         searchStartIso,
         searchEndIso,
         workdayStartHour,
@@ -1473,6 +1659,26 @@ export function createPortalHandler(overrides = {}) {
         slotMinutes: durationMinutes,
         maxCells: availabilityViewMaxSlots
       });
+
+      if (
+        clientProfilesTableName &&
+        linkClientId &&
+        typeof deps.recordClientAvailabilityViewInteraction === "function"
+      ) {
+        try {
+          await deps.recordClientAvailabilityViewInteraction(clientProfilesTableName, {
+            advisorId,
+            clientId: linkClientId,
+            clientEmail: linkClientEmail,
+            clientDisplayName: linkClientDisplayName,
+            accessState: "active",
+            policyId: "default",
+            updatedAt: new Date().toISOString()
+          });
+        } catch {
+          // Best-effort client web usage tracking.
+        }
+      }
 
       return htmlResponse(
         200,
@@ -1645,6 +1851,105 @@ export function createPortalHandler(overrides = {}) {
           isPrimary: Boolean(item.isPrimary),
           updatedAt: item.updatedAt
         }))
+      });
+    }
+
+    if (method === "GET" && rawPath === "/advisor/api/clients") {
+      if (!clientProfilesTableName) {
+        return serverError("CLIENT_PROFILES_TABLE_NAME is required");
+      }
+
+      const clientProfiles = await deps.listClientProfiles(clientProfilesTableName, advisorId);
+      clientProfiles.sort((left, right) => {
+        const leftLast = String(left.lastInteractionAt ?? "");
+        const rightLast = String(right.lastInteractionAt ?? "");
+        return rightLast.localeCompare(leftLast);
+      });
+
+      return jsonResponse(200, {
+        advisorId,
+        policyOptions: Object.keys(policyPresets),
+        clients: clientProfiles.map((item) => normalizeClientProfileForApi(item))
+      });
+    }
+
+    const clientProfilePathValue = parseClientProfilePath(rawPath);
+    if (method === "PATCH" && clientProfilePathValue) {
+      if (!clientProfilesTableName) {
+        return serverError("CLIENT_PROFILES_TABLE_NAME is required");
+      }
+
+      const decodedClientId = decodeURIComponent(clientProfilePathValue);
+      const clientId = normalizeClientId(decodedClientId);
+      if (!clientId || clientId.length > 254) {
+        return badRequest("Invalid clientId");
+      }
+
+      let body;
+      try {
+        body = parseBody(event);
+      } catch {
+        return badRequest("Request body must be valid JSON");
+      }
+
+      const existing = await deps.getClientProfile(clientProfilesTableName, advisorId, clientId);
+      if (!existing) {
+        return jsonResponse(404, { error: "Client not found" });
+      }
+
+      const nowIso = new Date().toISOString();
+      const merged = {
+        ...existing,
+        advisorId,
+        clientId,
+        updatedAt: nowIso
+      };
+
+      if (body.accessState !== undefined) {
+        const normalizedAccessState = String(body.accessState ?? "")
+          .trim()
+          .toLowerCase();
+        if (!["active", "blocked", "deleted"].includes(normalizedAccessState)) {
+          return badRequest("accessState must be one of: active, blocked, deleted");
+        }
+
+        merged.accessState = normalizedAccessState;
+      }
+
+      if (body.policyId !== undefined) {
+        const normalizedPolicyId = normalizePolicyId(body.policyId);
+        if (!normalizedPolicyId || !Object.prototype.hasOwnProperty.call(policyPresets, normalizedPolicyId)) {
+          return badRequest(`policyId must be one of: ${Object.keys(policyPresets).join(", ")}`);
+        }
+
+        merged.policyId = normalizedPolicyId;
+      }
+
+      if (Object.prototype.hasOwnProperty.call(body, "advisingDaysOverride")) {
+        if (
+          body.advisingDaysOverride === null ||
+          body.advisingDaysOverride === "" ||
+          (Array.isArray(body.advisingDaysOverride) && body.advisingDaysOverride.length === 0)
+        ) {
+          delete merged.advisingDaysOverride;
+        } else {
+          try {
+            merged.advisingDaysOverride = parseClientAdvisingDaysOverride(body.advisingDaysOverride);
+          } catch (error) {
+            return badRequest(error.message);
+          }
+        }
+      }
+
+      if (body.clientDisplayName !== undefined) {
+        merged.clientDisplayName = sanitizeClientDisplayName(body.clientDisplayName) ?? merged.clientDisplayName;
+      }
+
+      await deps.putClientProfile(clientProfilesTableName, merged);
+
+      return jsonResponse(200, {
+        advisorId,
+        client: normalizeClientProfileForApi(merged)
       });
     }
 

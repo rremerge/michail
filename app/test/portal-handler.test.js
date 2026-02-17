@@ -457,6 +457,139 @@ test("advisor portal can create and list mock connection", async () => {
   }
 });
 
+test("advisor portal lists client directory metadata", async () => {
+  const handler = createPortalHandler({
+    async listClientProfiles(tableName, advisorId) {
+      assert.equal(tableName, "ClientProfilesTable");
+      assert.equal(advisorId, "manoj");
+      return [
+        {
+          advisorId,
+          clientId: "client@example.com",
+          clientEmail: "client@example.com",
+          clientDisplayName: "Client Example",
+          accessState: "active",
+          policyId: "default",
+          firstInteractionAt: "2026-02-01T00:00:00.000Z",
+          lastInteractionAt: "2026-02-16T00:00:00.000Z",
+          emailAgentCount: 3,
+          availabilityWebCount: 2,
+          totalInteractionCount: 5,
+          updatedAt: "2026-02-16T00:00:00.000Z"
+        }
+      ];
+    }
+  });
+
+  const previousValues = {
+    CLIENT_PROFILES_TABLE_NAME: process.env.CLIENT_PROFILES_TABLE_NAME,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    CLIENT_POLICY_PRESETS_JSON: process.env.CLIENT_POLICY_PRESETS_JSON
+  };
+
+  process.env.CLIENT_PROFILES_TABLE_NAME = "ClientProfilesTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_ID = "manoj";
+  process.env.CLIENT_POLICY_PRESETS_JSON = '{"default":["Tue","Wed"],"weekend":["Sat","Sun"],"monday":["Mon"]}';
+
+  try {
+    const response = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/api/clients"
+    });
+
+    assert.equal(response.statusCode, 200);
+    const payload = JSON.parse(response.body);
+    assert.equal(payload.clients.length, 1);
+    assert.equal(payload.clients[0].clientId, "client@example.com");
+    assert.equal(payload.clients[0].totalInteractionCount, 5);
+    assert.deepEqual(payload.policyOptions.includes("weekend"), true);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("advisor portal updates client access state and policy", async () => {
+  const writes = [];
+  const handler = createPortalHandler({
+    async getClientProfile(tableName, advisorId, clientId) {
+      assert.equal(tableName, "ClientProfilesTable");
+      assert.equal(advisorId, "manoj");
+      assert.equal(clientId, "client@example.com");
+      return {
+        advisorId,
+        clientId,
+        clientEmail: clientId,
+        clientDisplayName: "Client Example",
+        accessState: "active",
+        policyId: "default",
+        firstInteractionAt: "2026-02-01T00:00:00.000Z",
+        lastInteractionAt: "2026-02-16T00:00:00.000Z",
+        emailAgentCount: 3,
+        availabilityWebCount: 2,
+        totalInteractionCount: 5
+      };
+    },
+    async putClientProfile(tableName, item) {
+      assert.equal(tableName, "ClientProfilesTable");
+      writes.push(item);
+    }
+  });
+
+  const previousValues = {
+    CLIENT_PROFILES_TABLE_NAME: process.env.CLIENT_PROFILES_TABLE_NAME,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    CLIENT_POLICY_PRESETS_JSON: process.env.CLIENT_POLICY_PRESETS_JSON
+  };
+
+  process.env.CLIENT_PROFILES_TABLE_NAME = "ClientProfilesTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_ID = "manoj";
+  process.env.CLIENT_POLICY_PRESETS_JSON = '{"default":["Tue","Wed"],"weekend":["Sat","Sun"],"monday":["Mon"]}';
+
+  try {
+    const response = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "PATCH" }
+      },
+      rawPath: "/dev/advisor/api/clients/client%40example.com",
+      body: JSON.stringify({
+        accessState: "deleted",
+        policyId: "weekend",
+        advisingDaysOverride: ["Sat", "Sun"]
+      })
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].accessState, "deleted");
+    assert.equal(writes[0].policyId, "weekend");
+    assert.deepEqual(writes[0].advisingDaysOverride, ["Sat", "Sun"]);
+    const payload = JSON.parse(response.body);
+    assert.equal(payload.client.accessState, "deleted");
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
 test("advisor portal google start returns 400 when app credentials are missing", async () => {
   const handler = createPortalHandler({
     async getSecretString() {
@@ -927,6 +1060,69 @@ test("availability page shows busy blocks without exposing meeting details", asy
     assert.match(response.body, /class="slot busy"/);
     assert.match(response.body, /Busy blocks: [1-9]/);
     assert.equal(response.body.includes("Quarterly Board Review"), false);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("availability page rejects client profile marked deleted", async () => {
+  const tokenId = "rejectclienttoken";
+  const nowMs = Date.now();
+  const handler = createPortalHandler({
+    async getAvailabilityLink() {
+      return {
+        tokenId,
+        advisorId: "manoj",
+        clientId: "deleted@example.com",
+        clientEmail: "deleted@example.com",
+        clientDisplayName: "Deleted Client",
+        durationMinutes: 30,
+        expiresAtMs: nowMs + 60 * 60 * 1000
+      };
+    },
+    async getClientProfile(tableName, advisorId, clientId) {
+      assert.equal(tableName, "ClientProfilesTable");
+      assert.equal(advisorId, "manoj");
+      assert.equal(clientId, "deleted@example.com");
+      return {
+        advisorId,
+        clientId,
+        accessState: "deleted"
+      };
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    CLIENT_PROFILES_TABLE_NAME: process.env.CLIENT_PROFILES_TABLE_NAME
+  };
+  process.env.ADVISOR_ID = "manoj";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  process.env.CLIENT_PROFILES_TABLE_NAME = "ClientProfilesTable";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        t: tokenId
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/availability"
+    });
+
+    assert.equal(response.statusCode, 403);
+    assert.match(response.body, /no longer has access/i);
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {

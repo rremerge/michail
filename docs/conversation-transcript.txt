@@ -2439,3 +2439,112 @@ yes please do
 
 Assistant:
 Staged PRD and transcript updates, created a checkpoint commit, and pushed to origin/main.
+
+---
+
+Turn 108
+User:
+ok so lets work on generating code for this now
+
+Assistant:
+Implemented the first code slice for the new PRD requirements (client directory, engagement tracking, access governance, and per-client day policy handling).
+
+Code changes:
+- Added new module `app/src/client-profile.js`:
+  - client id normalization
+  - access-state normalization (`active|blocked|deleted`)
+  - policy preset parsing from env JSON
+  - advising-day parsing/canonicalization
+  - effective advising-day resolution by profile/policy
+- Updated `app/src/handler.js`:
+  - resolves client profile at email intake when `CLIENT_PROFILES_TABLE_NAME` is configured
+  - enforces access control: blocked/deleted clients are denied scheduling flow
+  - applies client-specific advising-day policy for slot generation
+  - records email-agent usage metadata via `recordClientEmailInteraction`
+  - availability link records now include `clientId` and `clientEmail`
+- Updated `app/src/runtime-deps.js` with client profile data operations:
+  - `getClientProfile`
+  - `listClientProfiles`
+  - `putClientProfile`
+  - `recordClientEmailInteraction`
+  - `recordClientAvailabilityViewInteraction`
+- Updated `app/src/portal-handler.js`:
+  - `/availability` now checks client profile access state and denies blocked/deleted clients
+  - `/availability` resolves effective advising days from client policy/profile
+  - `/availability` records web-view interaction counters
+  - Added advisor APIs:
+    - `GET /advisor/api/clients`
+    - `PATCH /advisor/api/clients/{clientId}`
+  - Advisor web UI now has a Client Directory section with:
+    - metadata-only client list
+    - counters (email/web/total)
+    - policy selection
+    - Activate / Block / Delete actions
+- Updated `template.yaml`:
+  - Added `ClientProfilesTable` (DynamoDB)
+  - Added `ClientPolicyPresetsJson` parameter
+  - Added env vars to both lambdas:
+    - `CLIENT_PROFILES_TABLE_NAME`
+    - `CLIENT_POLICY_PRESETS_JSON`
+  - Added IAM for client profile read/write/update/query
+  - Added API routes for clients list/update
+  - Added output `ClientProfilesTableName`
+  - Added `PATCH` to API CORS allowed methods
+- Updated tests:
+  - `app/test/handler.test.js`: added client policy override + blocked-client denial coverage
+  - `app/test/portal-handler.test.js`: added client list/update API tests and deleted-client availability denial test
+  - `app/test/template-smoke.test.js`: asserts new table/env/routes
+- Updated `README.md`:
+  - documents Client Directory usage and access-policy behavior.
+
+Validation:
+- Local tests: `cd app && npm test` -> `56/56` passing.
+
+Status:
+- Code is implemented and tested locally; not yet committed/pushed in this turn.
+
+---
+
+Turn 109
+User:
+lets run the end to end verification and once that is successful, do a checkpoint
+
+Assistant:
+Executed live end-to-end verification in `us-east-1` and then prepared checkpoint changes.
+
+Deployment:
+- Deployed stack `calendar-agent-spike-dev` with new resources/routes:
+  - `ClientProfilesTable`
+  - `GET /advisor/api/clients`
+  - `PATCH /advisor/api/clients/{clientId}`
+
+E2E verification steps and outcomes:
+1. Triggered live intake:
+   - `POST /dev/spike/email` with `fromEmail=titoneeda@gmail.com`
+   - Result: `deliveryStatus=sent`, `llmStatus=ok`, `suggestionCount=3`
+2. Verified client profile creation/counters in DynamoDB:
+   - Table: `calendar-agent-spike-dev-ClientProfilesTable-212LWZ1BSM4B`
+   - Item (`manoj`, `titoneeda@gmail.com`) showed:
+     - `firstInteractionAt` set
+     - `emailAgentCount=1`
+     - `totalInteractionCount=1`
+3. Verified availability link and web usage tracking:
+   - Retrieved link token from availability table (`R0yohi-yrdrJ0_1q`)
+   - Opened `/dev/availability?t=...&for=titoneeda` (HTTP 200)
+   - Client profile updated with:
+     - `availabilityWebCount=1`
+     - `totalInteractionCount=2`
+     - `lastInteractionAt` updated
+4. Verified advisor client API auth and update path:
+   - Generated advisor session cookie token using portal session signing key.
+   - Called `GET /dev/advisor/api/clients` (HTTP 200) and confirmed client metadata payload.
+   - Called `PATCH /dev/advisor/api/clients/titoneeda%40gmail.com` with `{ "accessState": "deleted" }` (HTTP 200).
+5. Verified revocation enforcement:
+   - Re-opened same availability link -> HTTP 403 with message:
+     - "This client no longer has access to advisor availability."
+6. Restored test account to avoid side effects:
+   - Patched access back to `{ "accessState": "active" }` (HTTP 200)
+   - Rechecked availability link -> HTTP 200.
+
+Local quality gate:
+- `cd app && npm test` -> `56/56` passing.

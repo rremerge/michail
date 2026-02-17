@@ -5,6 +5,14 @@ import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adap
 import { draftResponseWithOpenAi, extractSchedulingIntentWithOpenAi, parseOpenAiConfigSecret } from "./llm-adapter.js";
 import { buildClientResponse, buildHumanReadableOptions } from "./response-builder.js";
 import { buildClientReference, createShortAvailabilityTokenId } from "./availability-link.js";
+import {
+  isClientAccessRestricted,
+  normalizeClientAccessState,
+  normalizeClientId,
+  parseAdvisingDaysList,
+  parseClientPolicyPresets,
+  resolveClientAdvisingDays
+} from "./client-profile.js";
 import { createRuntimeDeps } from "./runtime-deps.js";
 import { simpleParser } from "mailparser";
 
@@ -181,7 +189,8 @@ async function buildAvailabilityLink({
   durationMinutes,
   issuedAtMs,
   normalizedClientEmail,
-  rawFromEmail
+  clientDisplayName,
+  clientId
 }) {
   const baseUrl = String(env.AVAILABILITY_LINK_BASE_URL ?? "").trim();
   const tableName = String(env.AVAILABILITY_LINK_TABLE_NAME ?? "").trim();
@@ -199,7 +208,6 @@ async function buildAvailabilityLink({
     14 * 24 * 60
   );
   const expiresAtMs = issuedAtMs + ttlMinutes * 60 * 1000;
-  const clientDisplayName = deriveClientDisplayName(rawFromEmail, normalizedClientEmail);
   const clientReference = buildClientReference(clientDisplayName, normalizedClientEmail);
   const issuedAtIso = new Date(issuedAtMs).toISOString();
   const expiresAt = Math.floor(expiresAtMs / 1000);
@@ -211,6 +219,8 @@ async function buildAvailabilityLink({
       await deps.putAvailabilityLink(tableName, {
         tokenId: candidateId,
         advisorId,
+        clientId,
+        clientEmail: normalizedClientEmail,
         clientDisplayName,
         clientReference,
         clientTimezone: clientTimezone ?? null,
@@ -255,6 +265,13 @@ function normalizeEmailAddress(rawValue) {
   }
 
   return candidate.replace(/[<>]/g, "").trim();
+}
+
+function buildAccessDeniedResponseMessage({ clientDisplayName }) {
+  return {
+    subject: "Re: Scheduling request",
+    bodyText: `Hi ${clientDisplayName},\n\nThis scheduling interface is currently unavailable for your account.\nPlease contact Manoj directly if you need help booking time.\n`
+  };
 }
 
 function extractDomainFromEmail(normalizedEmail) {
@@ -551,14 +568,13 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   if (!fromEmail) {
     return { http: badRequest("fromEmail is required") };
   }
+  const clientId = normalizeClientId(fromEmail);
+  const clientDisplayName = deriveClientDisplayName(payload.fromEmail, fromEmail);
   const fromDomain = extractDomainFromEmail(fromEmail);
   const { bodyText, bodySource } = await resolveInboundEmailBody({ payload, env, deps });
 
   const hostTimezone = env.HOST_TIMEZONE ?? "America/Los_Angeles";
-  const advisingDays = (env.ADVISING_DAYS ?? "Tue,Wed")
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const defaultAdvisingDays = parseAdvisingDaysList(env.ADVISING_DAYS ?? "Tue,Wed", ["Tue", "Wed"]);
 
   const durationDefault = parseIntEnv(env.DEFAULT_DURATION_MINUTES, 30);
   const durationLimit = parseIntEnv(env.MAX_DURATION_MINUTES, 120);
@@ -577,6 +593,77 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const intentConfidenceThreshold = Number.parseFloat(
     env.INTENT_LLM_CONFIDENCE_THRESHOLD ?? String(DEFAULT_INTENT_CONFIDENCE_THRESHOLD)
   );
+  const clientProfilesTableName = String(env.CLIENT_PROFILES_TABLE_NAME ?? "").trim();
+  const policyPresets = parseClientPolicyPresets(env.CLIENT_POLICY_PRESETS_JSON, defaultAdvisingDays);
+
+  let clientProfile = null;
+  if (clientProfilesTableName && typeof deps.getClientProfile === "function") {
+    try {
+      clientProfile = await deps.getClientProfile(clientProfilesTableName, advisorId, clientId);
+    } catch {
+      clientProfile = null;
+    }
+  }
+
+  const accessState = normalizeClientAccessState(clientProfile?.accessState, "active");
+  if (isClientAccessRestricted(clientProfile)) {
+    const responseMode = (env.RESPONSE_MODE ?? "log").toLowerCase();
+    const deniedMessage = buildAccessDeniedResponseMessage({ clientDisplayName });
+    let deliveryStatus = "logged";
+    if (responseMode === "send" && env.SENDER_EMAIL) {
+      await deps.sendResponseEmail({
+        senderEmail: env.SENDER_EMAIL,
+        recipientEmail: fromEmail,
+        subject: deniedMessage.subject,
+        bodyText: deniedMessage.bodyText
+      });
+      deliveryStatus = "sent";
+    }
+
+    await deps.writeTrace(env.TRACE_TABLE_NAME, {
+      requestId,
+      responseId,
+      advisorId,
+      status: "denied",
+      stage: "access_control",
+      providerStatus: "skipped",
+      channel: payload.channel ?? "email",
+      fromDomain,
+      responseMode,
+      calendarMode: (env.CALENDAR_MODE ?? "mock").toLowerCase(),
+      llmMode: (env.LLM_MODE ?? "disabled").toLowerCase(),
+      llmStatus: "disabled",
+      bodySource,
+      intentSource: "parser",
+      intentLlmStatus: "disabled",
+      availabilityLinkStatus: "not_applicable",
+      requestedWindowCount: 0,
+      accessState,
+      createdAt: startedAtIso,
+      updatedAt: new Date(now()).toISOString(),
+      latencyMs: now() - startedAtMs,
+      expiresAt: Math.floor((startedAtMs + 7 * 24 * 60 * 60 * 1000) / 1000)
+    });
+
+    return {
+      http: ok({
+        requestId,
+        responseId,
+        deliveryStatus,
+        llmStatus: "disabled",
+        suggestionCount: 0,
+        suggestions: [],
+        accessDenied: true,
+        accessState
+      })
+    };
+  }
+
+  const advisingDays = resolveClientAdvisingDays({
+    clientProfile,
+    defaultAdvisingDays,
+    policyPresets
+  });
 
   const parserIntent = parseSchedulingRequest({
     fromEmail,
@@ -775,7 +862,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         durationMinutes: parsed.durationMinutes,
         issuedAtMs: startedAtMs,
         normalizedClientEmail: fromEmail,
-        rawFromEmail: payload.fromEmail
+        clientDisplayName,
+        clientId
       });
       availabilityLinkStatus = availabilityLinkResult.status;
       responseMessage = appendAvailabilityLinkSection({
@@ -809,6 +897,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     requestId,
     responseId,
     advisorId,
+    accessState,
     status: "completed",
     providerStatus,
     channel: payload.channel ?? "email",
@@ -830,6 +919,22 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     latencyMs: completedAtMs - startedAtMs,
     expiresAt: Math.floor((startedAtMs + 7 * 24 * 60 * 60 * 1000) / 1000)
   });
+
+  if (clientProfilesTableName && typeof deps.recordClientEmailInteraction === "function") {
+    try {
+      await deps.recordClientEmailInteraction(clientProfilesTableName, {
+        advisorId,
+        clientId,
+        clientEmail: fromEmail,
+        clientDisplayName,
+        accessState,
+        policyId: clientProfile?.policyId ?? "default",
+        updatedAt: new Date(completedAtMs).toISOString()
+      });
+    } catch {
+      // Best-effort client analytics tracking.
+    }
+  }
 
   return {
     http: ok({

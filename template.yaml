@@ -134,6 +134,10 @@ Parameters:
     Type: Number
     Default: 240
     Description: Maximum free slots rendered on the public availability page.
+  ClientPolicyPresetsJson:
+    Type: String
+    Default: '{"default":["Tue","Wed"],"weekend":["Sat","Sun"],"monday":["Mon"]}'
+    Description: JSON object mapping client policy IDs to allowed advising days.
 
 Conditions:
   HasCustomSecretName: !Not [!Equals [!Ref GoogleOAuthSecretName, ""]]
@@ -200,6 +204,28 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: expiresAt
         Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: application
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
+  ClientProfilesTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: advisorId
+          AttributeType: S
+        - AttributeName: clientId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: advisorId
+          KeyType: HASH
+        - AttributeName: clientId
+          KeyType: RANGE
       SSESpecification:
         SSEEnabled: true
       Tags:
@@ -337,6 +363,7 @@ Resources:
           - POST
           - GET
           - DELETE
+          - PATCH
         AllowOrigins:
           - "*"
         AllowHeaders:
@@ -383,6 +410,8 @@ Resources:
           AVAILABILITY_LINK_BASE_URL: !Ref AvailabilityLinkBaseUrl
           AVAILABILITY_LINK_TABLE_NAME: !Ref AvailabilityLinkTable
           AVAILABILITY_LINK_TTL_MINUTES: !Ref AvailabilityLinkTtlMinutes
+          CLIENT_PROFILES_TABLE_NAME: !Ref ClientProfilesTable
+          CLIENT_POLICY_PRESETS_JSON: !Ref ClientPolicyPresetsJson
       Events:
         SpikeApiRequest:
           Type: HttpApi
@@ -424,6 +453,12 @@ Resources:
               Action:
                 - dynamodb:PutItem
               Resource: !GetAtt AvailabilityLinkTable.Arn
+            - Sid: AccessClientProfiles
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt ClientProfilesTable.Arn
             - Sid: ReadConnectionOAuthSecrets
               Effect: Allow
               Action:
@@ -475,6 +510,8 @@ Resources:
           AVAILABILITY_LINK_SECRET_ARN: !Ref AvailabilityLinkSecret
           AVAILABILITY_LINK_TABLE_NAME: !Ref AvailabilityLinkTable
           AVAILABILITY_VIEW_MAX_SLOTS: !Ref AvailabilityViewMaxSlots
+          CLIENT_PROFILES_TABLE_NAME: !Ref ClientProfilesTable
+          CLIENT_POLICY_PRESETS_JSON: !Ref ClientPolicyPresetsJson
           GOOGLE_OAUTH_SECRET_ARN: !Ref GoogleOAuthSecret
           CONNECTIONS_TABLE_NAME: !Ref ConnectionsTable
           TRACE_TABLE_NAME: !Ref TraceTable
@@ -563,6 +600,18 @@ Resources:
             ApiId: !Ref SpikeApi
             Method: POST
             Path: /advisor/api/traces/{requestId}/feedback
+        AdvisorClientsList:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /advisor/api/clients
+        AdvisorClientsUpdate:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: PATCH
+            Path: /advisor/api/clients/{clientId}
       Policies:
         - Statement:
             - Sid: ManageConnections
@@ -621,6 +670,14 @@ Resources:
               Action:
                 - dynamodb:GetItem
               Resource: !GetAtt AvailabilityLinkTable.Arn
+            - Sid: ManageClientProfiles
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:Query
+                - dynamodb:UpdateItem
+              Resource: !GetAtt ClientProfilesTable.Arn
             - Sid: ManageConnectionSecrets
               Effect: Allow
               Action:
@@ -662,6 +719,9 @@ Outputs:
   AvailabilityLinkTableName:
     Description: DynamoDB table for short-lived client availability links.
     Value: !Ref AvailabilityLinkTable
+  ClientProfilesTableName:
+    Description: DynamoDB table for advisor client profile metadata.
+    Value: !Ref ClientProfilesTable
   AdvisorPortalUrl:
     Description: Advisor portal URL for managing connected calendars.
     Value: !Sub https://${SpikeApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/advisor

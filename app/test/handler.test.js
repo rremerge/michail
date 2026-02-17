@@ -330,6 +330,111 @@ test("processSchedulingEmail appends short availability link when configured", a
   assert.equal(savedLinks[0].durationMinutes, 30);
 });
 
+test("processSchedulingEmail uses client policy days and records email interaction metadata", async () => {
+  const traceItems = [];
+  const interactionUpdates = [];
+  const deps = {
+    async getClientProfile(tableName, advisorId, clientId) {
+      assert.equal(tableName, "ClientProfilesTable");
+      assert.equal(advisorId, "manoj");
+      assert.equal(clientId, "client@example.com");
+      return {
+        advisorId,
+        clientId,
+        accessState: "active",
+        policyId: "weekend"
+      };
+    },
+    async recordClientEmailInteraction(tableName, update) {
+      assert.equal(tableName, "ClientProfilesTable");
+      interactionUpdates.push(update);
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    CLIENT_PROFILES_TABLE_NAME: "ClientProfilesTable",
+    CLIENT_POLICY_PRESETS_JSON: '{"default":["Tue","Wed"],"weekend":["Sat","Sun"],"monday":["Mon"]}'
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Could we connect this week?"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-02T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.suggestionCount, 3);
+  for (const suggestion of response.suggestions) {
+    const hostStart = DateTime.fromISO(suggestion.startIsoHost);
+    assert.equal(hostStart.weekday === 6 || hostStart.weekday === 7, true);
+  }
+
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].accessState, "active");
+  assert.equal(interactionUpdates.length, 1);
+  assert.equal(interactionUpdates[0].clientId, "client@example.com");
+  assert.equal(interactionUpdates[0].clientDisplayName, "Client");
+});
+
+test("processSchedulingEmail denies blocked client access", async () => {
+  const traceItems = [];
+  const sentMessages = [];
+  const deps = {
+    async getClientProfile() {
+      return {
+        advisorId: "manoj",
+        clientId: "blocked@example.com",
+        accessState: "blocked",
+        policyId: "default"
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    CLIENT_PROFILES_TABLE_NAME: "ClientProfilesTable"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "blocked@example.com",
+      subject: "Need a time"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const body = JSON.parse(result.http.body);
+  assert.equal(body.accessDenied, true);
+  assert.equal(body.accessState, "blocked");
+  assert.equal(body.suggestionCount, 0);
+  assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0].bodyText, /currently unavailable/i);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].status, "denied");
+  assert.equal(traceItems[0].stage, "access_control");
+});
+
 test("processSchedulingEmail normalizes sender address and domain from formatted header", async () => {
   const traceItems = [];
   const sentMessages = [];

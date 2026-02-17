@@ -255,6 +255,115 @@ export function createRuntimeDeps() {
       return response.Item ?? null;
     },
 
+    async getClientProfile(clientProfilesTableName, advisorId, clientId) {
+      const response = await ddbClient.send(
+        new GetCommand({
+          TableName: clientProfilesTableName,
+          Key: {
+            advisorId,
+            clientId
+          }
+        })
+      );
+
+      return response.Item ?? null;
+    },
+
+    async listClientProfiles(clientProfilesTableName, advisorId) {
+      const response = await ddbClient.send(
+        new QueryCommand({
+          TableName: clientProfilesTableName,
+          KeyConditionExpression: "advisorId = :advisorId",
+          ExpressionAttributeValues: {
+            ":advisorId": advisorId
+          }
+        })
+      );
+
+      return response.Items ?? [];
+    },
+
+    async putClientProfile(clientProfilesTableName, item) {
+      await ddbClient.send(
+        new PutCommand({
+          TableName: clientProfilesTableName,
+          Item: item
+        })
+      );
+    },
+
+    async recordClientEmailInteraction(
+      clientProfilesTableName,
+      { advisorId, clientId, clientEmail, clientDisplayName, accessState, policyId, updatedAt }
+    ) {
+      await ddbClient.send(
+        new UpdateCommand({
+          TableName: clientProfilesTableName,
+          Key: {
+            advisorId,
+            clientId
+          },
+          UpdateExpression:
+            "SET #clientEmail = if_not_exists(#clientEmail, :clientEmail), #clientDisplayName = if_not_exists(#clientDisplayName, :clientDisplayName), #firstInteractionAt = if_not_exists(#firstInteractionAt, :updatedAt), #lastInteractionAt = :updatedAt, #updatedAt = :updatedAt, #accessState = if_not_exists(#accessState, :accessState), #policyId = if_not_exists(#policyId, :policyId) ADD #emailAgentCount :one, #totalInteractionCount :one",
+          ExpressionAttributeNames: {
+            "#clientEmail": "clientEmail",
+            "#clientDisplayName": "clientDisplayName",
+            "#firstInteractionAt": "firstInteractionAt",
+            "#lastInteractionAt": "lastInteractionAt",
+            "#updatedAt": "updatedAt",
+            "#accessState": "accessState",
+            "#policyId": "policyId",
+            "#emailAgentCount": "emailAgentCount",
+            "#totalInteractionCount": "totalInteractionCount"
+          },
+          ExpressionAttributeValues: {
+            ":clientEmail": clientEmail ?? "",
+            ":clientDisplayName": clientDisplayName ?? "Client",
+            ":updatedAt": updatedAt,
+            ":accessState": accessState ?? "active",
+            ":policyId": policyId ?? "default",
+            ":one": 1
+          }
+        })
+      );
+    },
+
+    async recordClientAvailabilityViewInteraction(
+      clientProfilesTableName,
+      { advisorId, clientId, clientEmail, clientDisplayName, accessState, policyId, updatedAt }
+    ) {
+      await ddbClient.send(
+        new UpdateCommand({
+          TableName: clientProfilesTableName,
+          Key: {
+            advisorId,
+            clientId
+          },
+          UpdateExpression:
+            "SET #clientEmail = if_not_exists(#clientEmail, :clientEmail), #clientDisplayName = if_not_exists(#clientDisplayName, :clientDisplayName), #firstInteractionAt = if_not_exists(#firstInteractionAt, :updatedAt), #lastInteractionAt = :updatedAt, #updatedAt = :updatedAt, #accessState = if_not_exists(#accessState, :accessState), #policyId = if_not_exists(#policyId, :policyId) ADD #availabilityWebCount :one, #totalInteractionCount :one",
+          ExpressionAttributeNames: {
+            "#clientEmail": "clientEmail",
+            "#clientDisplayName": "clientDisplayName",
+            "#firstInteractionAt": "firstInteractionAt",
+            "#lastInteractionAt": "lastInteractionAt",
+            "#updatedAt": "updatedAt",
+            "#accessState": "accessState",
+            "#policyId": "policyId",
+            "#availabilityWebCount": "availabilityWebCount",
+            "#totalInteractionCount": "totalInteractionCount"
+          },
+          ExpressionAttributeValues: {
+            ":clientEmail": clientEmail ?? "",
+            ":clientDisplayName": clientDisplayName ?? "Client",
+            ":updatedAt": updatedAt,
+            ":accessState": accessState ?? "active",
+            ":policyId": policyId ?? "default",
+            ":one": 1
+          }
+        })
+      );
+    },
+
     async createSecret(secretName, secretString) {
       const response = await secretsClient.send(
         new CreateSecretCommand({
