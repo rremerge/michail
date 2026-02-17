@@ -20,6 +20,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 9. Provide robust debuggability and supportability so response issues can be traced to root cause by agent workflows or by Manoj.
 10. Scale reliably to thousands of clients without degrading response quality.
 11. Give Manoj advisor-facing client relationship controls (client list, first-contact tracking, usage metrics, delete/block, and day-visibility segmentation).
+12. Harden the agent against prompt-injection and adversarial email content so untrusted client text cannot override system behavior.
 
 ## 3. Non-Goals (MVP)
 1. Full LinkedIn and SMS integration in v1 (capture as future channel integrations).
@@ -131,6 +132,13 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 4. System shall allow assigning clients to one or more advisor-defined cohorts/groups where each cohort has allowed day visibility rules.
 5. System shall support per-client day-visibility override when needed, with override precedence higher than cohort/default policy.
 
+### FR-15 Prompt Injection and Untrusted-Input Defense
+1. System shall treat all inbound client email content as untrusted input and sanitize/normalize it before any LLM call.
+2. System shall isolate untrusted email text from system instructions using strict prompt boundaries and structured input fields.
+3. System shall restrict agent actions to an explicit allowlist of scheduling operations; no action may be executed directly from client-authored instructions.
+4. System shall apply injection-detection checks (pattern/risk scoring) and route suspicious requests to safe fallback behavior (clarification request or manual-review path).
+5. System shall record content-free security diagnostics (for example: injection risk level, guardrail decision, fallback reason) to support investigation without storing raw email content.
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -146,6 +154,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 9. Cost control: Track per-request LLM and infrastructure costs with budget alerts.
 10. Advisor client-directory queries must support at least 10,000 client identities with paginated response p95 <= 2 seconds for first-page loads.
 11. Access revocation SLA: deleted/blocked clients must lose availability-page access within 5 minutes.
+12. Prompt-injection resilience: high-risk injection attempts shall be blocked from changing system/tool behavior and shall trigger fallback handling in <= 5 seconds p95.
 
 ## 8. Data and Policy Requirements
 1. Persist only non-content metadata required for operations (for example: request ids, workflow status, provider event ids, policy decision outcomes).
@@ -157,6 +166,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 7. Persist client-directory metadata only (for example: normalized client id, display label, first/last interaction timestamps, channel counters, policy assignment, access state).
 8. Do not persist client email/calendar content in client-directory records; references must remain metadata-only.
 9. On client deletion, revoke active availability tokens/links and keep only minimal suppression metadata required to enforce blocked/deleted state.
+10. For security analysis, store only metadata-level injection indicators and guardrail outcomes; never persist raw adversarial prompt content after task completion.
 
 ## 9. Success Metrics
 1. Reduce manual scheduling time by >= 70% within first 60 days.
@@ -170,6 +180,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 9. Mean-time-to-resolution (MTTR) for high-priority response defects <= 4 hours.
 10. 100% of deleted/blocked clients are denied availability-link access within 5 minutes of policy update.
 11. Manoj can retrieve first page of client directory (default sort) in <= 2 seconds p95.
+12. >= 99% of identified prompt-injection attempts are safely contained (no unsafe tool/action execution), with logged guardrail outcome metadata.
 
 ## 10. MVP Scope (Release 1)
 1. Email intake and response.
@@ -181,6 +192,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 7. GPT-5-backed agent with provider abstraction interface.
 8. Advisor client directory with first-contact and usage metrics (metadata only).
 9. Client cohort/day-visibility policy controls, including delete/block access state.
+10. Prompt-injection guardrails for inbound client email content.
 
 ## 11. Out of Scope for MVP
 1. LinkedIn integration.
@@ -196,6 +208,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 5. Privacy policy misconfiguration risk in organization-specific visibility.
 6. High concurrency spikes could impact response latency unless capacity controls and load shedding are in place.
 7. Investigation complexity may increase if telemetry coverage is incomplete.
+8. Adversarial prompt-injection attempts may bypass weak sanitization if guardrails are not continuously tested and tuned.
 
 ## 13. Acceptance Criteria (MVP)
 1. Given connected calendars, when a client requests a meeting by email, then agent responds with at least 3 valid slots (or fewer if constrained) that do not conflict with busy times.
@@ -212,6 +225,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 12. Given Manoj opens advisor client directory, when clients have interacted via email/web, then he can see each client's first interaction date and channel usage counters.
 13. Given Manoj marks a client as deleted, when that client opens a previously issued availability link or tries a new scheduling request, then access is denied.
 14. Given client cohort policies are configured (for example Tuesday/Wednesday vs weekend vs Monday), when a client views availability, then only days allowed by that client's effective policy are visible.
+15. Given inbound email contains instructions attempting to override system behavior, when the request is processed, then the agent treats those instructions as untrusted content, applies guardrails, and returns a safe scheduling response or clarification without executing unsafe actions.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
@@ -226,3 +240,5 @@ Manoj reserves a couple of days each week to talk to other technical professiona
 Manoj would like this workflow to be handled by an intelligent AI agent that looks up all his calendars and suggests possible times that they might be able to book. The agent should interact and converse on whatever medium they contact him on. To start with just an email  and we interface would be sufficient. He currently likes the GPT-5 engine for the LLM for the agent, but he may want to switch to claud or gemini in future.
 
 The Advisor would like to have the ability to get a list of all the clients they have interfaced with. They would like to track when they initiated their first connection, and how often the client uses the calendar interface (either via email agent or the website) to book meeting times. The advisor would also like to ensure that they can delete a client so they can no longer so the calendar. While by default the advisor wants to provide tuesday and wednesday calendars to most clients, they may give a different set of days to some other clients. For instance, there maybe groups of clients that only see tuesday and wednesday, another group that see only the weekend, and another group that may see only monday.
+
+The Advisor is worried that LLMs may get tricked by a malicious client with a specially crafted email that makes it interpret the email as instructions. The agent needs to take appropriate precautions and make sure that any email content from a client is first sanitized to ensure there are no prompt injection like attacks.

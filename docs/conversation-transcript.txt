@@ -2780,3 +2780,42 @@ Actions:
 
 Next:
 - Commit and push these changes as the requested checkpoint.
+
+---
+
+Turn 120
+User:
+There is another addition to the user story. Please add the following para at the end of the PRD, and then generate appropriate requirements:  The Advisor is worried that LLMs may get tricked by a malicious client with a specially crafted email that makes it interpret the email as instructions. The agent needs to take appropriate precautions and make sure that any email content from a client is first sanitized to ensure there are no prompt injection like attacks.
+
+Assistant:
+Updated `docs/prd.md` with the new user-story addition and generated prompt-injection requirements.
+
+Changes made:
+- Added the new paragraph verbatim at the end of `## 15. Reference User Story (Verbatim)`.
+- Added goal-level requirement:
+  - Prompt-injection hardening against adversarial email content.
+- Added new functional requirement section:
+  - `FR-15 Prompt Injection and Untrusted-Input Defense` including sanitization, prompt boundary isolation, action allowlisting, suspicious-input fallback, and metadata-only security diagnostics.
+- Added related non-functional requirement:
+  - Prompt-injection resilience latency/containment target.
+- Added data/policy requirement:
+  - Store only metadata-level injection indicators, never raw adversarial prompt content after task completion.
+- Added success metric:
+  - >= 99% prompt-injection containment without unsafe tool/action execution.
+- Added MVP scope item for prompt-injection guardrails.
+- Added risk/dependency item for adversarial prompt bypass risk.
+- Added acceptance criterion validating safe handling of instruction-override attacks.
+
+---
+
+Turn 121
+User:
+ok check itin
+
+Assistant:
+Checked in the latest documentation updates.
+
+Actions:
+- Committed PRD changes for prompt-injection requirements and the updated reference user story paragraph.
+- Included transcript updates in the same checkpoint.
+- Pushed the commit to `origin/main`.
