@@ -19,6 +19,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 8. Deliver client-facing responses within a few seconds in normal operation and never exceed 5 minutes.
 9. Provide robust debuggability and supportability so response issues can be traced to root cause by agent workflows or by Manoj.
 10. Scale reliably to thousands of clients without degrading response quality.
+11. Give Manoj advisor-facing client relationship controls (client list, first-contact tracking, usage metrics, delete/block, and day-visibility segmentation).
 
 ## 3. Non-Goals (MVP)
 1. Full LinkedIn and SMS integration in v1 (capture as future channel integrations).
@@ -117,6 +118,19 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 3. System shall support replay/debug of workflow decisions using sanitized metadata and deterministic inputs where possible.
 4. System shall allow manual override actions (for example: resend corrected response or trigger re-evaluation) with audit records.
 
+### FR-13 Advisor Client Directory and Engagement Insights
+1. System shall maintain a metadata-only client directory for Manoj with one logical client profile per normalized client identity (for example: email-based identity in MVP).
+2. System shall track `firstInteractionAt`, `lastInteractionAt`, and interaction counters by channel (`emailAgent`, `availabilityWeb`) for each client.
+3. System shall provide advisor UI/API to list and search clients and sort by first contact date, last activity, and usage frequency.
+4. System shall update engagement counters from operational events without persisting raw email body or calendar content.
+
+### FR-14 Client Access Governance and Availability Cohorts
+1. System shall support per-client access states: `active`, `blocked`, and `deleted`.
+2. When a client is marked `deleted`, system shall revoke their availability-link access and deny future scheduling interface use.
+3. System shall support default advising-day policy (Tuesday/Wednesday) and per-group policy overrides (for example: weekend-only, Monday-only).
+4. System shall allow assigning clients to one or more advisor-defined cohorts/groups where each cohort has allowed day visibility rules.
+5. System shall support per-client day-visibility override when needed, with override precedence higher than cohort/default policy.
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -130,6 +144,8 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 7. Supportability: Provide operational runbooks, investigation tooling, and alerting to achieve mean-time-to-diagnosis (MTTD) <= 10 minutes for high-priority incidents.
 8. Extensibility: Channel connectors and LLM providers must be modular.
 9. Cost control: Track per-request LLM and infrastructure costs with budget alerts.
+10. Advisor client-directory queries must support at least 10,000 client identities with paginated response p95 <= 2 seconds for first-page loads.
+11. Access revocation SLA: deleted/blocked clients must lose availability-page access within 5 minutes.
 
 ## 8. Data and Policy Requirements
 1. Persist only non-content metadata required for operations (for example: request ids, workflow status, provider event ids, policy decision outcomes).
@@ -138,6 +154,9 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 4. Support policy rules for organization-level visibility on calendar entries.
 5. Maintain content-free audit trail for who/what booked or proposed each slot.
 6. Persist content-free diagnostic metadata necessary for troubleshooting and root-cause analysis.
+7. Persist client-directory metadata only (for example: normalized client id, display label, first/last interaction timestamps, channel counters, policy assignment, access state).
+8. Do not persist client email/calendar content in client-directory records; references must remain metadata-only.
+9. On client deletion, revoke active availability tokens/links and keep only minimal suppression metadata required to enforce blocked/deleted state.
 
 ## 9. Success Metrics
 1. Reduce manual scheduling time by >= 70% within first 60 days.
@@ -149,6 +168,8 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 7. 100% of client requests receive a response or escalation within 5 minutes.
 8. >= 95% of feedback reports are triaged with root-cause classification within 1 business day.
 9. Mean-time-to-resolution (MTTR) for high-priority response defects <= 4 hours.
+10. 100% of deleted/blocked clients are denied availability-link access within 5 minutes of policy update.
+11. Manoj can retrieve first page of client directory (default sort) in <= 2 seconds p95.
 
 ## 10. MVP Scope (Release 1)
 1. Email intake and response.
@@ -158,6 +179,8 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 5. Basic in-person travel buffer handling.
 6. Web busy/free availability view with privacy masking.
 7. GPT-5-backed agent with provider abstraction interface.
+8. Advisor client directory with first-contact and usage metrics (metadata only).
+9. Client cohort/day-visibility policy controls, including delete/block access state.
 
 ## 11. Out of Scope for MVP
 1. LinkedIn integration.
@@ -186,6 +209,9 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 9. Given any client request, when processing exceeds normal latency targets, then the system still provides a client response (answer, fallback, or escalation) within 5 minutes.
 10. Given a client reports \"response is incorrect/odd\", when feedback is submitted, then the system links it to request correlation ids and triggers investigation workflow automatically.
 11. Given Manoj reviews a reported issue, when opening support tooling, then he can view a complete content-free timeline and identify root cause category without raw email/calendar content.
+12. Given Manoj opens advisor client directory, when clients have interacted via email/web, then he can see each client's first interaction date and channel usage counters.
+13. Given Manoj marks a client as deleted, when that client opens a previously issued availability link or tries a new scheduling request, then access is denied.
+14. Given client cohort policies are configured (for example Tuesday/Wednesday vs weekend vs Monday), when a client views availability, then only days allowed by that client's effective policy are visible.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
@@ -198,3 +224,5 @@ User story:
 Manoj reserves a couple of days each week to talk to other technical professionals that seek his advise. The specific two days may change, but right now it is tuesday and wednesday.  He is usually contacted either on Email or Linkedin and rarely on text where a client may request time on his calendar. Manoj then has to look at his calendars on Google and Microsoft (these are multiple accounts). He then has to find possible slots that are not busy and then suggest a few slots.  Sometimes, the client may suggest some slots to begin with or preferences of when they can connect, and manoj has to figure out if there is a open slot that matches those periods. The client may also suggest meeting in person or an online meeting. If it is an in-person meeting, then the location may add time constraints due to travel to and from the venue. Manoj then has to figure out if he can bunch up a few meetings in near by locations together to optimize the time spent driving. For online meetings, the client may be in a different time zone so it is important to ensure the timezone for where manoj resides and where the client resides is taken into account. Right now, manoj is in California but that can change. Sometimes the clients prefer to just look for any empty slots themselves on manoj's calendar and then send an invitation themselves. In that case, manoj has to share a calendar view that shows busy and open time slots for the 2 days that he prefers to work but without any details of what meetings are in the busy slots for privacy. The client maybe able to see any meetings that belong to their organization. 
 
 Manoj would like this workflow to be handled by an intelligent AI agent that looks up all his calendars and suggests possible times that they might be able to book. The agent should interact and converse on whatever medium they contact him on. To start with just an email  and we interface would be sufficient. He currently likes the GPT-5 engine for the LLM for the agent, but he may want to switch to claud or gemini in future.
+
+The Advisor would like to have the ability to get a list of all the clients they have interfaced with. They would like to track when they initiated their first connection, and how often the client uses the calendar interface (either via email agent or the website) to book meeting times. The advisor would also like to ensure that they can delete a client so they can no longer so the calendar. While by default the advisor wants to provide tuesday and wednesday calendars to most clients, they may give a different set of days to some other clients. For instance, there maybe groups of clients that only see tuesday and wednesday, another group that see only the weekend, and another group that may see only monday.

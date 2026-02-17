@@ -2406,3 +2406,36 @@ Actions and results:
 
 Status:
 - Feature is deployed and active.
+
+---
+
+Turn 106
+User:
+There is an update to the user story.  Please update the user story at the end of the PRD with the following para and then generate appropriate requirements: 
+The Advisor would like to have the ability to get a list of all the clients they have interfaced with. They would like to track when they initiated their first connection, and how often the client uses the calendar interface (either via email agent or the website) to book meeting times. The advisor would also like to ensure that they can delete a client so they can no longer so the calendar. While by default the advisor wants to provide tuesday and wednesday calendars to most clients, they may give a different set of days to some other clients. For instance, there maybe groups of clients that only see tuesday and wednesday, another group that see only the weekend, and another group that may see only monday.
+
+Assistant:
+Updated `docs/prd.md` with the user-story expansion and matching requirements.
+
+PRD updates made:
+- Added Goal 11 for advisor client relationship controls.
+- Added new functional requirements:
+  - `FR-13 Advisor Client Directory and Engagement Insights`
+  - `FR-14 Client Access Governance and Availability Cohorts`
+- Added non-functional requirements for:
+  - client directory scalability/query latency
+  - access revocation SLA (deleted/blocked clients lose access within 5 minutes)
+- Added data/policy requirements for metadata-only client records and deletion token revocation.
+- Added success metrics for revocation compliance and client-list performance.
+- Added MVP scope items for client directory and cohort/day policy controls.
+- Added acceptance criteria for client-list visibility, client deletion enforcement, and cohort-based day visibility.
+- Appended the new user-story paragraph verbatim at the end of Section 15 (Reference User Story).
+
+---
+
+Turn 107
+User:
+yes please do
+
+Assistant:
+Staged PRD and transcript updates, created a checkpoint commit, and pushed to origin/main.
