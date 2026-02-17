@@ -218,6 +218,103 @@ test("processSchedulingEmail loads body from transient mail store and deletes ra
   assert.equal(traceItems[0].bodySource, "mail_store");
 });
 
+test("processSchedulingEmail parses html-only MIME bodies from transient mail store", async () => {
+  const traceItems = [];
+  const deps = {
+    async getRawEmailObject() {
+      return [
+        "From: Titoneeda <titoneeda@gmail.com>",
+        "Subject: Appointment request",
+        "Content-Type: text/html; charset=utf-8",
+        "",
+        "<html><body>",
+        "<p>Timezone: America/Los_Angeles</p>",
+        "<p>I need 45 minutes.</p>",
+        "<p>I can do 2026-03-03T10:00:00-08:00 to 2026-03-03T12:00:00-08:00</p>",
+        "</body></html>"
+      ].join("\n");
+    },
+    async deleteRawEmailObject() {},
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    RAW_EMAIL_BUCKET: "mail-store-bucket",
+    RAW_EMAIL_BUCKET_REGION: "us-east-1",
+    RAW_EMAIL_OBJECT_PREFIX: "raw/"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "titoneeda@gmail.com",
+      subject: "Need appointment",
+      body: "",
+      ses: {
+        messageId: "message-html",
+        receipt: {}
+      }
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(traceItems[0].bodySource, "mail_store");
+  assert.equal(traceItems[0].durationMinutes, 45);
+});
+
+test("processSchedulingEmail uses SES receipt mailStore location when provided", async () => {
+  const calls = [];
+  const deps = {
+    async getRawEmailObject(location) {
+      calls.push(location);
+      return [
+        "From: Titoneeda <titoneeda@gmail.com>",
+        "Subject: Appointment request",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "Timezone: America/Los_Angeles",
+        "I need 30 minutes."
+      ].join("\n");
+    },
+    async deleteRawEmailObject() {},
+    async writeTrace() {},
+    async sendResponseEmail() {}
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "titoneeda@gmail.com",
+      subject: "Need appointment",
+      ses: {
+        messageId: "ignored-message-id",
+        receipt: {
+          mailStore: {
+            bucket: "receipt-mail-bucket",
+            key: "raw/custom-object-key",
+            region: "us-east-1"
+          }
+        }
+      }
+    },
+    env: baseEnv,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.deepEqual(calls[0], {
+    bucket: "receipt-mail-bucket",
+    key: "raw/custom-object-key",
+    region: "us-east-1"
+  });
+});
+
 test("processSchedulingEmail continues when transient mail store is unavailable", async () => {
   const traceItems = [];
   const deps = {
@@ -522,7 +619,7 @@ test("createHandler normalizes SES from header before processing", async () => {
 
   process.env.TRACE_TABLE_NAME = "TraceTable";
   process.env.RESPONSE_MODE = "send";
-  process.env.SENDER_EMAIL = "agent@letsconnect.ai";
+  process.env.SENDER_EMAIL = "agent@agent.letsconnect.ai";
   process.env.CALENDAR_MODE = "mock";
 
   try {

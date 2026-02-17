@@ -1,0 +1,72 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Calendar agent inbound raw mail store for us-east-1.
+  Stores transient MIME objects for parser retrieval and immediate delete.
+
+Parameters:
+  AppName:
+    Type: String
+    Default: calendar-agent-spike
+  Stage:
+    Type: String
+    Default: dev
+  RawMailBucketName:
+    Type: String
+    Default: ""
+    Description: Optional bucket name override.
+  RawMailPrefix:
+    Type: String
+    Default: raw/
+    Description: Prefix for inbound raw MIME objects written by SES.
+
+Conditions:
+  HasCustomRawMailBucketName: !Not [!Equals [!Ref RawMailBucketName, ""]]
+
+Resources:
+  RawMailBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !If
+        - HasCustomRawMailBucketName
+        - !Ref RawMailBucketName
+        - !Sub ${AppName}-${Stage}-${AWS::AccountId}-inbound-mail-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteTransientInboundMail
+            Status: Enabled
+            ExpirationInDays: 1
+
+  RawMailBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref RawMailBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: AllowSesWriteRawInboundMail
+            Effect: Allow
+            Principal:
+              Service: ses.amazonaws.com
+            Action:
+              - s3:PutObject
+            Resource: !Sub arn:aws:s3:::${RawMailBucket}/${RawMailPrefix}*
+            Condition:
+              StringEquals:
+                aws:Referer: !Ref AWS::AccountId
+
+Outputs:
+  RawMailBucketName:
+    Value: !Ref RawMailBucket
+    Description: Bucket where SES stores transient inbound MIME objects.
+  RawMailPrefix:
+    Value: !Ref RawMailPrefix
+    Description: Prefix used for transient MIME objects.

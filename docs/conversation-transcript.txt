@@ -1736,3 +1736,93 @@ yes go ahead
 Assistant:
 Started checkpoint sync:
 - Preparing git checkpoint commit and push for the us-east-only cleanup and related tested changes.
+
+---
+
+Turn 80
+User:
+ok great. so where are we in the steps 1 2 3 we were working on
+
+Assistant:
+Provided current status for steps 1/2/3, including what is done versus pending after moving to a us-east-only inbound architecture.
+
+---
+
+Turn 81
+User:
+yes and also finish step 1 for full mime parsing
+
+Assistant:
+Completed Step 1 (full MIME parsing) and Step 2 (us-east inbound setup automation).
+
+Implemented code/test updates:
+- `app/src/handler.js`:
+  - Enhanced MIME parsing fallback for HTML-only messages (lightweight HTML-to-text conversion when `parsed.text` is empty).
+- `app/test/handler.test.js`:
+  - Added regression test for HTML-only MIME parsing via transient mail store.
+  - Added test to ensure SES `receipt.mailStore` location is honored when present.
+- Added `app/test/inbound-template-smoke.test.js` to validate inbound infra template shape.
+
+Implemented us-east inbound IaC + setup automation:
+- Added `infrastructure/us-east-1-inbound/template.yaml`:
+  - Transient raw-mail S3 bucket (SSE, public access blocked, 1-day lifecycle).
+  - SES write bucket policy for raw MIME objects.
+- Added executable setup helper `scripts/configure-inbound-us-east.sh`:
+  - Deploys inbound infra stack.
+  - Ensures/activates receipt rule set.
+  - Upserts `agent-inbound` receipt rule with `S3Action + LambdaAction + StopAction`.
+  - Refreshes Lambda invoke permission for SES source rule.
+  - Redeploys SAM stack with `InboundRawEmailBucket*` parameters.
+- Updated `README.md` with us-east inbound setup instructions and overrides.
+
+Validation performed:
+- Local tests: `cd app && npm test` passed (`39/39`).
+- Live setup script run succeeded in `us-east-1`.
+- Verified SES rule now has actions:
+  - S3Action -> `calendar-agent-spike-dev-639151644521-inbound-mail-us-east-1/raw/`
+  - LambdaAction -> EmailSpikeFunction ARN
+  - StopAction -> RuleSet
+- Verified Lambda env now includes:
+  - `RAW_EMAIL_BUCKET=calendar-agent-spike-dev-639151644521-inbound-mail-us-east-1`
+  - `RAW_EMAIL_BUCKET_REGION=us-east-1`
+  - `RAW_EMAIL_OBJECT_PREFIX=raw/`
+- Ran live inbound e2e:
+  - `requestId: dc282f0f-dd1a-4749-9cd8-6c7bbc226dba`
+  - `status: completed`, `responseMode: send`, `llmStatus: ok`
+  - `bodySource: mail_store` (confirms full MIME path active)
+- Verified privacy behavior: raw mail bucket contains only setup notification object; test message object was deleted.
+
+---
+
+Turn 82
+User:
+yes
+
+Assistant:
+Started git checkpoint sync for completed Step 1/Step 2 updates (full MIME parsing and us-east inbound setup).
+
+---
+
+Turn 83
+User:
+there's one more issue before we commit. The return address on the email from the agent should be agent@agent.letsconnect.ai.   not agent@letsconnect.ai as it is showing right now
+
+Assistant:
+Fixed sender address configuration and deployed.
+
+Changes made:
+- Updated `scripts/configure-inbound-us-east.sh` to include:
+  - `SENDER_EMAIL` defaulting to `agent@agent.letsconnect.ai`
+  - `SenderEmail` included in SAM `--parameter-overrides`
+  - final script summary now prints sender email
+- Updated docs in `README.md` to reflect sender recommendation and setup override.
+- Updated test fixture in `app/test/handler.test.js` to use `agent@agent.letsconnect.ai`.
+
+Validation:
+- Local tests: `cd app && npm test` passed (`39/39`).
+- Redeployed with setup script in `us-east-1`.
+- Verified Lambda env:
+  - `SENDER_EMAIL=agent@agent.letsconnect.ai`
+- Ran live inbound e2e test:
+  - `requestId: a5a9a18b-9701-4c09-8e94-887f68ff4e51`
+  - `status: completed`, `responseMode: send`, `llmStatus: ok`

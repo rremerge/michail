@@ -62,7 +62,30 @@ async function parsePlainTextFromMime(rawMime) {
 
   try {
     const parsed = await simpleParser(rawMime);
-    return String(parsed.text ?? "").trim();
+    const plainText = String(parsed.text ?? "").trim();
+    if (plainText) {
+      return plainText;
+    }
+
+    // Some senders provide HTML-only multipart messages. Fall back to a
+    // lightweight HTML-to-text conversion so scheduling intent still parses.
+    const html = typeof parsed.html === "string" ? parsed.html : "";
+    if (!html) {
+      return "";
+    }
+
+    return html
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/\s+/g, " ")
+      .trim();
   } catch {
     return "";
   }

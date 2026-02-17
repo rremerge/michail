@@ -27,7 +27,9 @@ This repository contains the first executable spike for the calendar agent:
 .
 ├── app/                      # Lambda app and tests
 ├── docs/                     # PRD, architecture, transcript
+├── infrastructure/           # Inbound infrastructure templates
 ├── events/                   # Sample invocation payloads
+├── scripts/                  # Deployment/setup helpers
 └── template.yaml             # SAM/CloudFormation template
 ```
 
@@ -55,7 +57,7 @@ sam deploy \
 Recommended guided answers for first deploy:
 - `CalendarMode`: `mock`
 - `ResponseMode`: `log`
-- `SenderEmail`: leave blank
+- `SenderEmail`: `agent@agent.letsconnect.ai` (when using `ResponseMode=send`)
 - `AdvisorPortalAuthMode`: `google_oauth`
 
 ## Minimal Hardening (Advisor Portal Auth)
@@ -99,10 +101,38 @@ Expected result:
 For real SES inbound emails, this spike now supports transient MIME retrieval:
 - SES inbound can store raw MIME to a short-lived S3 bucket in `us-east-1`.
 - Spike Lambda reads and parses the MIME body text for scheduling intent extraction.
+- HTML-only MIME payloads are converted to plain text before parsing intent.
 - Raw MIME object is deleted immediately after processing (best effort).
 - Bucket lifecycle policy expires any leftover objects in 1 day.
 
 Trace metadata includes `bodySource` (`inline`, `mail_store`, `mail_store_unavailable`, `none`) without storing email content.
+
+## Inbound Setup (us-east-1 only)
+Use this once per environment to fully wire inbound mail with transient MIME storage:
+
+```bash
+./scripts/configure-inbound-us-east.sh
+```
+
+The script:
+1. Deploys `infrastructure/us-east-1-inbound/template.yaml` (S3 transient raw MIME bucket + lifecycle).
+2. Ensures/activates SES rule set (default: `calendar-agent-spike-dev-inbound`).
+3. Upserts receipt rule (default: `agent-inbound`) for `agent@agent.letsconnect.ai` with actions:
+   - `S3Action` -> transient raw MIME bucket
+   - `LambdaAction` -> `EmailSpikeFunction`
+   - `StopAction` -> stop further rule processing
+4. Updates Lambda invoke permission for SES.
+5. Redeploys SAM stack with `InboundRawEmailBucket*` parameters.
+
+Useful overrides:
+- `REGION=us-east-1`
+- `SAM_STACK_NAME=calendar-agent-spike-dev`
+- `INBOUND_STACK_NAME=calendar-agent-spike-dev-inbound`
+- `RULE_SET_NAME=calendar-agent-spike-dev-inbound`
+- `RULE_NAME=agent-inbound`
+- `RECIPIENT_EMAIL=agent@agent.letsconnect.ai`
+- `SENDER_EMAIL=agent@agent.letsconnect.ai`
+- `RAW_MAIL_PREFIX=raw/`
 
 ## Supportability Hooks (Feedback + Debug)
 Client feedback endpoint (no raw content persistence):
