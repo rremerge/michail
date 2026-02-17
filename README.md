@@ -5,6 +5,7 @@ This repository contains the first executable spike for the calendar agent:
 - Look up availability (mock mode, direct Google free/busy, or advisor-managed connection mode).
 - Generate slot suggestions.
 - Issue a response (log mode or SES send mode).
+- Include a signed web availability link in suggestion emails.
 - Persist only content-free trace metadata.
 
 ## Goals of This Spike
@@ -59,6 +60,7 @@ Recommended guided answers for first deploy:
 - `ResponseMode`: `log`
 - `SenderEmail`: `agent@agent.letsconnect.ai` (when using `ResponseMode=send`)
 - `AdvisorPortalAuthMode`: `google_oauth`
+- `AvailabilityLinkBaseUrl`: `https://<api-id>.execute-api.<region>.amazonaws.com/<stage>/availability`
 
 ## Minimal Hardening (Advisor Portal Auth)
 By default this stack now protects `/advisor` routes with advisor Google login.
@@ -73,6 +75,18 @@ After deploy, open `AdvisorPortalUrl` output:
 
 - Add `Mock Calendar (Test)` for immediate end-to-end testing.
 - Click `Connect Google (Sign In)` to launch Google login/consent and create a secure refresh-token connection.
+
+## Client Availability Link (FR-6 Slice)
+When the agent sends slot suggestions, it now appends a signed availability URL so clients can browse open slots in the web view.
+
+- Public route: `GET /availability?token=...`
+- Signature: HMAC token with expiry (default `AvailabilityLinkTtlMinutes=10080`, i.e. 7 days)
+- Privacy: page shows open slots only; no meeting details are exposed
+- Calendar source: same connected advisor calendars used by scheduling flow
+- Email link injection requires `AvailabilityLinkBaseUrl` stack parameter to be set
+
+Output:
+- `AvailabilityUrl` (base URL; requires signed `token` query parameter)
 
 ## End-to-End Test (Advisor Connection Mode)
 Deploy with connection mode:
@@ -280,6 +294,7 @@ sam deploy \
 - Lambda IAM role:
   - `secretsmanager:GetSecretValue` on spike secret.
   - `secretsmanager:GetSecretValue` on advisor connection secrets.
+  - `secretsmanager:GetSecretValue` on availability link signing secret.
   - `dynamodb:PutItem|UpdateItem` on spike trace table.
   - `dynamodb:Query` on connection table for connection mode.
   - `s3:GetObject|DeleteObject` on transient inbound raw-mail objects (when configured).
@@ -288,8 +303,11 @@ sam deploy \
   - `dynamodb:GetItem|PutItem|DeleteItem|Query` on connection + oauth state tables.
   - `dynamodb:GetItem|UpdateItem` on trace table.
   - `secretsmanager:GetSecretValue` on Google OAuth app secret.
+  - `secretsmanager:GetSecretValue` on Google OAuth runtime secret.
   - `secretsmanager:GetSecretValue` on advisor portal auth secret.
   - `secretsmanager:GetSecretValue` on advisor portal session secret.
+  - `secretsmanager:GetSecretValue` on availability link signing secret.
+  - `secretsmanager:GetSecretValue` on per-connection token secrets.
   - `secretsmanager:CreateSecret|DeleteSecret` for per-connection token secrets.
 - LLM provider secret:
   - Email Lambda reads provider settings/API key from `LlmProviderSecretArn`.

@@ -20,12 +20,15 @@ test("template defines isolated serverless resources", () => {
   assert.match(template, /AdvisorPortalAuthSecret/);
   assert.match(template, /AdvisorPortalSessionSecret/);
   assert.match(template, /Path:\s*\/spike\/feedback/);
+  assert.match(template, /Path:\s*\/availability/);
   assert.match(template, /Path:\s*\/advisor\/api\/traces\/\{requestId\}/);
   assert.match(template, /Path:\s*\/advisor\/api\/traces\/\{requestId\}\/feedback/);
   assert.match(template, /TRACE_TABLE_NAME/);
   assert.match(template, /INTENT_EXTRACTION_MODE/);
   assert.match(template, /InboundRawEmailBucket/);
   assert.match(template, /RAW_EMAIL_BUCKET/);
+  assert.match(template, /AVAILABILITY_LINK_BASE_URL/);
+  assert.match(template, /AVAILABILITY_LINK_SECRET_ARN/);
 
   // Guardrail: this spike must not install account-level SES receipt rules.
   assert.equal(template.includes("AWS::SES::ReceiptRule"), false);

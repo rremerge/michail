@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { createPortalHandler } from "../src/portal-handler.js";
+import { createAvailabilityLinkToken } from "../src/availability-link.js";
 
 function toBasicAuthorization(username, password) {
   return `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}`;
@@ -702,6 +703,138 @@ test("advisor portal can submit feedback for a trace", async () => {
       delete process.env.ADVISOR_ID;
     } else {
       process.env.ADVISOR_ID = previousAdvisorId;
+    }
+  }
+});
+
+test("availability page renders open slots for valid signed token", async () => {
+  const signingKey = "availability-signing-key";
+  const handler = createPortalHandler({
+    async getSecretString(secretArn) {
+      if (secretArn.endsWith(":secret:availability")) {
+        return JSON.stringify({ signing_key: signingKey });
+      }
+
+      throw new Error(`unexpected secret arn: ${secretArn}`);
+    },
+    async getPrimaryConnection(tableName, suppliedAdvisorId) {
+      assert.equal(tableName, "ConnectionsTable");
+      assert.equal(suppliedAdvisorId, "manoj");
+      return {
+        provider: "mock",
+        status: "connected",
+        isPrimary: true
+      };
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    AVAILABILITY_LINK_SECRET_ARN: process.env.AVAILABILITY_LINK_SECRET_ARN,
+    CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
+    CALENDAR_MODE: process.env.CALENDAR_MODE,
+    HOST_TIMEZONE: process.env.HOST_TIMEZONE,
+    ADVISING_DAYS: process.env.ADVISING_DAYS,
+    SEARCH_DAYS: process.env.SEARCH_DAYS,
+    WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR,
+    DEFAULT_DURATION_MINUTES: process.env.DEFAULT_DURATION_MINUTES,
+    MAX_DURATION_MINUTES: process.env.MAX_DURATION_MINUTES,
+    AVAILABILITY_VIEW_MAX_SLOTS: process.env.AVAILABILITY_VIEW_MAX_SLOTS
+  };
+
+  process.env.ADVISOR_ID = "manoj";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.AVAILABILITY_LINK_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:availability";
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.CALENDAR_MODE = "connection";
+  process.env.HOST_TIMEZONE = "America/Los_Angeles";
+  process.env.ADVISING_DAYS = "Tue,Wed";
+  process.env.SEARCH_DAYS = "7";
+  process.env.WORKDAY_START_HOUR = "9";
+  process.env.WORKDAY_END_HOUR = "11";
+  process.env.DEFAULT_DURATION_MINUTES = "30";
+  process.env.MAX_DURATION_MINUTES = "120";
+  process.env.AVAILABILITY_VIEW_MAX_SLOTS = "96";
+
+  const nowMs = Date.now();
+  const token = createAvailabilityLinkToken(
+    {
+      advisorId: "manoj",
+      issuedAtMs: nowMs,
+      expiresAtMs: nowMs + 60 * 60 * 1000,
+      clientTimezone: "America/New_York",
+      durationMinutes: 30
+    },
+    signingKey
+  );
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        token
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/availability"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.headers["content-type"], /text\/html/);
+    assert.match(response.body, /Available Times/);
+    assert.match(response.body, /open slots only/i);
+    assert.match(response.body, /Your timezone/);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("availability page rejects invalid token", async () => {
+  const handler = createPortalHandler({
+    async getSecretString() {
+      return JSON.stringify({ signing_key: "availability-signing-key" });
+    }
+  });
+
+  const previousAuthMode = process.env.ADVISOR_PORTAL_AUTH_MODE;
+  const previousSecretArn = process.env.AVAILABILITY_LINK_SECRET_ARN;
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.AVAILABILITY_LINK_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:availability";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        token: "invalid-token"
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/availability"
+    });
+
+    assert.equal(response.statusCode, 403);
+    assert.match(response.body, /Invalid or expired availability link/);
+  } finally {
+    if (previousAuthMode === undefined) {
+      delete process.env.ADVISOR_PORTAL_AUTH_MODE;
+    } else {
+      process.env.ADVISOR_PORTAL_AUTH_MODE = previousAuthMode;
+    }
+
+    if (previousSecretArn === undefined) {
+      delete process.env.AVAILABILITY_LINK_SECRET_ARN;
+    } else {
+      process.env.AVAILABILITY_LINK_SECRET_ARN = previousSecretArn;
     }
   }
 });

@@ -4,14 +4,21 @@ import { generateCandidateSlots } from "./slot-generator.js";
 import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adapter.js";
 import { draftResponseWithOpenAi, extractSchedulingIntentWithOpenAi, parseOpenAiConfigSecret } from "./llm-adapter.js";
 import { buildClientResponse, buildHumanReadableOptions } from "./response-builder.js";
+import { createAvailabilityLinkToken, parseAvailabilityLinkSecret } from "./availability-link.js";
 import { createRuntimeDeps } from "./runtime-deps.js";
 import { simpleParser } from "mailparser";
 
 const DEFAULT_INTENT_CONFIDENCE_THRESHOLD = 0.65;
+const DEFAULT_AVAILABILITY_LINK_TTL_MINUTES = 7 * 24 * 60;
 
 function parseIntEnv(value, fallback) {
   const parsed = Number.parseInt(value ?? "", 10);
   return Number.isNaN(parsed) ? fallback : parsed;
+}
+
+function parseClampedIntEnv(value, fallback, minimum, maximum) {
+  const parsed = parseIntEnv(value, fallback);
+  return Math.min(Math.max(parsed, minimum), maximum);
 }
 
 function normalizeRequestedWindowsToUtc(requestedWindows) {
@@ -102,6 +109,73 @@ function appendHumanReadableOptionsSection({
   return {
     ...responseMessage,
     bodyText: bodyWithReadableOptions
+  };
+}
+
+function appendAvailabilityLinkSection({ responseMessage, availabilityLink }) {
+  if (!availabilityLink) {
+    return responseMessage;
+  }
+
+  const bodyText = String(responseMessage.bodyText ?? "").trim();
+  const bodyWithLink = [
+    bodyText,
+    "",
+    "Want to browse all currently open times?",
+    `Availability link: ${availabilityLink}`,
+    "This secure link expires automatically."
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return {
+    ...responseMessage,
+    bodyText: bodyWithLink
+  };
+}
+
+async function buildAvailabilityLink({
+  env,
+  deps,
+  advisorId,
+  clientTimezone,
+  durationMinutes,
+  issuedAtMs
+}) {
+  const baseUrl = String(env.AVAILABILITY_LINK_BASE_URL ?? "").trim();
+  const secretArn = String(env.AVAILABILITY_LINK_SECRET_ARN ?? "").trim();
+  if (!baseUrl || !secretArn) {
+    return {
+      availabilityLink: null,
+      status: "unconfigured"
+    };
+  }
+
+  const ttlMinutes = parseClampedIntEnv(
+    env.AVAILABILITY_LINK_TTL_MINUTES,
+    DEFAULT_AVAILABILITY_LINK_TTL_MINUTES,
+    15,
+    14 * 24 * 60
+  );
+  const expiresAtMs = issuedAtMs + ttlMinutes * 60 * 1000;
+  const secretString = await deps.getSecretString(secretArn);
+  const linkSecret = parseAvailabilityLinkSecret(secretString);
+  const token = createAvailabilityLinkToken(
+    {
+      advisorId,
+      clientTimezone: clientTimezone ?? null,
+      durationMinutes,
+      issuedAtMs,
+      expiresAtMs
+    },
+    linkSecret.signingKey
+  );
+
+  const availabilityUrl = new URL(baseUrl);
+  availabilityUrl.searchParams.set("token", token);
+  return {
+    availabilityLink: availabilityUrl.toString(),
+    status: "included"
   };
 }
 
@@ -596,6 +670,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   });
   let responseMessage = templateResponseMessage;
   let llmStatus = "disabled";
+  let availabilityLinkStatus = suggestions.length > 0 ? "pending" : "not_applicable";
 
   if (llmMode === "openai") {
     try {
@@ -627,6 +702,26 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     }
   } else if (llmMode !== "disabled") {
     llmStatus = "unsupported";
+  }
+
+  if (suggestions.length > 0) {
+    try {
+      const availabilityLinkResult = await buildAvailabilityLink({
+        env,
+        deps,
+        advisorId,
+        clientTimezone: parsed.clientTimezone,
+        durationMinutes: parsed.durationMinutes,
+        issuedAtMs: startedAtMs
+      });
+      availabilityLinkStatus = availabilityLinkResult.status;
+      responseMessage = appendAvailabilityLinkSection({
+        responseMessage,
+        availabilityLink: availabilityLinkResult.availabilityLink
+      });
+    } catch {
+      availabilityLinkStatus = "error";
+    }
   }
 
   let deliveryStatus = "logged";
@@ -665,6 +760,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     bodySource,
     intentSource,
     intentLlmStatus,
+    availabilityLinkStatus,
     requestedWindowCount: parsed.requestedWindows.length,
     createdAt: startedAtIso,
     updatedAt: new Date(completedAtMs).toISOString(),

@@ -122,6 +122,18 @@ Parameters:
     Type: String
     Default: raw/
     Description: Prefix used for transient raw inbound email object keys.
+  AvailabilityLinkTtlMinutes:
+    Type: Number
+    Default: 10080
+    Description: Expiration for signed client availability links in minutes.
+  AvailabilityLinkBaseUrl:
+    Type: String
+    Default: ""
+    Description: Fully qualified public availability URL used in outbound emails.
+  AvailabilityViewMaxSlots:
+    Type: Number
+    Default: 240
+    Description: Maximum free slots rendered on the public availability page.
 
 Conditions:
   HasCustomSecretName: !Not [!Equals [!Ref GoogleOAuthSecretName, ""]]
@@ -279,6 +291,22 @@ Resources:
         - Key: stage
           Value: !Ref Stage
 
+  AvailabilityLinkSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub /${AppName}/${Stage}/${AWS::StackName}/availability-link
+      Description: Signing key for client-facing availability links.
+      GenerateSecretString:
+        SecretStringTemplate: "{}"
+        GenerateStringKey: signing_key
+        PasswordLength: 48
+        ExcludePunctuation: true
+      Tags:
+        - Key: application
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
   SpikeApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -331,6 +359,9 @@ Resources:
           RAW_EMAIL_BUCKET: !Ref InboundRawEmailBucket
           RAW_EMAIL_BUCKET_REGION: !Ref InboundRawEmailBucketRegion
           RAW_EMAIL_OBJECT_PREFIX: !Ref InboundRawEmailObjectPrefix
+          AVAILABILITY_LINK_BASE_URL: !Ref AvailabilityLinkBaseUrl
+          AVAILABILITY_LINK_SECRET_ARN: !Ref AvailabilityLinkSecret
+          AVAILABILITY_LINK_TTL_MINUTES: !Ref AvailabilityLinkTtlMinutes
       Events:
         SpikeApiRequest:
           Type: HttpApi
@@ -367,6 +398,11 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref LlmProviderSecret
+            - Sid: ReadAvailabilityLinkSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref AvailabilityLinkSecret
             - Sid: ReadConnectionOAuthSecrets
               Effect: Allow
               Action:
@@ -407,6 +443,17 @@ Resources:
           APP_NAME: !Ref AppName
           STAGE: !Ref Stage
           ADVISOR_ID: !Ref AdvisorId
+          CALENDAR_MODE: !Ref CalendarMode
+          HOST_TIMEZONE: !Ref HostTimezone
+          ADVISING_DAYS: !Ref AdvisingDays
+          SEARCH_DAYS: !Ref SearchDays
+          WORKDAY_START_HOUR: !Ref WorkdayStartHour
+          WORKDAY_END_HOUR: !Ref WorkdayEndHour
+          DEFAULT_DURATION_MINUTES: !Ref DefaultDurationMinutes
+          MAX_DURATION_MINUTES: !Ref MaxDurationMinutes
+          AVAILABILITY_LINK_SECRET_ARN: !Ref AvailabilityLinkSecret
+          AVAILABILITY_VIEW_MAX_SLOTS: !Ref AvailabilityViewMaxSlots
+          GOOGLE_OAUTH_SECRET_ARN: !Ref GoogleOAuthSecret
           CONNECTIONS_TABLE_NAME: !Ref ConnectionsTable
           TRACE_TABLE_NAME: !Ref TraceTable
           OAUTH_STATE_TABLE_NAME: !Ref OAuthStateTable
@@ -416,6 +463,12 @@ Resources:
           ADVISOR_PORTAL_SESSION_SECRET_ARN: !Ref AdvisorPortalSessionSecret
           ADVISOR_ALLOWED_EMAIL: !Ref AdvisorAllowedEmail
       Events:
+        AdvisorAvailabilityPublic:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /availability
         AdvisorHome:
           Type: HttpApi
           Properties:
@@ -516,6 +569,11 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref GoogleOAuthAppSecret
+            - Sid: ReadGoogleOAuthSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref GoogleOAuthSecret
             - Sid: ReadAdvisorPortalAuthSecret
               Effect: Allow
               Action:
@@ -526,6 +584,16 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref AdvisorPortalSessionSecret
+            - Sid: ReadAvailabilityLinkSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref AvailabilityLinkSecret
+            - Sid: ReadConnectionOAuthSecrets
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/${AppName}/${Stage}/*
             - Sid: ManageConnectionSecrets
               Effect: Allow
               Action:
@@ -555,6 +623,9 @@ Outputs:
   AdvisorPortalSessionSecretArn:
     Description: Secret ARN for advisor portal session signing key.
     Value: !Ref AdvisorPortalSessionSecret
+  AvailabilityLinkSecretArn:
+    Description: Secret ARN for signing public availability links.
+    Value: !Ref AvailabilityLinkSecret
   TraceTableName:
     Description: DynamoDB table for content-free request traces.
     Value: !Ref TraceTable
@@ -564,3 +635,6 @@ Outputs:
   AdvisorPortalUrl:
     Description: Advisor portal URL for managing connected calendars.
     Value: !Sub https://${SpikeApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/advisor
+  AvailabilityUrl:
+    Description: Public availability URL (requires signed token query parameter).
+    Value: !Sub https://${SpikeApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/availability

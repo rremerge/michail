@@ -2196,3 +2196,83 @@ Completed.
   - `template.yaml` (default secret payload)
   - `README.md` examples
   - tests referencing default model config
+
+---
+
+Turn 100
+User:
+great. now time for fr 6 ?
+
+Assistant:
+Yes. FR-6 is the right next milestone.
+Current state: FR-6 is not implemented yet as a client-facing busy/free web page with policy-based visibility.
+Next implementation cut:
+1. Public availability endpoint + serverless page (busy/free only, no meeting content).
+2. Signed access link/token + expiry.
+3. Org-policy visibility gate for permitted meeting detail exposure.
+4. Tests for privacy masking, token auth, timezone rendering, and scalability-safe pagination.
+
+---
+
+Turn 101
+User:
+Great. to be clear. We want to send the link everytime in the email response when the agent suggests time slots to the client. That way the client can just look at all the available times on the web if that is easier for them.  With that in mind, yes go ahead with the implementation
+
+Assistant:
+Implemented FR-6 availability-link slice end-to-end and deployed.
+
+Code changes:
+- Added signed availability token module:
+  - `app/src/availability-link.js`
+  - supports token create/validate + signing key parsing.
+- Updated email handler (`app/src/handler.js`):
+  - generates signed availability link for suggestion responses.
+  - appends link text to outbound body:
+    - "Want to browse all currently open times?"
+    - "Availability link: ..."
+  - adds trace metadata field: `availabilityLinkStatus`.
+- Updated advisor/public web handler (`app/src/portal-handler.js`):
+  - added `GET /availability?token=...` route.
+  - validates signed token and expiry.
+  - computes open slots from configured calendar source (connection/google/mock).
+  - renders privacy-safe page with open slots only; no meeting details.
+- Updated infrastructure (`template.yaml`):
+  - new parameters: `AvailabilityLinkBaseUrl`, `AvailabilityLinkTtlMinutes`, `AvailabilityViewMaxSlots`.
+  - new secret: `AvailabilityLinkSecret` (generated `signing_key`).
+  - wired env/IAM for both Lambdas to sign/verify links and resolve availability.
+  - added API event route `/availability`.
+  - added outputs: `AvailabilityLinkSecretArn`, `AvailabilityUrl`.
+- Updated tests:
+  - `app/test/handler.test.js`: availability link injection + token validation.
+  - `app/test/portal-handler.test.js`: valid token availability page + invalid token rejection.
+  - `app/test/template-smoke.test.js`: route/env assertions for availability feature.
+- Updated docs (`README.md`) for availability-link behavior and required parameter.
+
+Validation:
+- Local tests: `cd app && npm test` -> `50/50` passing.
+
+Deployment notes:
+- Initial deploy attempt failed due CloudFormation circular dependency caused by building `AVAILABILITY_LINK_BASE_URL` directly from `SpikeApi` inside `EmailSpikeFunction` env.
+- Fixed by introducing explicit parameter `AvailabilityLinkBaseUrl`.
+
+Deployment result:
+- Deployed stack `calendar-agent-spike-dev` in `us-east-1` with:
+  - `AvailabilityLinkBaseUrl=https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev/availability`
+- Confirmed outputs include:
+  - `AvailabilityUrl=https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev/availability`
+  - `AvailabilityLinkSecretArn=.../availability-link-...`
+
+Live verification:
+1. Sent live `/spike/email` request:
+   - `requestId`: `70edfab8-1f6f-4819-9189-a73ae1c743db`
+   - `responseId`: `7932db67-ca23-4526-b551-a3a8fa1cebf3`
+2. Trace metadata confirmed:
+   - `availabilityLinkStatus=included`
+   - `llmStatus=ok`
+3. Generated signed token and called live availability endpoint:
+   - `GET /dev/availability?token=...` returned HTTP `200`
+   - page rendered "Available Times" with privacy-safe open-slot listing.
+
+Operational safety checks:
+- Verified `AvailabilityLinkBaseUrl` parameter is set.
+- Verified LLM secret preserved (`model=gpt-5.2`, `apiKeyPresent=true`).
