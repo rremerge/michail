@@ -144,6 +144,89 @@ function deriveClientDisplayName(rawFromEmail, normalizedFromEmail) {
   return titleCaseWords(localPart).slice(0, 64);
 }
 
+function deriveAdvisorDisplayName(rawAdvisorDisplayName, advisorId) {
+  const explicitName = String(rawAdvisorDisplayName ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (explicitName) {
+    return explicitName.slice(0, 64);
+  }
+
+  const advisorIdValue = String(advisorId ?? "")
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!advisorIdValue) {
+    return "Advisor";
+  }
+
+  return titleCaseWords(advisorIdValue).slice(0, 64);
+}
+
+function ensurePersonalizedGreetingAndSignature({
+  responseMessage,
+  clientDisplayName,
+  advisorDisplayName
+}) {
+  const greetingName = String(clientDisplayName ?? "").trim() || "there";
+  const signoffName = String(advisorDisplayName ?? "").trim() || "Advisor";
+  const greetingLine = `Hi ${greetingName},`;
+
+  const rawBody = String(responseMessage.bodyText ?? "").replace(/\r\n/g, "\n");
+  const lines = rawBody.split("\n");
+
+  while (lines.length > 0 && lines[0].trim() === "") {
+    lines.shift();
+  }
+  while (lines.length > 0 && lines[lines.length - 1].trim() === "") {
+    lines.pop();
+  }
+
+  if (lines.length === 0) {
+    lines.push(greetingLine, "", "Best regards,", signoffName);
+    return {
+      ...responseMessage,
+      bodyText: lines.join("\n")
+    };
+  }
+
+  if (/^(hi|hello)\b/i.test(lines[0].trim())) {
+    lines[0] = greetingLine;
+  } else {
+    lines.unshift(greetingLine, "");
+  }
+
+  let signoffIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const candidate = lines[index].trim();
+    if (/^(best regards|best|regards)[,!]?$/i.test(candidate)) {
+      signoffIndex = index;
+      break;
+    }
+  }
+
+  if (signoffIndex >= 0) {
+    lines[signoffIndex] = "Best regards,";
+    let nameLineIndex = signoffIndex + 1;
+    while (nameLineIndex < lines.length && lines[nameLineIndex].trim() === "") {
+      nameLineIndex += 1;
+    }
+
+    if (nameLineIndex < lines.length) {
+      lines[nameLineIndex] = signoffName;
+    } else {
+      lines.push(signoffName);
+    }
+  } else {
+    lines.push("", "Best regards,", signoffName);
+  }
+
+  return {
+    ...responseMessage,
+    bodyText: lines.join("\n")
+  };
+}
+
 async function buildAvailabilityLink({
   env,
   deps,
@@ -230,10 +313,11 @@ function normalizeEmailAddress(rawValue) {
   return candidate.replace(/[<>]/g, "").trim();
 }
 
-function buildAccessDeniedResponseMessage({ clientDisplayName }) {
+function buildAccessDeniedResponseMessage() {
   return {
     subject: "Re: Scheduling request",
-    bodyText: `Hi ${clientDisplayName},\n\nThis scheduling interface is currently unavailable for your account.\nPlease contact Manoj directly if you need help booking time.\n`
+    bodyText:
+      "This scheduling interface is currently unavailable for your account.\nPlease contact the advisor directly if you need help booking time."
   };
 }
 
@@ -548,6 +632,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const responseMode = (env.RESPONSE_MODE ?? "log").toLowerCase();
   const calendarMode = (env.CALENDAR_MODE ?? "mock").toLowerCase();
   const advisorId = env.ADVISOR_ID ?? "manoj";
+  const advisorDisplayName = deriveAdvisorDisplayName(env.ADVISOR_DISPLAY_NAME, advisorId);
   const llmMode = (env.LLM_MODE ?? "disabled").toLowerCase();
   const llmTimeoutMs = parseIntEnv(env.LLM_TIMEOUT_MS, 4000);
   const llmProviderSecretArn = env.LLM_PROVIDER_SECRET_ARN ?? "";
@@ -570,8 +655,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
 
   const accessState = normalizeClientAccessState(clientProfile?.accessState, "active");
   if (isClientAccessRestricted(clientProfile)) {
-    const responseMode = (env.RESPONSE_MODE ?? "log").toLowerCase();
-    const deniedMessage = buildAccessDeniedResponseMessage({ clientDisplayName });
+    const deniedMessage = ensurePersonalizedGreetingAndSignature({
+      responseMessage: buildAccessDeniedResponseMessage(),
+      clientDisplayName,
+      advisorDisplayName
+    });
     let deliveryStatus = "logged";
     if (responseMode === "send" && env.SENDER_EMAIL) {
       await deps.sendResponseEmail({
@@ -831,6 +919,12 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       availabilityLinkStatus = "error";
     }
   }
+
+  responseMessage = ensurePersonalizedGreetingAndSignature({
+    responseMessage,
+    clientDisplayName,
+    advisorDisplayName
+  });
 
   let deliveryStatus = "logged";
 

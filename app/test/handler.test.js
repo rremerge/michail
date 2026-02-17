@@ -271,6 +271,8 @@ test("processSchedulingEmail sends email when RESPONSE_MODE=send", async () => {
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0].senderEmail, "manoj@example.com");
   assert.equal(sentMessages[0].recipientEmail, "client@example.com");
+  assert.match(sentMessages[0].bodyText, /^Hi Client,/);
+  assert.match(sentMessages[0].bodyText, /Best regards,\nManoj$/);
 });
 
 test("processSchedulingEmail appends short availability link when configured", async () => {
@@ -429,7 +431,9 @@ test("processSchedulingEmail denies blocked client access", async () => {
   assert.equal(body.accessState, "blocked");
   assert.equal(body.suggestionCount, 0);
   assert.equal(sentMessages.length, 1);
+  assert.match(sentMessages[0].bodyText, /^Hi Blocked,/);
   assert.match(sentMessages[0].bodyText, /currently unavailable/i);
+  assert.match(sentMessages[0].bodyText, /Best regards,\nManoj$/);
   assert.equal(traceItems.length, 1);
   assert.equal(traceItems[0].status, "denied");
   assert.equal(traceItems[0].stage, "access_control");
@@ -728,7 +732,7 @@ test("processSchedulingEmail uses LLM draft when LLM_MODE=openai", async () => {
     async draftResponseWithLlm() {
       return {
         subject: "Re: Chat request",
-        bodyText: "LLM drafted body"
+        bodyText: "Hi,\nLLM drafted body\n\nBest regards,"
       };
     },
     async writeTrace(_tableName, item) {
@@ -762,7 +766,9 @@ test("processSchedulingEmail uses LLM draft when LLM_MODE=openai", async () => {
   assert.equal(response.llmStatus, "ok");
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0].subject, "Re: Chat request");
+  assert.match(sentMessages[0].bodyText, /^Hi Client,/);
   assert.match(sentMessages[0].bodyText, /LLM drafted body/);
+  assert.match(sentMessages[0].bodyText, /Best regards,\nManoj$/);
   assert.equal(traceItems[0].llmStatus, "ok");
   assert.equal(traceItems[0].llmMode, "openai");
 });

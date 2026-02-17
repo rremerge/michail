@@ -2611,3 +2611,46 @@ yes looks good
 
 Assistant:
 Confirmed by user in inbox. Proceeded to checkpoint commit and push for removal of the redundant "Suggested options in local time" section.
+
+---
+
+Turn 113
+User:
+The email response does not fill in the name of the client after Hi. It also does not fill in the name of the Advisor after Best Regards. Fix tht
+
+Assistant:
+Implemented response personalization enforcement so outgoing emails always include:
+- Greeting: `Hi <client name>,`
+- Closing: `Best regards,` followed by advisor name.
+
+Code changes:
+- `app/src/handler.js`
+  - Added `deriveAdvisorDisplayName(...)` to resolve advisor display name from `ADVISOR_DISPLAY_NAME` or `ADVISOR_ID`.
+  - Added `ensurePersonalizedGreetingAndSignature(...)` post-processor that normalizes/adds greeting and sign-off for all outgoing response bodies.
+  - Applied personalization to both normal scheduling responses and blocked/deleted access-denial responses.
+  - Updated access-denial template body to be neutral, then personalized through the same post-processor.
+- `app/test/handler.test.js`
+  - Updated/extended tests to assert personalized greeting/sign-off in:
+    - standard send-mode response
+    - blocked-client denial response
+    - LLM-drafted response path.
+
+Validation:
+- Local tests: `cd app && npm test` -> `56/56` passing.
+
+---
+
+Turn 114
+User:
+yes
+
+Assistant:
+Deployed and checkpointed the greeting/signature personalization fix.
+
+Actions:
+- Deployed `calendar-agent-spike-dev` to `us-east-1` successfully.
+- Confirmed stack update completed with Lambda/API updates.
+- Prepared commit for:
+  - `app/src/handler.js`
+  - `app/test/handler.test.js`
+  - `docs/conversation-transcript.txt`
