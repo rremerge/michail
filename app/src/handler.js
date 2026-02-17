@@ -3,7 +3,7 @@ import { parseSchedulingRequest } from "./intent-parser.js";
 import { generateCandidateSlots } from "./slot-generator.js";
 import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adapter.js";
 import { draftResponseWithOpenAi, extractSchedulingIntentWithOpenAi, parseOpenAiConfigSecret } from "./llm-adapter.js";
-import { buildClientResponse, buildHumanReadableOptions } from "./response-builder.js";
+import { buildClientResponse } from "./response-builder.js";
 import { buildClientReference, createShortAvailabilityTokenId } from "./availability-link.js";
 import {
   isClientAccessRestricted,
@@ -80,43 +80,6 @@ function mergeParsedIntent({
       clientTimezone: parserIntent.clientTimezone ?? llmIntent.clientTimezone ?? null
     },
     intentSource: parserWindows.length > 0 ? "llm_override" : "llm"
-  };
-}
-
-function appendHumanReadableOptionsSection({
-  responseMessage,
-  suggestions,
-  hostTimezone,
-  clientTimezone
-}) {
-  if (!Array.isArray(suggestions) || suggestions.length === 0) {
-    return responseMessage;
-  }
-
-  const optionLines = buildHumanReadableOptions({
-    suggestions,
-    hostTimezone,
-    clientTimezone
-  });
-  if (!optionLines) {
-    return responseMessage;
-  }
-
-  const bodyText = String(responseMessage.bodyText ?? "").trim();
-  const bodyWithReadableOptions = [
-    bodyText,
-    "",
-    "Suggested options in local time:",
-    optionLines,
-    "",
-    "Reply with the option number that works for you."
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  return {
-    ...responseMessage,
-    bodyText: bodyWithReadableOptions
   };
 }
 
@@ -836,12 +799,6 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         originalSubject: payload.subject,
         fetchImpl: deps.fetchImpl,
         timeoutMs: llmTimeoutMs
-      });
-      responseMessage = appendHumanReadableOptionsSection({
-        responseMessage,
-        suggestions,
-        hostTimezone,
-        clientTimezone: parsed.clientTimezone
       });
       llmStatus = "ok";
     } catch {

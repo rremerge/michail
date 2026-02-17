@@ -763,8 +763,6 @@ test("processSchedulingEmail uses LLM draft when LLM_MODE=openai", async () => {
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0].subject, "Re: Chat request");
   assert.match(sentMessages[0].bodyText, /LLM drafted body/);
-  assert.match(sentMessages[0].bodyText, /Suggested options in local time:/);
-  assert.match(sentMessages[0].bodyText, /\bTue\b|\bWed\b|\bThu\b|\bFri\b|\bSat\b|\bSun\b|\bMon\b/);
   assert.equal(traceItems[0].llmStatus, "ok");
   assert.equal(traceItems[0].llmMode, "openai");
 });
