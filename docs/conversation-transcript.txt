@@ -3054,3 +3054,130 @@ Included:
 Validation before commit:
 - Local test suite passed (`65/65`).
 - Dev stack deployed and live availability page verified as one-week view.
+
+---
+
+Turn 130
+User:
+For the calendar view, it is desirable to display the client's time zone as well. When the client opens the calendar view, the browser indicates what the local time zone is. So on the calendar view show two columns for time. The first time column remains as is, and shows advisors time zone. The second column should show equivalent time in the local time zone of the browser. You can title the first column, Advisors timezone. And the second column as Local timezone.
+
+Assistant:
+Implemented and deployed dual timezone columns on the availability calendar view using browser-local timezone detection.
+
+What changed:
+- `app/src/portal-handler.js`
+  - Availability grid now renders two fixed time columns before day columns:
+    - `Advisor timezone`
+    - `Local timezone`
+  - Added per-row UTC reference timestamps (`data-slot-start-utc`) used by client-side rendering.
+  - Added browser-side script that reads `Intl.DateTimeFormat().resolvedOptions().timeZone` and:
+    - updates local timezone header label
+    - updates local timezone summary code
+    - populates local-time column values for each row
+  - Removed old server-side per-cell client-time labels from day cells.
+- `app/test/portal-handler.test.js`
+  - Updated availability page assertions to validate new labels/markup:
+    - `Advisor timezone`
+    - `Local timezone`
+    - `local-time-column-label`
+    - `time-local-cell`
+
+Validation:
+- Local tests: `cd app && npm test` -> `65/65` passing.
+- Deployed to `calendar-agent-spike-dev` in `us-east-1` -> `UPDATE_COMPLETE`.
+- Live HTML verification confirms deployed page includes:
+  - Advisor timezone summary and local timezone placeholder/code element
+  - Both time-column headers
+  - per-row local-time cells with `data-slot-start-utc`
+  - browser script that fills local times from detected timezone.
+
+---
+
+Turn 131
+User:
+ok this is functionally good but not visually clear. Lets make it a single time column that displays Local Time . There needs to be a  local timezone column for each day displayed.
+
+Assistant:
+Implemented the availability UI simplification as requested:
+
+Changes:
+- `app/src/portal-handler.js`
+  - Switched to a single left-side time column titled `Local time` (updated dynamically to include browser timezone).
+  - Removed the separate advisor-time header column from the grid.
+  - Added browser-rendered local time in each day cell (`slot-local`) so each day column now shows local-time context per slot.
+  - Added dedicated data attributes for conversion:
+    - row anchors: `data-row-start-utc`
+    - per-day slot anchors: `data-slot-start-utc`
+  - Kept summary text showing advisor and detected local timezone.
+- `app/test/portal-handler.test.js`
+  - Updated assertions for new table structure:
+    - single `Local time` header
+    - no advisor-time header column
+    - presence of local-time row/slot cells (`time-local-cell`, `slot-local`)
+
+Validation:
+- Local tests: `cd app && npm test` -> `65/65` passing.
+- Deployed to `calendar-agent-spike-dev` in `us-east-1` -> `UPDATE_COMPLETE`.
+- Live HTML check confirms:
+  - `Local time` header (dynamic timezone label)
+  - row-level local time column
+  - per-day local-time labels in each slot cell.
+
+---
+
+Turn 132
+User:
+Each day slot should show advisor time zone. The Local time column should show the equivalent time in the local timezone. There needs to be a local time column for each of the days displayed.
+
+Assistant:
+Implemented and deployed a per-day dual-column timezone layout for availability.
+
+What changed:
+- `app/src/portal-handler.js`
+  - Reworked the calendar grid so each displayed day now has two columns:
+    1. Advisor timezone slot column (shows status + advisor local time label)
+    2. Local timezone column (browser-derived equivalent time for that same slot)
+  - Header is now two-tier:
+    - Day header with `colspan=2` per day
+    - Subheaders per day: `Advisor timezone (...)` and `Local timezone`
+  - Browser script updates all local-time subheaders with detected timezone and fills each local slot cell from `data-slot-start-utc`.
+- `app/test/portal-handler.test.js`
+  - Updated availability-page assertions for new structure (`advisor-time-header`, `local-time-header`, `advisor-slot`, `local-slot`, `slot-host`, `slot-local`).
+  - Updated busy-slot assertion for new CSS class names.
+
+Validation:
+- Local tests: `cd app && npm test` -> `65/65` passing.
+- Deployed stack: `calendar-agent-spike-dev` in `us-east-1` -> `UPDATE_COMPLETE`.
+- Live HTML check confirms:
+  - per-day `colspan=2` headers,
+  - advisor/local subheaders for each day,
+  - advisor time labels in day slots,
+  - corresponding local-time cells for each day slot.
+
+---
+
+Turn 133
+User:
+use the following column order for the display of each day.  Local Time Zone then Advisor Time.  In the local time zone, mention the day of the week in addition to time on each row
+
+Assistant:
+Implemented and deployed the requested column order and local-time formatting update.
+
+Changes:
+- `app/src/portal-handler.js`
+  - Swapped per-day subheader order to:
+    1. `Local timezone`
+    2. `Advisor timezone (...)`
+  - Swapped per-row slot cell order to render local slot first and advisor slot second for each day.
+  - Updated browser local-time formatter to include weekday on each row (`weekday: 'short'`) in addition to time.
+- `app/test/portal-handler.test.js`
+  - Added assertions that local headers/slots are rendered before advisor headers/slots.
+  - Added assertion that local formatter includes weekday formatting.
+
+Validation:
+- Local tests: `cd app && npm test` -> `65/65` passing.
+- Deployed stack: `calendar-agent-spike-dev` in `us-east-1` -> `UPDATE_COMPLETE`.
+- Live HTML verification confirms:
+  - `local-time-header` appears before `advisor-time-header` per day.
+  - `local-slot` appears before `advisor-slot` per row.
+  - Browser script includes `weekday: 'short'` for local time display.

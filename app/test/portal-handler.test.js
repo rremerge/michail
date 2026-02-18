@@ -923,7 +923,22 @@ test("availability page renders open slots for valid short token", async () => {
     assert.match(response.body, /Next Week/);
     assert.match(response.body, /weekOffset=1/);
     assert.match(response.body, /weekOffset=3/);
-    assert.match(response.body, /Your timezone/);
+    assert.equal(response.body.includes('id="local-time-column-label"'), false);
+    assert.match(response.body, /Advisor timezone/);
+    assert.match(response.body, /Local timezone/);
+    assert.match(response.body, /advisor-time-header/);
+    assert.match(response.body, /local-time-header/);
+    assert.match(response.body, /local-slot/);
+    assert.match(response.body, /slot-local/);
+    assert.match(response.body, /slot-host/);
+    assert.match(response.body, /weekday:\s*'short'/);
+    assert.ok(
+      response.body.indexOf('class="sub-header local-time-header"') <
+        response.body.indexOf('class="sub-header advisor-time-header"')
+    );
+    assert.ok(
+      response.body.indexOf('class="slot local-slot') < response.body.indexOf('class="slot advisor-slot')
+    );
     assert.match(response.body, /Availability for/);
     assert.match(response.body, /Tito Needa/);
   } finally {
@@ -1142,7 +1157,8 @@ test("availability page shows busy blocks without exposing meeting details", asy
     });
 
     assert.equal(response.statusCode, 200);
-    assert.match(response.body, /class="slot busy"/);
+    assert.match(response.body, /class="slot advisor-slot busy"/);
+    assert.match(response.body, /class="slot local-slot busy"/);
     assert.match(response.body, /Busy blocks: [1-9]/);
     assert.equal(response.body.includes("Quarterly Board Review"), false);
   } finally {

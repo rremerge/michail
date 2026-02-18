@@ -39,11 +39,6 @@ function normalizeTimezone(value, fallbackTimezone) {
   }
 }
 
-function normalizeOptionalTimezone(value) {
-  const normalized = normalizeTimezone(value, "");
-  return normalized || null;
-}
-
 function parseAdvisingDays(value) {
   return parseAdvisingDaysList(value ?? "Tue,Wed", ["Tue", "Wed"]);
 }
@@ -544,7 +539,6 @@ function normalizeWeekdays(weekdays) {
 function buildAvailabilityCalendarModel({
   busyIntervalsUtc,
   hostTimezone,
-  clientTimezone,
   advisingDays,
   searchStartIso,
   searchEndIso,
@@ -626,7 +620,6 @@ function buildAvailabilityCalendarModel({
       const intervalUtc = Interval.fromDateTimes(slotStartLocal.toUTC(), slotEndLocal.toUTC());
       const isBusy = busyIntervals.some((busyInterval) => busyInterval.overlaps(intervalUtc));
       const hostLabel = slotStartLocal.toFormat("h:mm a");
-      const clientLabel = clientTimezone ? slotStartLocal.setZone(clientTimezone).toFormat("h:mm a") : null;
 
       if (isBusy) {
         busySlotCount += 1;
@@ -636,14 +629,12 @@ function buildAvailabilityCalendarModel({
 
       return {
         status: isBusy ? "busy" : "open",
-        hostLabel,
-        clientLabel
+        slotStartUtc: slotStartLocal.toUTC().toISO(),
+        hostLabel
       };
     });
 
     rows.push({
-      hostLabel: rowStart.toFormat("h:mm a"),
-      clientLabel: clientTimezone ? rowStart.setZone(clientTimezone).toFormat("h:mm a") : null,
       cells
     });
 
@@ -661,7 +652,6 @@ function buildAvailabilityCalendarModel({
 function buildAvailabilityPage({
   calendarModel,
   hostTimezone,
-  clientTimezone,
   expiresAtMs,
   tokenParamName,
   token,
@@ -679,39 +669,37 @@ function buildAvailabilityPage({
     minute: "2-digit",
     hour12: true
   });
-  const headerCells = calendarModel.days
+  const dayGroupHeaders = calendarModel.days
     .map(
       (day) =>
-        `<th scope="col" title="${escapeHtml(day.fullLabel)}"><div class="weekday">${escapeHtml(
+        `<th class="day-header" scope="colgroup" colspan="2" title="${escapeHtml(day.fullLabel)}"><div class="weekday">${escapeHtml(
           day.weekdayLabel
         )}</div><div class="date">${escapeHtml(day.dateLabel)}</div></th>`
+    )
+    .join("");
+  const daySubHeaders = calendarModel.days
+    .map(
+      () =>
+        `<th class="sub-header local-time-header">Local timezone</th><th class="sub-header advisor-time-header">Advisor timezone (${escapeHtml(
+          hostTimezone
+        )})</th>`
     )
     .join("");
   const bodyRows = calendarModel.rows
     .map((row) => {
       const slotCells = row.cells
-        .map((slot) => {
-          const clientSlotLabel = slot.clientLabel
-            ? `<div class="slot-client">${escapeHtml(slot.clientLabel)}</div>`
-            : "";
-          return `<td class="slot ${slot.status}">
+        .map(
+          (slot) => `<td class="slot local-slot ${slot.status}" data-slot-start-utc="${escapeHtml(slot.slotStartUtc)}">
+            <div class="slot-local">Detecting...</div>
+          </td>
+          <td class="slot advisor-slot ${slot.status}">
             <div class="slot-pill ${slot.status}">${slot.status === "busy" ? "Busy" : "Open"}</div>
             <div class="slot-host">${escapeHtml(slot.hostLabel)}</div>
-            ${clientSlotLabel}
-          </td>`;
-        })
+          </td>`
+        )
         .join("");
 
-      const rowClientLabel = row.clientLabel
-        ? `<div class="time-client">${escapeHtml(row.clientLabel)} client</div>`
-        : "";
-      return `<tr>
-        <th scope="row" class="time-cell">
-          <div class="time-host">${escapeHtml(row.hostLabel)}</div>
-          ${rowClientLabel}
-        </th>
-        ${slotCells}
-      </tr>`;
+      return `<tr>${slotCells}</tr>`;
     })
     .join("");
 
@@ -721,8 +709,10 @@ function buildAvailabilityPage({
           <table class="calendar-grid">
             <thead>
               <tr>
-                <th class="time-header">Time</th>
-                ${headerCells}
+                ${dayGroupHeaders}
+              </tr>
+              <tr>
+                ${daySubHeaders}
               </tr>
             </thead>
             <tbody>${bodyRows}</tbody>
@@ -769,24 +759,22 @@ function buildAvailabilityPage({
       .nav-link:hover { text-decoration: underline; }
       .nav-link.disabled { color: #94a3b8; pointer-events: none; }
       .calendar-scroll { overflow: auto; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; }
-      .calendar-grid { width: 100%; min-width: 920px; border-collapse: separate; border-spacing: 0; }
-      .calendar-grid thead th { position: sticky; top: 0; background: #f1f5f9; z-index: 2; border-bottom: 1px solid #cbd5e1; }
+      .calendar-grid { width: 100%; min-width: 1080px; border-collapse: separate; border-spacing: 0; }
+      .calendar-grid thead th { background: #f1f5f9; z-index: 2; border-bottom: 1px solid #cbd5e1; }
       .calendar-grid th, .calendar-grid td { border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; padding: 8px; vertical-align: top; }
       .calendar-grid th:last-child, .calendar-grid td:last-child { border-right: 0; }
+      .day-header { text-align: center; }
       .weekday { font-size: 12px; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; }
       .date { font-size: 14px; font-weight: 700; color: #0f172a; }
-      .time-header { width: 110px; min-width: 110px; text-align: left; }
-      .time-cell { width: 110px; min-width: 110px; background: #f8fafc; }
-      .time-host { font-size: 12px; font-weight: 700; color: #0f172a; }
-      .time-client { font-size: 11px; color: #64748b; margin-top: 2px; }
+      .sub-header { min-width: 130px; text-align: left; font-size: 11px; color: #475569; font-weight: 700; }
       .slot { min-height: 60px; }
       .slot.open { background: #f4fbf6; }
       .slot.busy { background: #f8fafc; }
       .slot-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid; }
       .slot-pill.open { color: #065f46; background: #dcfce7; border-color: #86efac; }
       .slot-pill.busy { color: #334155; background: #e2e8f0; border-color: #cbd5e1; }
-      .slot-host { margin-top: 6px; font-size: 12px; font-weight: 600; color: #1f2937; }
-      .slot-client { font-size: 11px; color: #475569; margin-top: 2px; }
+      .slot-host { margin-top: 6px; font-size: 11px; font-weight: 700; color: #0f172a; }
+      .slot-local { margin-top: 6px; font-size: 11px; font-weight: 600; color: #475569; }
       .empty { background: #fff; border: 1px solid #d1d5db; border-radius: 10px; padding: 16px; }
       .note { font-size: 13px; color: #4b5563; margin-top: 16px; }
     </style>
@@ -800,9 +788,7 @@ function buildAvailabilityPage({
           : ""
       }
       <p class="muted">Calendar-style view of open and busy blocks. Busy meeting details are hidden for privacy.</p>
-      <p class="muted">Advisor timezone: <code>${escapeHtml(hostTimezone)}</code>${
-        clientTimezone ? ` | Your timezone: <code>${escapeHtml(clientTimezone)}</code>` : ""
-      }</p>
+      <p class="muted">Advisor timezone: <code>${escapeHtml(hostTimezone)}</code> | Local timezone: <code id="local-timezone-code">Detecting...</code></p>
       <p class="muted">Link expires: ${escapeHtml(expiresAtLabel)} (${escapeHtml(hostTimezone)})</p>
       <div class="legend">
         <span class="legend-pill open">Open</span>
@@ -817,6 +803,60 @@ function buildAvailabilityPage({
       ${availabilityBody}
       <p class="note">Reply to the email with the time that works best and the agent will continue the booking flow.</p>
     </main>
+    <script>
+      (function () {
+        var localTimezone = '';
+        try {
+          localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+        } catch (_error) {
+          localTimezone = '';
+        }
+
+        var timezoneCode = document.getElementById('local-timezone-code');
+        var localHeaders = document.querySelectorAll('.local-time-header');
+        if (!localTimezone) {
+          if (timezoneCode) {
+            timezoneCode.textContent = 'Unavailable';
+          }
+          localHeaders.forEach(function (headerCell) {
+            headerCell.textContent = 'Local timezone';
+          });
+          return;
+        }
+
+        if (timezoneCode) {
+          timezoneCode.textContent = localTimezone;
+        }
+        localHeaders.forEach(function (headerCell) {
+          headerCell.textContent = 'Local timezone (' + localTimezone + ')';
+        });
+
+        var timeFormatter = new Intl.DateTimeFormat('en-US', {
+          timeZone: localTimezone,
+          weekday: 'short',
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true
+        });
+        var localSlotCells = document.querySelectorAll('.local-slot[data-slot-start-utc]');
+        localSlotCells.forEach(function (slotCell) {
+          var slotStartIso = slotCell.getAttribute('data-slot-start-utc');
+          if (!slotStartIso) {
+            return;
+          }
+
+          var date = new Date(slotStartIso);
+          if (Number.isNaN(date.getTime())) {
+            return;
+          }
+
+          var slotLabel = slotCell.querySelector('.slot-local');
+          if (slotLabel) {
+            slotLabel.textContent = timeFormatter.format(date);
+          }
+        });
+      })();
+    </script>
   </body>
 </html>`;
 }
@@ -1545,7 +1585,6 @@ export function createPortalHandler(overrides = {}) {
       let linkClientReference = clientHintReference;
       let linkClientId = null;
       let linkClientEmail = null;
-      let linkClientTimezone = null;
       let requestedDuration = null;
       let linkExpiresAtMs = Date.now();
       let effectiveToken = legacyToken;
@@ -1576,7 +1615,6 @@ export function createPortalHandler(overrides = {}) {
         linkClientReference = normalizeClientReference(linkRecord.clientReference) ?? clientHintReference;
         linkClientId = normalizeClientId(linkRecord.clientId ?? linkRecord.clientEmail ?? "");
         linkClientEmail = String(linkRecord.clientEmail ?? "").trim().toLowerCase();
-        linkClientTimezone = normalizeOptionalTimezone(linkRecord.clientTimezone);
         requestedDuration = Number(linkRecord.durationMinutes);
         linkExpiresAtMs = recordExpiresAtMs;
       } else {
@@ -1601,7 +1639,6 @@ export function createPortalHandler(overrides = {}) {
         }
 
         requestedDuration = Number(tokenPayload.durationMinutes);
-        linkClientTimezone = normalizeOptionalTimezone(tokenPayload.clientTimezone);
         linkExpiresAtMs = Number(tokenPayload.expiresAtMs);
       }
 
@@ -1651,7 +1688,6 @@ export function createPortalHandler(overrides = {}) {
       const calendarModel = buildAvailabilityCalendarModel({
         busyIntervalsUtc: busyIntervals,
         hostTimezone,
-        clientTimezone: linkClientTimezone,
         advisingDays: effectiveAdvisingDays,
         searchStartIso,
         searchEndIso,
@@ -1686,7 +1722,6 @@ export function createPortalHandler(overrides = {}) {
         buildAvailabilityPage({
           calendarModel,
           hostTimezone,
-          clientTimezone: linkClientTimezone,
           expiresAtMs: linkExpiresAtMs,
           tokenParamName,
           token: effectiveToken,
