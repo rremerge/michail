@@ -759,15 +759,18 @@ function buildAvailabilityPage({
       .nav-link:hover { text-decoration: underline; }
       .nav-link.disabled { color: #94a3b8; pointer-events: none; }
       .calendar-scroll { overflow: auto; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; }
-      .calendar-grid { width: 100%; min-width: 1080px; border-collapse: separate; border-spacing: 0; }
+      .calendar-grid { width: 100%; min-width: 900px; border-collapse: separate; border-spacing: 0; }
       .calendar-grid thead th { background: #f1f5f9; z-index: 2; border-bottom: 1px solid #cbd5e1; }
       .calendar-grid th, .calendar-grid td { border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; padding: 8px; vertical-align: top; }
       .calendar-grid th:last-child, .calendar-grid td:last-child { border-right: 0; }
-      .day-header { text-align: center; }
+      .day-header { text-align: center; border-right: 0; }
+      .day-header + .day-header { border-left: 28px solid #fff; }
+      .sub-header:nth-child(2n + 3), .calendar-grid tbody td:nth-child(2n + 3) { border-left: 28px solid #fff; }
+      .sub-header:nth-child(2n + 2), .calendar-grid tbody td:nth-child(2n + 2) { border-right: 0; }
       .weekday { font-size: 12px; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; }
       .date { font-size: 14px; font-weight: 700; color: #0f172a; }
-      .sub-header { min-width: 130px; text-align: left; font-size: 11px; color: #475569; font-weight: 700; }
-      .slot { min-height: 60px; }
+      .sub-header { width: 98px; min-width: 98px; text-align: left; font-size: 11px; color: #475569; font-weight: 700; }
+      .slot { width: 98px; min-width: 98px; min-height: 60px; }
       .slot.open { background: #f4fbf6; }
       .slot.busy { background: #f8fafc; }
       .slot-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid; }
@@ -777,6 +780,10 @@ function buildAvailabilityPage({
       .slot-local { margin-top: 6px; font-size: 11px; font-weight: 600; color: #475569; }
       .empty { background: #fff; border: 1px solid #d1d5db; border-radius: 10px; padding: 16px; }
       .note { font-size: 13px; color: #4b5563; margin-top: 16px; }
+      @media (max-width: 768px) {
+        .day-header + .day-header { border-left-width: 14px; }
+        .sub-header:nth-child(2n + 3), .calendar-grid tbody td:nth-child(2n + 3) { border-left-width: 14px; }
+      }
     </style>
   </head>
   <body>

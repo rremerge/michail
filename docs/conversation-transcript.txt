@@ -3181,3 +3181,30 @@ Validation:
   - `local-time-header` appears before `advisor-time-header` per day.
   - `local-slot` appears before `advisor-slot` per row.
   - Browser script includes `weekday: 'short'` for local time display.
+
+---
+
+Turn 134
+User:
+just as a test, on this calendar view can you make the columns narrower by 25% and put white space gap in the middle of the screen to show the two different days distinctly. .. If possible, maybe show me a view of what it might look like right here in the chat first before changing code so we are aligned
+
+Assistant:
+Provided a preview mockup in chat first, then implemented after approval.
+
+Changes:
+- `app/src/portal-handler.js`
+  - Reduced per-column width by about 25%:
+    - `.sub-header` width/min-width from 130px to 98px
+    - `.slot` width/min-width set to 98px
+    - table min-width reduced to 900px
+  - Added a visible day-group separator gutter:
+    - `.day-header + .day-header { border-left: 28px solid #fff; }`
+    - `.sub-header:nth-child(2n + 3), .calendar-grid tbody td:nth-child(2n + 3) { border-left: 28px solid #fff; }`
+    - removed right border at end of each day pair for cleaner separation.
+  - Added mobile adjustment:
+    - day separator reduced to 14px under 768px width.
+
+Validation:
+- Local tests: `cd app && npm test` -> `65/65` passing.
+- Deployed stack: `calendar-agent-spike-dev` in `us-east-1` -> `UPDATE_COMPLETE`.
+- Live HTML verification confirms new CSS rules and values are present on the availability page.
