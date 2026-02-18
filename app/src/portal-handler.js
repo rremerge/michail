@@ -23,6 +23,8 @@ function parseClampedIntEnv(value, fallback, minimum, maximum) {
   return Math.min(Math.max(parsed, minimum), maximum);
 }
 
+const AVAILABILITY_VIEW_DAYS = 7;
+
 function normalizeTimezone(value, fallbackTimezone) {
   const candidate = String(value ?? "").trim();
   if (!candidate) {
@@ -1516,7 +1518,6 @@ export function createPortalHandler(overrides = {}) {
     const hostTimezone = normalizeTimezone(process.env.HOST_TIMEZONE, "America/Los_Angeles");
     const advisingDays = parseAdvisingDays(process.env.ADVISING_DAYS ?? "Tue,Wed");
     const policyPresets = parseClientPolicyPresets(process.env.CLIENT_POLICY_PRESETS_JSON, advisingDays);
-    const searchDays = parseClampedIntEnv(process.env.SEARCH_DAYS, 14, 1, 31);
     const workdayStartHour = parseClampedIntEnv(process.env.WORKDAY_START_HOUR, 9, 0, 23);
     const workdayEndHour = parseClampedIntEnv(process.env.WORKDAY_END_HOUR, 17, 1, 24);
     const normalizedWorkdayEndHour = Math.min(24, Math.max(workdayEndHour, workdayStartHour + 1));
@@ -1624,7 +1625,7 @@ export function createPortalHandler(overrides = {}) {
       const nowMs = Date.now();
       const baseWeekStartLocal = DateTime.fromMillis(nowMs, { zone: hostTimezone }).startOf("week");
       const searchStartLocal = baseWeekStartLocal.plus({ weeks: weekOffset });
-      const searchEndLocal = searchStartLocal.plus({ days: searchDays });
+      const searchEndLocal = searchStartLocal.plus({ days: AVAILABILITY_VIEW_DAYS });
       const searchStartIso = searchStartLocal.toUTC().toISO();
       const searchEndIso = searchEndLocal.toUTC().toISO();
       const windowEndLabelLocal = searchEndLocal.minus({ days: 1 });

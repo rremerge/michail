@@ -2977,3 +2977,80 @@ Included in this checkpoint:
 - Unit/integration test coverage for guard behavior.
 - README updates for prompt-guard configuration.
 - Live deployment + benign/adversarial verification results documented in transcript.
+
+---
+
+Turn 127
+User:
+ok great. now what next
+
+Assistant:
+Recommended next phase is to close the largest remaining PRD gaps in this order:
+
+1. FR-8 Booking Execution (highest value)
+- Add client confirmation flow (email reply like "Option 2" and/or web selection).
+- Re-check availability at booking time (race-safe) and create calendar event.
+- Send confirmation email/invite and persist metadata-only booking audit trace.
+
+2. Microsoft Calendar Integration
+- Add Microsoft OAuth connection in advisor portal.
+- Add Microsoft free/busy and booking adapters alongside Google.
+- Validate mixed-provider aggregation and booking behavior.
+
+3. Ops/SLA Hardening
+- Add CloudWatch alarms and dashboard for error rate, latency, guarded request rate.
+- Add dead-letter/timeout handling and explicit 5-minute fallback safeguards.
+- Add support runbook and trace drill-down queries for Manoj.
+
+4. Security Follow-through for FR-15
+- Add adversarial regression corpus and scheduled guardrail tests.
+- Tune guard thresholds (`PROMPT_GUARD_BLOCK_LEVEL`) using observed false-positive/false-negative data.
+
+If starting now, the best immediate step is FR-8 (booking execution) because it unlocks full end-to-end scheduling rather than suggestion-only behavior.
+
+---
+
+Turn 128
+User:
+before we do that. In the calendar view, show only 1 week at a time
+
+Assistant:
+Implemented and deployed one-week-only availability view behavior.
+
+Changes made:
+- `app/src/portal-handler.js`
+  - Added fixed availability window constant: `AVAILABILITY_VIEW_DAYS = 7`.
+  - Updated `/availability` search window calculation to always use 7 days from week start + `weekOffset`.
+  - Removed dependency on `SEARCH_DAYS` for availability-page rendering window.
+
+Tests:
+- `app/test/portal-handler.test.js`
+  - Added regression test:
+    - `availability page enforces a one-week window even when SEARCH_DAYS is larger`
+  - Test sets `SEARCH_DAYS=31` and asserts actual busy-lookup window remains exactly 7 days.
+
+Validation:
+- Local: `cd app && npm test` -> `65/65` passing.
+- Deployed stack update in `us-east-1` (`calendar-agent-spike-dev`) -> `UPDATE_COMPLETE`.
+- Live page sanity check:
+  - URL fetched with valid token.
+  - Week range rendered as a single week (`Feb 16, 2026 - Feb 22, 2026`).
+  - Day columns rendered only for that week’s advising days (Tue/Wed), confirming no multi-week expansion.
+
+---
+
+Turn 129
+User:
+yes go ahead
+
+Assistant:
+Committed and pushed the one-week availability-view update.
+
+Included:
+- `app/src/portal-handler.js`: enforce exactly 1-week availability window per view.
+- `app/test/portal-handler.test.js`: regression test ensuring one-week window even when `SEARCH_DAYS` is larger.
+- `docs/conversation-transcript.txt`: updated transcript.
+
+Validation before commit:
+- Local test suite passed (`65/65`).
+- Dev stack deployed and live availability page verified as one-week view.
