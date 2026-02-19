@@ -1143,6 +1143,10 @@ test("availability page renders open slots for valid short token", async () => {
     assert.match(response.headers["content-type"], /text\/html/);
     assert.match(response.body, /Available Times/);
     assert.match(response.body, /open and busy blocks/i);
+    assert.match(response.body, /calendar-carousel/);
+    assert.match(response.body, /carousel-viewport/);
+    assert.match(response.body, /carousel-nav prev/);
+    assert.match(response.body, /carousel-nav next/);
     assert.match(response.body, /calendar-days/);
     assert.match(response.body, /calendar-grid/);
     assert.match(response.body, />Open</);
@@ -1163,6 +1167,8 @@ test("availability page renders open slots for valid short token", async () => {
     assert.match(response.body, /class="col-advisor"/);
     assert.match(response.body, /class="slot-row" data-row-index="0"/);
     assert.match(response.body, /function syncSlotRowHeights\(\)/);
+    assert.match(response.body, /function initializeDayCarousel\(\)/);
+    assert.match(response.body, /function getCardsPerView\(\)/);
     const dayCardMatches = response.body.match(/class="day-card"/g) ?? [];
     assert.equal(dayCardMatches.length, 2);
     assert.match(response.body, /local-slot/);

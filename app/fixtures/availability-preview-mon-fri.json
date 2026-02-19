@@ -1,0 +1,75 @@
+{
+  "name": "representative-policy-mon-fri",
+  "advisor": {
+    "id": "manoj",
+    "timezone": "America/Los_Angeles",
+    "advisingDays": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+    "workdayStartHour": 9,
+    "workdayEndHour": 17,
+    "calendarAccountEmail": "advisor@example.com"
+  },
+  "client": {
+    "id": "weekday.policy.client@example.com",
+    "email": "weekday.policy.client@example.com",
+    "displayName": "Weekday Policy Client",
+    "reference": "weekday-policy"
+  },
+  "durationMinutes": 30,
+  "busyIntervals": [
+    { "day": "Mon", "start": "09:00", "end": "10:00" },
+    { "day": "Mon", "start": "15:30", "end": "16:30" },
+
+    { "day": "Tue", "start": "10:00", "end": "10:30" },
+    { "day": "Tue", "start": "12:00", "end": "13:00" },
+
+    { "day": "Wed", "start": "09:00", "end": "09:30" },
+    { "day": "Wed", "start": "15:30", "end": "16:30" },
+
+    { "day": "Thu", "start": "11:00", "end": "12:00" },
+    { "day": "Thu", "start": "14:00", "end": "14:30" },
+
+    { "day": "Fri", "start": "09:30", "end": "10:30" },
+    { "day": "Fri", "start": "13:00", "end": "14:00" }
+  ],
+  "clientMeetings": [
+    {
+      "day": "Mon",
+      "start": "10:30",
+      "end": "11:00",
+      "title": "Accepted Intro",
+      "advisorResponseStatus": "accepted"
+    },
+    {
+      "day": "Tue",
+      "start": "10:30",
+      "end": "11:00",
+      "title": "Tentative Follow-up",
+      "advisorResponseStatus": "tentative"
+    },
+    {
+      "day": "Wed",
+      "start": "13:30",
+      "end": "14:30",
+      "title": "Design Review",
+      "advisorResponseStatus": "accepted"
+    },
+    {
+      "day": "Thu",
+      "start": "14:00",
+      "end": "14:30",
+      "title": "Second Invite Same Slot",
+      "advisorResponseStatus": "needsAction"
+    },
+    {
+      "day": "Fri",
+      "start": "11:00",
+      "end": "13:30",
+      "title": "Two and a Half Hour Workshop",
+      "advisorResponseStatus": "tentative"
+    }
+  ],
+  "nonClientConflictIntervals": [
+    { "day": "Thu", "start": "14:00", "end": "15:00" },
+    { "day": "Fri", "start": "12:00", "end": "13:00" }
+  ]
+}

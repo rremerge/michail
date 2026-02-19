@@ -1002,7 +1002,14 @@ function buildAvailabilityPage({
 
   const availabilityBody =
     calendarModel.days.length > 0 && calendarModel.rows.length > 0
-      ? `<div class="calendar-days">${dayTables}</div>`
+      ? `<div class="calendar-carousel" id="calendar-carousel" tabindex="0" aria-label="Availability day carousel">
+          <button type="button" class="carousel-nav prev" id="carousel-prev" aria-label="Show previous day card">&lt;</button>
+          <div class="carousel-viewport" id="carousel-viewport">
+            <div class="calendar-days" id="calendar-days">${dayTables}</div>
+          </div>
+          <button type="button" class="carousel-nav next" id="carousel-next" aria-label="Show next day card">&gt;</button>
+        </div>
+        <p class="carousel-status" id="carousel-status" aria-live="polite"></p>`
       : '<section class="empty"><h2>No advising windows configured</h2><p>No calendar columns were generated for the configured advising days.</p></section>';
 
   const encodedToken = encodeURIComponent(token);
@@ -1046,8 +1053,19 @@ function buildAvailabilityPage({
       .nav-link { text-decoration: none; color: #1d4ed8; font-size: 14px; font-weight: 600; }
       .nav-link:hover { text-decoration: underline; }
       .nav-link.disabled { color: #94a3b8; pointer-events: none; }
-      .calendar-days { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 24px; align-items: start; }
-      .day-card { background: #fff; border: 1px solid #d1d5db; border-radius: 14px; overflow: hidden; }
+      .calendar-carousel { display: flex; align-items: center; gap: 10px; }
+      .carousel-viewport { flex: 1; overflow-x: auto; scroll-behavior: smooth; border-radius: 16px; padding: 2px; }
+      .carousel-viewport::-webkit-scrollbar { height: 10px; }
+      .carousel-viewport::-webkit-scrollbar-track { background: #e2e8f0; border-radius: 999px; }
+      .carousel-viewport::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 999px; }
+      .carousel-nav { width: 36px; height: 36px; border-radius: 999px; border: 1px solid #cbd5e1; background: #fff; color: #1e293b; font-weight: 700; cursor: pointer; }
+      .carousel-nav:hover { background: #f8fafc; }
+      .carousel-nav:disabled { opacity: 0.4; cursor: not-allowed; }
+      .calendar-carousel.single-day .carousel-nav { visibility: hidden; pointer-events: none; }
+      .carousel-status { margin: 8px 0 10px; color: #475569; font-size: 12px; font-weight: 600; text-align: right; }
+      .calendar-carousel.single-day + .carousel-status { visibility: hidden; }
+      .calendar-days { display: flex; gap: 24px; align-items: stretch; width: max-content; min-width: 100%; }
+      .day-card { background: #fff; border: 1px solid #d1d5db; border-radius: 14px; overflow: hidden; flex: 0 0 auto; width: 100%; }
       .calendar-grid { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
       .calendar-grid col.col-local { width: 30%; }
       .calendar-grid col.col-advisor { width: 70%; }
@@ -1087,7 +1105,9 @@ function buildAvailabilityPage({
       .empty { background: #fff; border: 1px solid #d1d5db; border-radius: 10px; padding: 16px; }
       .note { font-size: 13px; color: #4b5563; margin-top: 16px; }
       @media (max-width: 768px) {
-        .calendar-days { grid-template-columns: 1fr; gap: 14px; }
+        .calendar-carousel { gap: 6px; }
+        .carousel-nav { width: 30px; height: 30px; }
+        .calendar-days { gap: 14px; }
       }
     </style>
   </head>
@@ -1182,6 +1202,160 @@ function buildAvailabilityPage({
           }
         }
 
+        function getCardsPerView() {
+          var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
+          if (viewportWidth >= 1200) {
+            return 3;
+          }
+          if (viewportWidth >= 768) {
+            return 2;
+          }
+          return 1;
+        }
+
+        function initializeDayCarousel() {
+          var carousel = document.getElementById('calendar-carousel');
+          var viewport = document.getElementById('carousel-viewport');
+          var track = document.getElementById('calendar-days');
+          if (!carousel || !viewport || !track) {
+            return null;
+          }
+
+          var cards = Array.prototype.slice.call(track.querySelectorAll('.day-card'));
+          var previousButton = document.getElementById('carousel-prev');
+          var nextButton = document.getElementById('carousel-next');
+          var statusNode = document.getElementById('carousel-status');
+          var scrollTimer = null;
+          var resizeTimer = null;
+
+          function readGapPx() {
+            var styles = window.getComputedStyle(track);
+            var rawGap = styles.columnGap || styles.gap || '24px';
+            var parsedGap = Number.parseFloat(rawGap);
+            return Number.isFinite(parsedGap) ? parsedGap : 24;
+          }
+
+          function measureCardStep() {
+            if (cards.length === 0) {
+              return 0;
+            }
+
+            return cards[0].getBoundingClientRect().width + readGapPx();
+          }
+
+          function measureMaxScrollLeft() {
+            return Math.max(0, track.scrollWidth - viewport.clientWidth);
+          }
+
+          function clampVisibleStart(visibleStart, cardsPerView) {
+            var maxStart = Math.max(0, cards.length - cardsPerView);
+            return Math.max(0, Math.min(visibleStart, maxStart));
+          }
+
+          function updateCarouselState() {
+            var cardsPerView = getCardsPerView();
+            var step = measureCardStep();
+            var maxScrollLeft = measureMaxScrollLeft();
+            var visibleStart = step > 0 ? Math.round(viewport.scrollLeft / step) : 0;
+            visibleStart = clampVisibleStart(visibleStart, cardsPerView);
+            var visibleEnd = Math.min(cards.length, visibleStart + cardsPerView);
+
+            if (statusNode) {
+              statusNode.textContent =
+                cards.length > 0 ? String(visibleStart + 1) + '-' + String(visibleEnd) + ' of ' + String(cards.length) : '0 of 0';
+            }
+
+            if (previousButton) {
+              previousButton.disabled = viewport.scrollLeft <= 1;
+            }
+            if (nextButton) {
+              nextButton.disabled = viewport.scrollLeft >= maxScrollLeft - 1;
+            }
+
+            carousel.classList.toggle('single-day', cards.length <= cardsPerView);
+          }
+
+          function layoutCarousel() {
+            var cardsPerView = getCardsPerView();
+            var gapPx = readGapPx();
+            var viewportWidth = viewport.clientWidth;
+            if (viewportWidth <= 0 || cards.length === 0) {
+              return;
+            }
+
+            var cardWidth = (viewportWidth - gapPx * (cardsPerView - 1)) / cardsPerView;
+            var normalizedCardWidth = Math.max(240, Math.floor(cardWidth));
+            cards.forEach(function (card) {
+              card.style.width = normalizedCardWidth + 'px';
+            });
+
+            var maxScrollLeft = measureMaxScrollLeft();
+            if (viewport.scrollLeft > maxScrollLeft) {
+              viewport.scrollLeft = maxScrollLeft;
+            }
+
+            updateCarouselState();
+            syncSlotRowHeights();
+          }
+
+          function scrollByOneCard(direction) {
+            var step = measureCardStep();
+            if (step <= 0) {
+              return;
+            }
+
+            viewport.scrollBy({
+              left: direction * step,
+              behavior: 'smooth'
+            });
+          }
+
+          if (previousButton) {
+            previousButton.addEventListener('click', function () {
+              scrollByOneCard(-1);
+            });
+          }
+          if (nextButton) {
+            nextButton.addEventListener('click', function () {
+              scrollByOneCard(1);
+            });
+          }
+
+          viewport.addEventListener('scroll', function () {
+            if (scrollTimer) {
+              clearTimeout(scrollTimer);
+            }
+            scrollTimer = setTimeout(function () {
+              updateCarouselState();
+            }, 50);
+          });
+
+          carousel.addEventListener('keydown', function (event) {
+            if (event.key === 'ArrowLeft') {
+              event.preventDefault();
+              scrollByOneCard(-1);
+            }
+            if (event.key === 'ArrowRight') {
+              event.preventDefault();
+              scrollByOneCard(1);
+            }
+          });
+
+          window.addEventListener('resize', function () {
+            if (resizeTimer) {
+              clearTimeout(resizeTimer);
+            }
+            resizeTimer = setTimeout(function () {
+              layoutCarousel();
+            }, 90);
+          });
+
+          layoutCarousel();
+          return {
+            layoutCarousel: layoutCarousel
+          };
+        }
+
         var localTimezone = '';
         try {
           localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
@@ -1235,21 +1409,17 @@ function buildAvailabilityPage({
 
         if (window.requestAnimationFrame) {
           window.requestAnimationFrame(function () {
-            syncSlotRowHeights();
+            var carouselController = initializeDayCarousel();
+            if (!carouselController) {
+              syncSlotRowHeights();
+            }
           });
         } else {
-          syncSlotRowHeights();
-        }
-
-        var resizeTimer = null;
-        window.addEventListener('resize', function () {
-          if (resizeTimer) {
-            clearTimeout(resizeTimer);
-          }
-          resizeTimer = setTimeout(function () {
+          var fallbackCarousel = initializeDayCarousel();
+          if (!fallbackCarousel) {
             syncSlotRowHeights();
-          }, 80);
-        });
+          }
+        }
       })();
     </script>
   </body>
