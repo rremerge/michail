@@ -4228,3 +4228,21 @@ Validation:
 - Regenerated local previews:
   - `tmp/advisor-preview.html`
   - `tmp/availability-preview.html`
+
+---
+
+Turn 180
+User:
+ok checkin and update
+
+Assistant:
+Created and pushed a checkpoint commit to GitHub after running tests.
+
+Actions:
+- Ran verification:
+  - `cd app && npm test` -> `74/74` passing.
+- Created commit:
+  - `75802a3`
+  - Message: `Add branding and local preview enhancements for portal and availability views`
+- Pushed to remote:
+  - `origin/main` updated from `be71326` to `75802a3`.
