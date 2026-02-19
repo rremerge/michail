@@ -292,6 +292,55 @@ export function createRuntimeDeps() {
       );
     },
 
+    async listPolicyPresets(policyPresetsTableName, advisorId) {
+      const response = await ddbClient.send(
+        new QueryCommand({
+          TableName: policyPresetsTableName,
+          KeyConditionExpression: "advisorId = :advisorId",
+          ExpressionAttributeValues: {
+            ":advisorId": advisorId
+          }
+        })
+      );
+
+      return response.Items ?? [];
+    },
+
+    async getPolicyPreset(policyPresetsTableName, advisorId, policyId) {
+      const response = await ddbClient.send(
+        new GetCommand({
+          TableName: policyPresetsTableName,
+          Key: {
+            advisorId,
+            policyId
+          }
+        })
+      );
+
+      return response.Item ?? null;
+    },
+
+    async putPolicyPreset(policyPresetsTableName, item) {
+      await ddbClient.send(
+        new PutCommand({
+          TableName: policyPresetsTableName,
+          Item: item
+        })
+      );
+    },
+
+    async deletePolicyPreset(policyPresetsTableName, advisorId, policyId) {
+      await ddbClient.send(
+        new DeleteCommand({
+          TableName: policyPresetsTableName,
+          Key: {
+            advisorId,
+            policyId
+          }
+        })
+      );
+    },
+
     async recordClientEmailInteraction(
       clientProfilesTableName,
       { advisorId, clientId, clientEmail, clientDisplayName, accessState, policyId, updatedAt }

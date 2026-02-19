@@ -1114,6 +1114,115 @@ test("createHandler routes /spike/feedback requests to feedback flow", async () 
   }
 });
 
+test("processSchedulingEmail applies advisor-defined custom client policies", async () => {
+  const deps = {
+    async getClientProfile() {
+      return {
+        advisorId: "manoj",
+        clientId: "client@example.com",
+        accessState: "active",
+        policyId: "founders"
+      };
+    },
+    async listPolicyPresets(tableName, advisorId) {
+      assert.equal(tableName, "PolicyPresetsTable");
+      assert.equal(advisorId, "manoj");
+      return [
+        {
+          advisorId,
+          policyId: "founders",
+          advisingDays: ["Thu"]
+        }
+      ];
+    },
+    async recordClientEmailInteraction() {},
+    async writeTrace() {},
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    CLIENT_PROFILES_TABLE_NAME: "ClientProfilesTable",
+    POLICY_PRESETS_TABLE_NAME: "PolicyPresetsTable",
+    CLIENT_POLICY_PRESETS_JSON: '{"default":["Tue","Wed"]}'
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Could we connect this week?"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-02T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.suggestionCount, 3);
+  for (const suggestion of response.suggestions) {
+    const hostStart = DateTime.fromISO(suggestion.startIsoHost);
+    assert.equal(hostStart.weekday, 4);
+  }
+});
+
+test("processSchedulingEmail enforces afternoon daypart for broad LLM windows", async () => {
+  const deps = {
+    async getSecretString(secretArn) {
+      assert.equal(secretArn, "arn:aws:secretsmanager:us-east-1:111111111111:secret:llm-provider");
+      return JSON.stringify({
+        provider: "openai",
+        api_key: "test-api-key",
+        model: "gpt-5.2",
+        endpoint: "https://api.openai.com/v1/chat/completions"
+      });
+    },
+    async extractSchedulingIntentWithLlm() {
+      return {
+        requestedWindows: [
+          {
+            startIso: "2026-03-09T19:00:00.000Z",
+            endIso: "2026-03-14T00:00:00.000Z"
+          }
+        ],
+        clientTimezone: null,
+        confidence: 0.62
+      };
+    },
+    async writeTrace() {},
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:aws:secretsmanager:us-east-1:111111111111:secret:llm-provider",
+    HOST_TIMEZONE: "America/Los_Angeles",
+    ADVISING_DAYS: "Tue,Wed",
+    SEARCH_DAYS: "120"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "manojapte@gmail.com",
+      subject: "",
+      body: "hi do you have any availability in the second week of march in the afternoon"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-02-19T02:36:07.671Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.suggestionCount, 3);
+  for (const suggestion of response.suggestions) {
+    const hostStart = DateTime.fromISO(suggestion.startIsoHost).setZone("America/Los_Angeles");
+    assert.equal(hostStart.hour >= 13, true);
+    assert.equal(hostStart.hour < 17, true);
+  }
+});
+
 test("createHandler normalizes SES from header before processing", async () => {
   const traceItems = [];
   const sentMessages = [];

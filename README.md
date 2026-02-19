@@ -76,7 +76,8 @@ After deploy, open `AdvisorPortalUrl` output:
 - Add `Mock Calendar (Test)` for immediate end-to-end testing.
 - Click `Connect Google (Sign In)` to launch Google login/consent and create a secure refresh-token connection.
 - Use the **Client Directory** table to view first/last interaction timestamps, email/web usage counters, and update client access policy (`active`, `blocked`, `deleted`).
-- Assign client policy groups (`default`, `weekend`, `monday`) to control which advising days a given client can view.
+- Use **Access Policies** in the advisor portal to create custom policy groups (for example `founders`, `weekend-plus`) and set their allowed advising days.
+- Assign clients to any policy group from the Client Directory table to control which advising days a given client can view.
 
 ## Client Availability Link (FR-6 Slice)
 When the agent sends slot suggestions, it now appends a signed availability URL so clients can browse a calendar-style free/busy view in the web UI.
@@ -326,6 +327,7 @@ sam deploy \
   - `ses:SendEmail`/`ses:SendRawEmail` when response mode is send.
 - Advisor portal Lambda IAM role:
   - `dynamodb:GetItem|PutItem|DeleteItem|Query` on connection + oauth state tables.
+  - `dynamodb:GetItem|PutItem|DeleteItem|Query` on advisor policy-preset table.
   - `dynamodb:GetItem|UpdateItem` on trace table.
   - `secretsmanager:GetSecretValue` on Google OAuth app secret.
   - `secretsmanager:GetSecretValue` on Google OAuth runtime secret.

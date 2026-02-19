@@ -1,13 +1,15 @@
 import crypto from "node:crypto";
 import { createRuntimeDeps } from "./runtime-deps.js";
 import { DateTime, Interval } from "luxon";
-import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adapter.js";
+import { parseGoogleOauthSecret, lookupGoogleBusyIntervals, lookupGoogleClientMeetings } from "./google-adapter.js";
 import { parseAvailabilityLinkSecret, validateAvailabilityLinkToken } from "./availability-link.js";
 import {
   isClientAccessRestricted,
+  mergeClientPolicyPresets,
   normalizeClientAccessState,
   normalizeClientId,
   normalizePolicyId,
+  normalizePolicyPresetRecord,
   parseAdvisingDaysList,
   parseClientPolicyPresets,
   resolveClientAdvisingDays
@@ -536,8 +538,105 @@ function normalizeWeekdays(weekdays) {
   return accepted;
 }
 
+function normalizeAdvisorResponseStatus(rawStatus) {
+  const normalized = String(rawStatus ?? "")
+    .trim()
+    .toLowerCase();
+  return normalized === "accepted" ? "accepted" : "pending";
+}
+
+function normalizeMeetingDisplayTitle(value) {
+  const title = String(value ?? "").trim();
+  return title.length > 0 ? title : "Client meeting";
+}
+
+function clipRangeToSlot(startMs, endMs, slotStartMs, slotEndMs) {
+  const clippedStart = Math.max(startMs, slotStartMs);
+  const clippedEnd = Math.min(endMs, slotEndMs);
+  if (clippedEnd <= clippedStart) {
+    return null;
+  }
+
+  return [clippedStart, clippedEnd];
+}
+
+function hasBusyOutsideClientMeetings({
+  slotStartMs,
+  slotEndMs,
+  busyIntervals,
+  clientMeetings,
+  nonClientBusyIntervals
+}) {
+  const clippedBusy = [];
+  const clippedClient = [];
+  const clippedNonClientBusy = [];
+
+  for (const busyInterval of busyIntervals) {
+    const clipped = clipRangeToSlot(busyInterval.startMs, busyInterval.endMs, slotStartMs, slotEndMs);
+    if (clipped) {
+      clippedBusy.push(clipped);
+    }
+  }
+
+  for (const meeting of clientMeetings) {
+    const clipped = clipRangeToSlot(meeting.startMs, meeting.endMs, slotStartMs, slotEndMs);
+    if (clipped) {
+      clippedClient.push(clipped);
+    }
+  }
+
+  for (const busyInterval of nonClientBusyIntervals) {
+    const clipped = clipRangeToSlot(busyInterval.startMs, busyInterval.endMs, slotStartMs, slotEndMs);
+    if (clipped) {
+      clippedNonClientBusy.push(clipped);
+    }
+  }
+
+  if (clippedNonClientBusy.length > 0) {
+    return true;
+  }
+
+  if (clippedBusy.length === 0) {
+    return false;
+  }
+
+  const points = new Set([slotStartMs, slotEndMs]);
+  for (const [startMs, endMs] of clippedBusy) {
+    points.add(startMs);
+    points.add(endMs);
+  }
+  for (const [startMs, endMs] of clippedClient) {
+    points.add(startMs);
+    points.add(endMs);
+  }
+
+  const sortedPoints = Array.from(points).sort((left, right) => left - right);
+  for (let index = 0; index < sortedPoints.length - 1; index += 1) {
+    const segmentStart = sortedPoints[index];
+    const segmentEnd = sortedPoints[index + 1];
+    if (segmentEnd <= segmentStart) {
+      continue;
+    }
+
+    const midpoint = segmentStart + Math.floor((segmentEnd - segmentStart) / 2);
+    const segmentBusy = clippedBusy.some(([startMs, endMs]) => midpoint >= startMs && midpoint < endMs);
+    if (!segmentBusy) {
+      continue;
+    }
+
+    const coveredByClientMeeting = clippedClient.some(([startMs, endMs]) => midpoint >= startMs && midpoint < endMs);
+    if (!coveredByClientMeeting) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 function buildAvailabilityCalendarModel({
   busyIntervalsUtc,
+  clientMeetingsUtc,
+  nonClientBusyIntervalsUtc,
   hostTimezone,
   advisingDays,
   searchStartIso,
@@ -555,18 +654,62 @@ function buildAvailabilityCalendarModel({
       days: [],
       rows: [],
       openSlotCount: 0,
-      busySlotCount: 0
+      busySlotCount: 0,
+      clientMeetingSlotCount: 0,
+      clientOverlapSlotCount: 0
     };
   }
 
   const busyIntervals = busyIntervalsUtc
-    .map((item) =>
-      Interval.fromDateTimes(
-        DateTime.fromISO(item.startIso, { zone: "utc" }),
-        DateTime.fromISO(item.endIso, { zone: "utc" })
-      )
-    )
-    .filter((interval) => interval.isValid);
+    .map((item) => {
+      const start = DateTime.fromISO(item.startIso, { zone: "utc" });
+      const end = DateTime.fromISO(item.endIso, { zone: "utc" });
+      const interval = Interval.fromDateTimes(start, end);
+      if (!interval.isValid) {
+        return null;
+      }
+
+      return {
+        interval,
+        startMs: start.toMillis(),
+        endMs: end.toMillis()
+      };
+    })
+    .filter(Boolean);
+  const clientMeetings = (Array.isArray(clientMeetingsUtc) ? clientMeetingsUtc : [])
+    .map((item) => {
+      const start = DateTime.fromISO(item.startIso, { zone: "utc" });
+      const end = DateTime.fromISO(item.endIso, { zone: "utc" });
+      const interval = Interval.fromDateTimes(start, end);
+      if (!interval.isValid) {
+        return null;
+      }
+
+      return {
+        interval,
+        startMs: start.toMillis(),
+        endMs: end.toMillis(),
+        title: normalizeMeetingDisplayTitle(item.title),
+        advisorResponseStatus: normalizeAdvisorResponseStatus(item.advisorResponseStatus)
+      };
+    })
+    .filter(Boolean);
+  const nonClientBusyIntervals = (Array.isArray(nonClientBusyIntervalsUtc) ? nonClientBusyIntervalsUtc : [])
+    .map((item) => {
+      const start = DateTime.fromISO(item.startIso, { zone: "utc" });
+      const end = DateTime.fromISO(item.endIso, { zone: "utc" });
+      const interval = Interval.fromDateTimes(start, end);
+      if (!interval.isValid) {
+        return null;
+      }
+
+      return {
+        interval,
+        startMs: start.toMillis(),
+        endMs: end.toMillis()
+      };
+    })
+    .filter(Boolean);
 
   let days = [];
   let localDay = searchStartUtc.setZone(hostTimezone).startOf("day");
@@ -590,7 +733,9 @@ function buildAvailabilityCalendarModel({
       days,
       rows: [],
       openSlotCount: 0,
-      busySlotCount: 0
+      busySlotCount: 0,
+      clientMeetingSlotCount: 0,
+      clientOverlapSlotCount: 0
     };
   }
 
@@ -607,6 +752,8 @@ function buildAvailabilityCalendarModel({
   const rows = [];
   let openSlotCount = 0;
   let busySlotCount = 0;
+  let clientMeetingSlotCount = 0;
+  let clientOverlapSlotCount = 0;
 
   let rowStart = dayStart;
   while (rowStart.plus({ minutes: slotMinutes }) <= dayEnd) {
@@ -618,7 +765,30 @@ function buildAvailabilityCalendarModel({
         .plus({ minutes: rowOffsetMinutes });
       const slotEndLocal = slotStartLocal.plus({ minutes: slotMinutes });
       const intervalUtc = Interval.fromDateTimes(slotStartLocal.toUTC(), slotEndLocal.toUTC());
-      const isBusy = busyIntervals.some((busyInterval) => busyInterval.overlaps(intervalUtc));
+      const slotStartMs = slotStartLocal.toUTC().toMillis();
+      const slotEndMs = slotEndLocal.toUTC().toMillis();
+      const busyInSlot = busyIntervals.filter((busyInterval) => busyInterval.interval.overlaps(intervalUtc));
+      const meetingsInSlot = clientMeetings.filter((meeting) => meeting.interval.overlaps(intervalUtc));
+      const meetingDetails = meetingsInSlot.map((meeting) => ({
+        title: meeting.title,
+        advisorResponseStatus: meeting.advisorResponseStatus
+      }));
+      const hasClientMeeting = meetingDetails.length > 0;
+      const hasOverlap = hasClientMeeting
+        ? hasBusyOutsideClientMeetings({
+            slotStartMs,
+            slotEndMs,
+            busyIntervals: busyInSlot,
+            clientMeetings: meetingsInSlot,
+            nonClientBusyIntervals
+          })
+        : false;
+      const isBusy = busyInSlot.length > 0 || hasClientMeeting;
+      const clientMeetingState = hasClientMeeting
+        ? meetingDetails.some((meeting) => meeting.advisorResponseStatus === "accepted")
+          ? "accepted"
+          : "pending"
+        : null;
       const hostLabel = slotStartLocal.toFormat("h:mm a");
 
       if (isBusy) {
@@ -626,11 +796,21 @@ function buildAvailabilityCalendarModel({
       } else {
         openSlotCount += 1;
       }
+      if (hasClientMeeting) {
+        clientMeetingSlotCount += 1;
+      }
+      if (hasOverlap) {
+        clientOverlapSlotCount += 1;
+      }
 
       return {
         status: isBusy ? "busy" : "open",
         slotStartUtc: slotStartLocal.toUTC().toISO(),
-        hostLabel
+        hostLabel,
+        hasClientMeeting,
+        clientMeetingState,
+        clientMeetings: meetingDetails,
+        hasOverlap
       };
     });
 
@@ -645,7 +825,9 @@ function buildAvailabilityCalendarModel({
     days,
     rows,
     openSlotCount,
-    busySlotCount
+    busySlotCount,
+    clientMeetingSlotCount,
+    clientOverlapSlotCount
   };
 }
 
@@ -688,15 +870,44 @@ function buildAvailabilityPage({
   const bodyRows = calendarModel.rows
     .map((row) => {
       const slotCells = row.cells
-        .map(
-          (slot) => `<td class="slot local-slot ${slot.status}" data-slot-start-utc="${escapeHtml(slot.slotStartUtc)}">
+        .map((slot) => {
+          const clientPill = slot.hasClientMeeting
+            ? `<div class="slot-pill client-${slot.clientMeetingState}">Your meeting (${slot.clientMeetingState === "accepted" ? "accepted" : "pending"})</div>`
+            : "";
+          const overlapPill = slot.hasOverlap ? '<div class="slot-pill overlap">Also busy</div>' : "";
+          const meetingDetails = slot.hasClientMeeting
+            ? `<div class="client-meeting-list">${slot.clientMeetings
+                .map(
+                  (meeting) =>
+                    `<div class="client-meeting-item"><span class="meeting-title">${escapeHtml(
+                      meeting.title
+                    )}</span><span class="meeting-state ${escapeHtml(meeting.advisorResponseStatus)}">${
+                      meeting.advisorResponseStatus === "accepted" ? "Accepted" : "Pending"
+                    }</span></div>`
+                )
+                .join("")}</div>`
+            : "";
+          const advisorSlotClass = [
+            "slot",
+            "advisor-slot",
+            slot.status,
+            slot.hasClientMeeting ? `client-${slot.clientMeetingState}` : "",
+            slot.hasOverlap ? "client-overlap" : ""
+          ]
+            .filter(Boolean)
+            .join(" ");
+
+          return `<td class="slot local-slot ${slot.status}" data-slot-start-utc="${escapeHtml(slot.slotStartUtc)}">
             <div class="slot-local">Detecting...</div>
           </td>
-          <td class="slot advisor-slot ${slot.status}">
+          <td class="${advisorSlotClass}">
             <div class="slot-pill ${slot.status}">${slot.status === "busy" ? "Busy" : "Open"}</div>
+            ${clientPill}
+            ${overlapPill}
             <div class="slot-host">${escapeHtml(slot.hostLabel)}</div>
-          </td>`
-        )
+            ${meetingDetails}
+          </td>`;
+        })
         .join("");
 
       return `<tr>${slotCells}</tr>`;
@@ -752,6 +963,9 @@ function buildAvailabilityPage({
       .legend-pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font-weight: 600; font-size: 12px; border: 1px solid; }
       .legend-pill.open { background: #e8f5e9; color: #065f46; border-color: #9dd7a6; }
       .legend-pill.busy { background: #eceff1; color: #374151; border-color: #cbd5e1; }
+      .legend-pill.client-accepted { background: #dcfce7; color: #166534; border-color: #86efac; }
+      .legend-pill.client-pending { background: #fef9c3; color: #854d0e; border-color: #fde68a; }
+      .legend-pill.overlap { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
       .summary { font-size: 14px; color: #374151; margin-bottom: 12px; }
       .week-nav { display: flex; align-items: center; justify-content: space-between; margin: 14px 0; gap: 10px; }
       .week-range { font-size: 14px; font-weight: 700; color: #0f172a; text-align: center; flex: 1; }
@@ -773,11 +987,23 @@ function buildAvailabilityPage({
       .slot { width: 98px; min-width: 98px; min-height: 60px; }
       .slot.open { background: #f4fbf6; }
       .slot.busy { background: #f8fafc; }
+      .slot.client-accepted { background: #ecfdf5; }
+      .slot.client-pending { background: #fffbeb; }
+      .slot.client-overlap { box-shadow: inset 0 0 0 2px #fca5a5; }
       .slot-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid; }
       .slot-pill.open { color: #065f46; background: #dcfce7; border-color: #86efac; }
       .slot-pill.busy { color: #334155; background: #e2e8f0; border-color: #cbd5e1; }
+      .slot-pill.client-accepted { color: #166534; background: #dcfce7; border-color: #86efac; margin-top: 4px; }
+      .slot-pill.client-pending { color: #854d0e; background: #fef3c7; border-color: #fcd34d; margin-top: 4px; }
+      .slot-pill.overlap { color: #991b1b; background: #fee2e2; border-color: #fca5a5; margin-top: 4px; }
       .slot-host { margin-top: 6px; font-size: 11px; font-weight: 700; color: #0f172a; }
       .slot-local { margin-top: 6px; font-size: 11px; font-weight: 600; color: #475569; }
+      .client-meeting-list { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+      .client-meeting-item { font-size: 11px; line-height: 1.3; display: flex; flex-direction: column; gap: 2px; padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 6px; background: #ffffff; }
+      .meeting-title { font-weight: 600; color: #0f172a; word-break: break-word; }
+      .meeting-state { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+      .meeting-state.accepted { color: #166534; }
+      .meeting-state.pending { color: #854d0e; }
       .empty { background: #fff; border: 1px solid #d1d5db; border-radius: 10px; padding: 16px; }
       .note { font-size: 13px; color: #4b5563; margin-top: 16px; }
       @media (max-width: 768px) {
@@ -794,14 +1020,17 @@ function buildAvailabilityPage({
           ? `<p class="muted">Availability for <code>${escapeHtml(clientDisplayName)}</code></p>`
           : ""
       }
-      <p class="muted">Calendar-style view of open and busy blocks. Busy meeting details are hidden for privacy.</p>
+      <p class="muted">Calendar-style view of open and busy blocks. Busy meeting details are hidden by default; meetings tied to your domain are shown.</p>
       <p class="muted">Advisor timezone: <code>${escapeHtml(hostTimezone)}</code> | Local timezone: <code id="local-timezone-code">Detecting...</code></p>
       <p class="muted">Link expires: ${escapeHtml(expiresAtLabel)} (${escapeHtml(hostTimezone)})</p>
       <div class="legend">
         <span class="legend-pill open">Open</span>
         <span class="legend-pill busy">Busy</span>
+        <span class="legend-pill client-accepted">Your Meeting Accepted</span>
+        <span class="legend-pill client-pending">Your Meeting Pending</span>
+        <span class="legend-pill overlap">Overlapping Busy</span>
       </div>
-      <p class="summary">Open slots: ${calendarModel.openSlotCount} | Busy blocks: ${calendarModel.busySlotCount}</p>
+      <p class="summary">Open slots: ${calendarModel.openSlotCount} | Busy blocks: ${calendarModel.busySlotCount} | Your meeting slots: ${calendarModel.clientMeetingSlotCount} | Overlaps: ${calendarModel.clientOverlapSlotCount}</p>
       <div class="week-nav">
         ${previousButton}
         <div class="week-range">${escapeHtml(windowLabel)}</div>
@@ -875,17 +1104,63 @@ function availabilityErrorPage(message) {
   );
 }
 
-async function lookupAvailabilityBusyIntervals({
+async function lookupAvailabilityContext({
   deps,
   calendarMode,
   connectionsTableName,
   advisorId,
   googleOauthSecretArn,
   searchStartIso,
-  searchEndIso
+  searchEndIso,
+  clientEmail
 }) {
+  const lookupWithOauthConfig = async ({ oauthConfig, advisorEmailHint }) => {
+    const busyIntervals = await deps.lookupBusyIntervals({
+      oauthConfig,
+      windowStartIso: searchStartIso,
+      windowEndIso: searchEndIso,
+      fetchImpl: deps.fetchImpl
+    });
+
+    let clientMeetings = [];
+    let nonClientBusyIntervals = [];
+    if (clientEmail && typeof deps.lookupClientMeetings === "function") {
+      try {
+        const clientMeetingOverlay = await deps.lookupClientMeetings({
+          oauthConfig,
+          windowStartIso: searchStartIso,
+          windowEndIso: searchEndIso,
+          clientEmail,
+          advisorEmailHint,
+          fetchImpl: deps.fetchImpl
+        });
+        if (Array.isArray(clientMeetingOverlay)) {
+          clientMeetings = clientMeetingOverlay;
+        } else {
+          clientMeetings = Array.isArray(clientMeetingOverlay?.clientMeetings) ? clientMeetingOverlay.clientMeetings : [];
+          nonClientBusyIntervals = Array.isArray(clientMeetingOverlay?.nonClientBusyIntervals)
+            ? clientMeetingOverlay.nonClientBusyIntervals
+            : [];
+        }
+      } catch {
+        clientMeetings = [];
+        nonClientBusyIntervals = [];
+      }
+    }
+
+    return {
+      busyIntervals,
+      clientMeetings,
+      nonClientBusyIntervals
+    };
+  };
+
   if (calendarMode === "mock") {
-    return [];
+    return {
+      busyIntervals: [],
+      clientMeetings: [],
+      nonClientBusyIntervals: []
+    };
   }
 
   if (calendarMode === "google") {
@@ -895,12 +1170,7 @@ async function lookupAvailabilityBusyIntervals({
 
     const secretString = await deps.getSecretString(googleOauthSecretArn);
     const oauthConfig = parseGoogleOauthSecret(secretString);
-    return deps.lookupBusyIntervals({
-      oauthConfig,
-      windowStartIso: searchStartIso,
-      windowEndIso: searchEndIso,
-      fetchImpl: deps.fetchImpl
-    });
+    return lookupWithOauthConfig({ oauthConfig });
   }
 
   if (calendarMode === "connection") {
@@ -910,11 +1180,19 @@ async function lookupAvailabilityBusyIntervals({
 
     const connection = await deps.getPrimaryConnection(connectionsTableName, advisorId);
     if (!connection) {
-      return [];
+      return {
+        busyIntervals: [],
+        clientMeetings: [],
+        nonClientBusyIntervals: []
+      };
     }
 
     if (connection.provider === "mock") {
-      return [];
+      return {
+        busyIntervals: [],
+        clientMeetings: [],
+        nonClientBusyIntervals: []
+      };
     }
 
     if (connection.provider === "google") {
@@ -924,11 +1202,9 @@ async function lookupAvailabilityBusyIntervals({
 
       const secretString = await deps.getSecretString(connection.secretArn);
       const oauthConfig = parseGoogleOauthSecret(secretString);
-      return deps.lookupBusyIntervals({
+      return lookupWithOauthConfig({
         oauthConfig,
-        windowStartIso: searchStartIso,
-        windowEndIso: searchEndIso,
-        fetchImpl: deps.fetchImpl
+        advisorEmailHint: connection.accountEmail
       });
     }
 
@@ -1003,6 +1279,11 @@ function parseClientProfilePath(rawPath) {
   return match?.[1] ?? null;
 }
 
+function parsePolicyPresetPath(rawPath) {
+  const match = rawPath.match(/^\/advisor\/api\/policies\/([^/]+)$/);
+  return match?.[1] ?? null;
+}
+
 function parseClientAdvisingDaysOverride(rawValue) {
   if (rawValue === null || rawValue === undefined || rawValue === "") {
     return null;
@@ -1014,6 +1295,69 @@ function parseClientAdvisingDaysOverride(rawValue) {
   }
 
   return parsed;
+}
+
+function parsePolicyAdvisingDays(rawValue) {
+  const parsed = parseAdvisingDaysList(rawValue, []);
+  if (parsed.length === 0) {
+    throw new Error("advisingDays must include at least one valid weekday");
+  }
+
+  return parsed;
+}
+
+function orderPolicyIds(policyIds) {
+  const unique = Array.from(new Set(policyIds.filter(Boolean)));
+  unique.sort((left, right) => {
+    if (left === "default") {
+      return -1;
+    }
+    if (right === "default") {
+      return 1;
+    }
+
+    return left.localeCompare(right);
+  });
+
+  return unique;
+}
+
+function buildPolicyCatalog({ basePolicyPresets, customPolicyRecords }) {
+  const mergedPresets = mergeClientPolicyPresets(basePolicyPresets, customPolicyRecords);
+  const normalizedCustomRecords = new Map();
+  for (const record of Array.isArray(customPolicyRecords) ? customPolicyRecords : []) {
+    const normalized = normalizePolicyPresetRecord(record);
+    if (!normalized) {
+      continue;
+    }
+
+    normalizedCustomRecords.set(normalized.policyId, {
+      policyId: normalized.policyId,
+      advisingDays: normalized.advisingDays,
+      createdAt: record.createdAt ?? null,
+      updatedAt: record.updatedAt ?? null
+    });
+  }
+
+  const policyOptions = orderPolicyIds(Object.keys(mergedPresets));
+  const policies = policyOptions.map((policyId) => {
+    const customRecord = normalizedCustomRecords.get(policyId);
+    return {
+      policyId,
+      advisingDays: mergedPresets[policyId],
+      source: customRecord ? "custom" : "system",
+      canDelete: Boolean(customRecord),
+      createdAt: customRecord?.createdAt ?? null,
+      updatedAt: customRecord?.updatedAt ?? null
+    };
+  });
+
+  return {
+    mergedPresets,
+    policies,
+    policyOptions,
+    customPolicyIds: new Set(Array.from(normalizedCustomRecords.keys()))
+  };
 }
 
 function normalizeClientProfileForApi(clientProfile) {
@@ -1185,6 +1529,27 @@ function buildAdvisorPage() {
     </div>
 
     <div class="card">
+      <h2 style="margin-top:0;">Access Policies</h2>
+      <p class="muted">Define reusable client visibility policies (advising days) directly in the portal.</p>
+      <div class="row inline-controls">
+        <input id="newPolicyId" placeholder="policy id (example: founders)" style="min-width: 220px;" />
+        <input id="newPolicyDays" placeholder="days (example: Tue,Wed)" style="min-width: 220px;" />
+        <button id="createPolicy">Create Policy</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Policy ID</th>
+            <th>Allowed Days</th>
+            <th>Type</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="policiesBody"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
       <h2 style="margin-top:0;">Client Directory</h2>
       <p class="muted">Metadata-only client list with first contact, usage counters, and access policy controls.</p>
       <table>
@@ -1230,6 +1595,7 @@ function buildAdvisorPage() {
 
     <script>
       let lastTrace = null;
+      let policyOptions = ['default', 'weekend', 'monday'];
 
       function showStatusFromQuery() {
         const banner = document.getElementById('statusBanner');
@@ -1315,6 +1681,134 @@ function buildAdvisorPage() {
         return Number.isFinite(parsed) ? String(parsed) : '0';
       }
 
+      function normalizePolicyIdInput(value) {
+        const normalized = String(value || '').trim().toLowerCase();
+        if (!normalized) {
+          return null;
+        }
+
+        return /^[a-z0-9_-]{1,32}$/.test(normalized) ? normalized : null;
+      }
+
+      function parseAdvisingDaysInput(value) {
+        return String(value || '')
+          .split(',')
+          .map((item) => item.trim())
+          .filter(Boolean);
+      }
+
+      async function loadPolicies() {
+        const tbody = document.getElementById('policiesBody');
+        tbody.innerHTML = '';
+
+        const response = await fetch('./advisor/api/policies');
+        const payload = await response.json();
+
+        if (!response.ok) {
+          const row = document.createElement('tr');
+          row.innerHTML = '<td colspan="4" class="error">' + escapeHtml(payload.error || 'Unable to load policies.') + '</td>';
+          tbody.appendChild(row);
+          policyOptions = ['default', 'weekend', 'monday'];
+          return;
+        }
+
+        const policies = Array.isArray(payload.policies) ? payload.policies : [];
+        policyOptions = Array.isArray(payload.policyOptions) && payload.policyOptions.length > 0
+          ? payload.policyOptions
+          : ['default', 'weekend', 'monday'];
+
+        if (policies.length === 0) {
+          const row = document.createElement('tr');
+          row.innerHTML = '<td colspan="4" class="muted">No policies configured.</td>';
+          tbody.appendChild(row);
+          return;
+        }
+
+        for (const policy of policies) {
+          const row = document.createElement('tr');
+          const isCustom = policy.source === 'custom';
+          const daysValue = Array.isArray(policy.advisingDays) ? policy.advisingDays.join(',') : '';
+          const actionHtml = isCustom
+            ? '<div class="inline-controls"><button class="small-button" data-action="save-policy-preset">Save</button><button class="small-button" data-action="delete-policy-preset">Delete</button></div>'
+            : '<span class="muted">System policy</span>';
+
+          row.innerHTML =
+            '<td><code>' + escapeHtml(policy.policyId || '') + '</code></td>' +
+            '<td><input data-role="policy-days" value="' + escapeHtml(daysValue) + '" ' + (isCustom ? '' : 'disabled') + ' /></td>' +
+            '<td>' + escapeHtml(policy.source || 'system') + '</td>' +
+            '<td>' + actionHtml + '</td>';
+
+          if (isCustom) {
+            row.querySelector('[data-action="save-policy-preset"]').addEventListener('click', async () => {
+              try {
+                const daysInput = row.querySelector('[data-role="policy-days"]');
+                const advisingDays = parseAdvisingDaysInput(daysInput.value);
+                const updateResponse = await fetch('./advisor/api/policies/' + encodeURIComponent(policy.policyId), {
+                  method: 'PATCH',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ advisingDays })
+                });
+                const updatePayload = await updateResponse.json();
+                if (!updateResponse.ok) {
+                  throw new Error(updatePayload.error || 'Policy update failed');
+                }
+                await loadPolicies();
+                await loadClients();
+              } catch (error) {
+                window.alert(error.message || 'Policy update failed');
+              }
+            });
+
+            row.querySelector('[data-action="delete-policy-preset"]').addEventListener('click', async () => {
+              try {
+                const deleteResponse = await fetch('./advisor/api/policies/' + encodeURIComponent(policy.policyId), {
+                  method: 'DELETE'
+                });
+                const deletePayload = await deleteResponse.json();
+                if (!deleteResponse.ok) {
+                  throw new Error(deletePayload.error || 'Policy delete failed');
+                }
+                await loadPolicies();
+                await loadClients();
+              } catch (error) {
+                window.alert(error.message || 'Policy delete failed');
+              }
+            });
+          }
+
+          tbody.appendChild(row);
+        }
+      }
+
+      async function createPolicyPreset() {
+        const policyIdInput = document.getElementById('newPolicyId');
+        const policyDaysInput = document.getElementById('newPolicyDays');
+        const policyId = normalizePolicyIdInput(policyIdInput.value);
+        const advisingDays = parseAdvisingDaysInput(policyDaysInput.value);
+
+        if (!policyId) {
+          throw new Error('Policy id must match [a-z0-9_-] and be <= 32 chars.');
+        }
+        if (advisingDays.length === 0) {
+          throw new Error('Enter at least one advising day (example: Tue,Wed).');
+        }
+
+        const response = await fetch('./advisor/api/policies', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ policyId, advisingDays })
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || 'Policy create failed');
+        }
+
+        policyIdInput.value = '';
+        policyDaysInput.value = '';
+        await loadPolicies();
+        await loadClients();
+      }
+
       async function updateClientProfile(clientId, patch) {
         const response = await fetch('./advisor/api/clients/' + encodeURIComponent(clientId), {
           method: 'PATCH',
@@ -1341,9 +1835,12 @@ function buildAdvisorPage() {
         }
 
         const clients = Array.isArray(payload.clients) ? payload.clients : [];
-        const policyOptions = Array.isArray(payload.policyOptions) && payload.policyOptions.length > 0
-          ? payload.policyOptions
-          : ['default', 'weekend', 'monday'];
+        const availablePolicies =
+          Array.isArray(policyOptions) && policyOptions.length > 0
+            ? policyOptions
+            : Array.isArray(payload.policyOptions) && payload.policyOptions.length > 0
+              ? payload.policyOptions
+              : ['default', 'weekend', 'monday'];
 
         if (clients.length === 0) {
           const row = document.createElement('tr');
@@ -1355,7 +1852,7 @@ function buildAdvisorPage() {
         for (const client of clients) {
           const row = document.createElement('tr');
           const accessClass = client.accessState === 'active' ? 'ok' : client.accessState === 'blocked' ? 'warn' : 'error';
-          const optionsHtml = policyOptions
+          const optionsHtml = availablePolicies
             .map((policyId) => {
               const selected = policyId === client.policyId ? ' selected' : '';
               return '<option value="' + escapeHtml(policyId) + '"' + selected + '>' + escapeHtml(policyId) + '</option>';
@@ -1402,6 +1899,14 @@ function buildAdvisorPage() {
       document.getElementById('addMock').addEventListener('click', async () => {
         await fetch('./advisor/api/connections/mock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
         await loadConnections();
+      });
+
+      document.getElementById('createPolicy').addEventListener('click', async () => {
+        try {
+          await createPolicyPreset();
+        } catch (error) {
+          window.alert(error.message || 'Policy create failed');
+        }
       });
 
       document.getElementById('googleConnect').addEventListener('click', () => {
@@ -1482,6 +1987,9 @@ function buildAdvisorPage() {
       loadConnections().catch((error) => {
         console.error(error);
       });
+      loadPolicies().catch((error) => {
+        console.error(error);
+      });
       loadClients().catch((error) => {
         console.error(error);
       });
@@ -1542,6 +2050,7 @@ export function createPortalHandler(overrides = {}) {
   const deps = {
     ...runtimeDeps,
     lookupBusyIntervals: lookupGoogleBusyIntervals,
+    lookupClientMeetings: lookupGoogleClientMeetings,
     ...overrides
   };
 
@@ -1561,10 +2070,11 @@ export function createPortalHandler(overrides = {}) {
     const availabilityLinkSecretArn = process.env.AVAILABILITY_LINK_SECRET_ARN;
     const availabilityLinkTableName = process.env.AVAILABILITY_LINK_TABLE_NAME;
     const googleOauthSecretArn = process.env.GOOGLE_OAUTH_SECRET_ARN;
+    const policyPresetsTableName = process.env.POLICY_PRESETS_TABLE_NAME;
     const calendarMode = (process.env.CALENDAR_MODE ?? "connection").toLowerCase();
     const hostTimezone = normalizeTimezone(process.env.HOST_TIMEZONE, "America/Los_Angeles");
     const advisingDays = parseAdvisingDays(process.env.ADVISING_DAYS ?? "Tue,Wed");
-    const policyPresets = parseClientPolicyPresets(process.env.CLIENT_POLICY_PRESETS_JSON, advisingDays);
+    const basePolicyPresets = parseClientPolicyPresets(process.env.CLIENT_POLICY_PRESETS_JSON, advisingDays);
     const workdayStartHour = parseClampedIntEnv(process.env.WORKDAY_START_HOUR, 9, 0, 23);
     const workdayEndHour = parseClampedIntEnv(process.env.WORKDAY_END_HOUR, 17, 1, 24);
     const normalizedWorkdayEndHour = Math.min(24, Math.max(workdayEndHour, workdayStartHour + 1));
@@ -1576,6 +2086,21 @@ export function createPortalHandler(overrides = {}) {
     if (authFailure) {
       return authFailure;
     }
+
+    let customPolicyRecords = [];
+    if (policyPresetsTableName && typeof deps.listPolicyPresets === "function") {
+      try {
+        customPolicyRecords = await deps.listPolicyPresets(policyPresetsTableName, advisorId);
+      } catch {
+        customPolicyRecords = [];
+      }
+    }
+
+    const policyCatalog = buildPolicyCatalog({
+      basePolicyPresets,
+      customPolicyRecords
+    });
+    const policyPresets = policyCatalog.mergedPresets;
 
     if (method === "GET" && rawPath === "/availability") {
       const shortToken = String(event.queryStringParameters?.t ?? "").trim();
@@ -1677,23 +2202,27 @@ export function createPortalHandler(overrides = {}) {
         "MMM dd, yyyy"
       )}`;
 
-      let busyIntervals;
+      const normalizedLinkClientEmail = String(linkClientEmail || "").trim().toLowerCase();
+      let availabilityContext;
       try {
-        busyIntervals = await lookupAvailabilityBusyIntervals({
+        availabilityContext = await lookupAvailabilityContext({
           deps,
           calendarMode,
           connectionsTableName,
           advisorId,
           googleOauthSecretArn,
           searchStartIso,
-          searchEndIso
+          searchEndIso,
+          clientEmail: normalizedLinkClientEmail
         });
       } catch (error) {
         return serverError(`availability lookup failed: ${error.message}`);
       }
 
       const calendarModel = buildAvailabilityCalendarModel({
-        busyIntervalsUtc: busyIntervals,
+        busyIntervalsUtc: availabilityContext.busyIntervals,
+        clientMeetingsUtc: availabilityContext.clientMeetings,
+        nonClientBusyIntervalsUtc: availabilityContext.nonClientBusyIntervals,
         hostTimezone,
         advisingDays: effectiveAdvisingDays,
         searchStartIso,
@@ -1897,6 +2426,139 @@ export function createPortalHandler(overrides = {}) {
       });
     }
 
+    if (method === "GET" && rawPath === "/advisor/api/policies") {
+      return jsonResponse(200, {
+        advisorId,
+        policyOptions: policyCatalog.policyOptions,
+        policies: policyCatalog.policies
+      });
+    }
+
+    if (method === "POST" && rawPath === "/advisor/api/policies") {
+      if (!policyPresetsTableName) {
+        return serverError("POLICY_PRESETS_TABLE_NAME is required");
+      }
+
+      let body;
+      try {
+        body = parseBody(event);
+      } catch {
+        return badRequest("Request body must be valid JSON");
+      }
+
+      const policyId = normalizePolicyId(body.policyId);
+      if (!policyId) {
+        return badRequest("policyId must match [a-z0-9_-] and be <= 32 chars");
+      }
+
+      if (Object.prototype.hasOwnProperty.call(policyPresets, policyId)) {
+        return badRequest(`policyId already exists: ${policyId}`);
+      }
+
+      let advisingDays;
+      try {
+        advisingDays = parsePolicyAdvisingDays(body.advisingDays);
+      } catch (error) {
+        return badRequest(error.message);
+      }
+
+      const nowIso = new Date().toISOString();
+      await deps.putPolicyPreset(policyPresetsTableName, {
+        advisorId,
+        policyId,
+        advisingDays,
+        createdAt: nowIso,
+        updatedAt: nowIso
+      });
+
+      return jsonResponse(201, {
+        advisorId,
+        policy: {
+          policyId,
+          advisingDays,
+          source: "custom",
+          canDelete: true,
+          createdAt: nowIso,
+          updatedAt: nowIso
+        }
+      });
+    }
+
+    const policyPresetPathValue = parsePolicyPresetPath(rawPath);
+    if (policyPresetPathValue && (method === "PATCH" || method === "DELETE")) {
+      if (!policyPresetsTableName) {
+        return serverError("POLICY_PRESETS_TABLE_NAME is required");
+      }
+
+      const normalizedPolicyId = normalizePolicyId(decodeURIComponent(policyPresetPathValue));
+      if (!normalizedPolicyId) {
+        return badRequest("Invalid policyId");
+      }
+
+      if (!policyCatalog.customPolicyIds.has(normalizedPolicyId)) {
+        return badRequest("Only custom policies can be modified via this endpoint");
+      }
+
+      if (method === "PATCH") {
+        let body;
+        try {
+          body = parseBody(event);
+        } catch {
+          return badRequest("Request body must be valid JSON");
+        }
+
+        if (!Object.prototype.hasOwnProperty.call(body, "advisingDays")) {
+          return badRequest("advisingDays is required");
+        }
+
+        let advisingDays;
+        try {
+          advisingDays = parsePolicyAdvisingDays(body.advisingDays);
+        } catch (error) {
+          return badRequest(error.message);
+        }
+
+        const existingPolicy = customPolicyRecords.find((item) => normalizePolicyId(item.policyId) === normalizedPolicyId);
+        const nowIso = new Date().toISOString();
+        await deps.putPolicyPreset(policyPresetsTableName, {
+          advisorId,
+          policyId: normalizedPolicyId,
+          advisingDays,
+          createdAt: existingPolicy?.createdAt ?? nowIso,
+          updatedAt: nowIso
+        });
+
+        return jsonResponse(200, {
+          advisorId,
+          policy: {
+            policyId: normalizedPolicyId,
+            advisingDays,
+            source: "custom",
+            canDelete: true,
+            createdAt: existingPolicy?.createdAt ?? nowIso,
+            updatedAt: nowIso
+          }
+        });
+      }
+
+      if (clientProfilesTableName && typeof deps.listClientProfiles === "function") {
+        const clientProfiles = await deps.listClientProfiles(clientProfilesTableName, advisorId);
+        const assignedCount = clientProfiles.filter(
+          (item) => normalizePolicyId(item.policyId) === normalizedPolicyId
+        ).length;
+        if (assignedCount > 0) {
+          return badRequest(`policyId is assigned to ${assignedCount} clients; reassign them first`);
+        }
+      }
+
+      await deps.deletePolicyPreset(policyPresetsTableName, advisorId, normalizedPolicyId);
+      return jsonResponse(200, {
+        advisorId,
+        policyId: normalizedPolicyId,
+        deleted: true
+      });
+    }
+
     if (method === "GET" && rawPath === "/advisor/api/clients") {
       if (!clientProfilesTableName) {
         return serverError("CLIENT_PROFILES_TABLE_NAME is required");
@@ -1911,7 +2573,8 @@ export function createPortalHandler(overrides = {}) {
 
       return jsonResponse(200, {
         advisorId,
-        policyOptions: Object.keys(policyPresets),
+        policyOptions: policyCatalog.policyOptions,
+        policies: policyCatalog.policies,
         clients: clientProfiles.map((item) => normalizeClientProfileForApi(item))
       });
     }
@@ -1962,7 +2625,7 @@ export function createPortalHandler(overrides = {}) {
       if (body.policyId !== undefined) {
         const normalizedPolicyId = normalizePolicyId(body.policyId);
         if (!normalizedPolicyId || !Object.prototype.hasOwnProperty.call(policyPresets, normalizedPolicyId)) {
-          return badRequest(`policyId must be one of: ${Object.keys(policyPresets).join(", ")}`);
+          return badRequest(`policyId must be one of: ${policyCatalog.policyOptions.join(", ")}`);
         }
 
         merged.policyId = normalizedPolicyId;

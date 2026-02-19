@@ -519,6 +519,163 @@ test("advisor portal lists client directory metadata", async () => {
   }
 });
 
+test("advisor portal lists policy presets including custom policies", async () => {
+  const handler = createPortalHandler({
+    async listPolicyPresets(tableName, advisorId) {
+      assert.equal(tableName, "PolicyPresetsTable");
+      assert.equal(advisorId, "manoj");
+      return [
+        {
+          advisorId,
+          policyId: "founders",
+          advisingDays: ["Thu", "Fri"],
+          createdAt: "2026-02-18T00:00:00.000Z",
+          updatedAt: "2026-02-18T00:00:00.000Z"
+        }
+      ];
+    }
+  });
+
+  const previousValues = {
+    POLICY_PRESETS_TABLE_NAME: process.env.POLICY_PRESETS_TABLE_NAME,
+    CLIENT_POLICY_PRESETS_JSON: process.env.CLIENT_POLICY_PRESETS_JSON,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_ID: process.env.ADVISOR_ID
+  };
+
+  process.env.POLICY_PRESETS_TABLE_NAME = "PolicyPresetsTable";
+  process.env.CLIENT_POLICY_PRESETS_JSON = '{"default":["Tue","Wed"],"weekend":["Sat","Sun"],"monday":["Mon"]}';
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_ID = "manoj";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/api/policies"
+    });
+
+    assert.equal(response.statusCode, 200);
+    const payload = JSON.parse(response.body);
+    assert.deepEqual(payload.policyOptions.includes("founders"), true);
+    const foundersPolicy = payload.policies.find((item) => item.policyId === "founders");
+    assert.ok(foundersPolicy);
+    assert.deepEqual(foundersPolicy.advisingDays, ["Thu", "Fri"]);
+    assert.equal(foundersPolicy.source, "custom");
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("advisor portal can create update and delete custom policy presets", async () => {
+  const putWrites = [];
+  const deleteWrites = [];
+  const customPolicies = [];
+  const handler = createPortalHandler({
+    async listPolicyPresets(tableName, advisorId) {
+      assert.equal(tableName, "PolicyPresetsTable");
+      assert.equal(advisorId, "manoj");
+      return customPolicies.map((item) => ({ ...item }));
+    },
+    async putPolicyPreset(tableName, item) {
+      assert.equal(tableName, "PolicyPresetsTable");
+      putWrites.push(item);
+      const existingIndex = customPolicies.findIndex((policy) => policy.policyId === item.policyId);
+      if (existingIndex >= 0) {
+        customPolicies[existingIndex] = { ...item };
+      } else {
+        customPolicies.push({ ...item });
+      }
+    },
+    async deletePolicyPreset(tableName, advisorId, policyId) {
+      assert.equal(tableName, "PolicyPresetsTable");
+      assert.equal(advisorId, "manoj");
+      deleteWrites.push(policyId);
+      const nextPolicies = customPolicies.filter((item) => item.policyId !== policyId);
+      customPolicies.length = 0;
+      customPolicies.push(...nextPolicies);
+    },
+    async listClientProfiles() {
+      return [];
+    }
+  });
+
+  const previousValues = {
+    POLICY_PRESETS_TABLE_NAME: process.env.POLICY_PRESETS_TABLE_NAME,
+    CLIENT_POLICY_PRESETS_JSON: process.env.CLIENT_POLICY_PRESETS_JSON,
+    CLIENT_PROFILES_TABLE_NAME: process.env.CLIENT_PROFILES_TABLE_NAME,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_ID: process.env.ADVISOR_ID
+  };
+
+  process.env.POLICY_PRESETS_TABLE_NAME = "PolicyPresetsTable";
+  process.env.CLIENT_POLICY_PRESETS_JSON = '{"default":["Tue","Wed"],"weekend":["Sat","Sun"],"monday":["Mon"]}';
+  process.env.CLIENT_PROFILES_TABLE_NAME = "ClientProfilesTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_ID = "manoj";
+
+  try {
+    const createResponse = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "POST" }
+      },
+      rawPath: "/dev/advisor/api/policies",
+      body: JSON.stringify({
+        policyId: "founders",
+        advisingDays: ["Thu", "Fri"]
+      })
+    });
+
+    assert.equal(createResponse.statusCode, 201);
+    assert.equal(putWrites.length, 1);
+    assert.equal(putWrites[0].policyId, "founders");
+    assert.deepEqual(putWrites[0].advisingDays, ["Thu", "Fri"]);
+
+    const updateResponse = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "PATCH" }
+      },
+      rawPath: "/dev/advisor/api/policies/founders",
+      body: JSON.stringify({
+        advisingDays: ["Fri"]
+      })
+    });
+
+    assert.equal(updateResponse.statusCode, 200);
+    assert.equal(putWrites.length, 2);
+    assert.deepEqual(putWrites[1].advisingDays, ["Fri"]);
+
+    const deleteResponse = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "DELETE" }
+      },
+      rawPath: "/dev/advisor/api/policies/founders"
+    });
+
+    assert.equal(deleteResponse.statusCode, 200);
+    assert.deepEqual(deleteWrites, ["founders"]);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
 test("advisor portal updates client access state and policy", async () => {
   const writes = [];
   const handler = createPortalHandler({
@@ -579,6 +736,76 @@ test("advisor portal updates client access state and policy", async () => {
     assert.deepEqual(writes[0].advisingDaysOverride, ["Sat", "Sun"]);
     const payload = JSON.parse(response.body);
     assert.equal(payload.client.accessState, "deleted");
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("advisor portal updates client policy using advisor-defined custom policy", async () => {
+  const writes = [];
+  const handler = createPortalHandler({
+    async listPolicyPresets(tableName, advisorId) {
+      assert.equal(tableName, "PolicyPresetsTable");
+      assert.equal(advisorId, "manoj");
+      return [
+        {
+          advisorId,
+          policyId: "founders",
+          advisingDays: ["Thu", "Fri"]
+        }
+      ];
+    },
+    async getClientProfile() {
+      return {
+        advisorId: "manoj",
+        clientId: "client@example.com",
+        clientEmail: "client@example.com",
+        clientDisplayName: "Client Example",
+        accessState: "active",
+        policyId: "default"
+      };
+    },
+    async putClientProfile(tableName, item) {
+      assert.equal(tableName, "ClientProfilesTable");
+      writes.push(item);
+    }
+  });
+
+  const previousValues = {
+    CLIENT_PROFILES_TABLE_NAME: process.env.CLIENT_PROFILES_TABLE_NAME,
+    POLICY_PRESETS_TABLE_NAME: process.env.POLICY_PRESETS_TABLE_NAME,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    CLIENT_POLICY_PRESETS_JSON: process.env.CLIENT_POLICY_PRESETS_JSON
+  };
+
+  process.env.CLIENT_PROFILES_TABLE_NAME = "ClientProfilesTable";
+  process.env.POLICY_PRESETS_TABLE_NAME = "PolicyPresetsTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_ID = "manoj";
+  process.env.CLIENT_POLICY_PRESETS_JSON = '{"default":["Tue","Wed"],"weekend":["Sat","Sun"],"monday":["Mon"]}';
+
+  try {
+    const response = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "PATCH" }
+      },
+      rawPath: "/dev/advisor/api/clients/client%40example.com",
+      body: JSON.stringify({
+        policyId: "founders"
+      })
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].policyId, "founders");
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {
@@ -1161,6 +1388,137 @@ test("availability page shows busy blocks without exposing meeting details", asy
     assert.match(response.body, /class="slot local-slot busy"/);
     assert.match(response.body, /Busy blocks: [1-9]/);
     assert.equal(response.body.includes("Quarterly Board Review"), false);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("availability page shows client meeting details with accepted/pending and overlap indicators", async () => {
+  const tokenId = "clientmeetingtoken";
+  const nowMs = Date.now();
+  const handler = createPortalHandler({
+    async getAvailabilityLink(tableName, suppliedTokenId) {
+      assert.equal(tableName, "AvailabilityLinkTable");
+      assert.equal(suppliedTokenId, tokenId);
+      return {
+        tokenId,
+        advisorId: "manoj",
+        clientId: "tito@example.com",
+        clientEmail: "tito@example.com",
+        clientDisplayName: "Tito",
+        durationMinutes: 30,
+        expiresAtMs: nowMs + 60 * 60 * 1000
+      };
+    },
+    async getSecretString(secretArn) {
+      if (secretArn.endsWith(":secret:google")) {
+        return JSON.stringify({
+          client_id: "google-client-id",
+          client_secret: "google-client-secret",
+          refresh_token: "refresh-token",
+          calendar_ids: ["primary"]
+        });
+      }
+
+      throw new Error(`unexpected secret arn: ${secretArn}`);
+    },
+    async lookupBusyIntervals({ windowStartIso }) {
+      const slotStart = DateTime.fromISO(windowStartIso, { zone: "utc" })
+        .setZone("America/Los_Angeles")
+        .set({ hour: 9, minute: 0, second: 0, millisecond: 0 })
+        .toUTC();
+      return [
+        {
+          startIso: slotStart.toISO(),
+          endIso: slotStart.plus({ minutes: 30 }).toISO(),
+          calendarId: "primary"
+        }
+      ];
+    },
+    async lookupClientMeetings({ clientEmail, windowStartIso }) {
+      assert.equal(clientEmail, "tito@example.com");
+      const slotStart = DateTime.fromISO(windowStartIso, { zone: "utc" })
+        .setZone("America/Los_Angeles")
+        .set({ hour: 9, minute: 0, second: 0, millisecond: 0 })
+        .toUTC();
+      return {
+        clientMeetings: [
+          {
+            eventId: "evt-accepted",
+            startIso: slotStart.toISO(),
+            endIso: slotStart.plus({ minutes: 30 }).toISO(),
+            title: "Client Kickoff",
+            advisorResponseStatus: "accepted"
+          },
+          {
+            eventId: "evt-pending",
+            startIso: slotStart.plus({ minutes: 30 }).toISO(),
+            endIso: slotStart.plus({ minutes: 60 }).toISO(),
+            title: "Pending Review",
+            advisorResponseStatus: "needsAction"
+          }
+        ],
+        nonClientBusyIntervals: [
+          {
+            startIso: slotStart.plus({ minutes: 15 }).toISO(),
+            endIso: slotStart.plus({ minutes: 45 }).toISO()
+          }
+        ]
+      };
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    CALENDAR_MODE: process.env.CALENDAR_MODE,
+    GOOGLE_OAUTH_SECRET_ARN: process.env.GOOGLE_OAUTH_SECRET_ARN,
+    HOST_TIMEZONE: process.env.HOST_TIMEZONE,
+    ADVISING_DAYS: process.env.ADVISING_DAYS,
+    SEARCH_DAYS: process.env.SEARCH_DAYS,
+    WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR
+  };
+
+  process.env.ADVISOR_ID = "manoj";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  process.env.CALENDAR_MODE = "google";
+  process.env.GOOGLE_OAUTH_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:google";
+  process.env.HOST_TIMEZONE = "America/Los_Angeles";
+  process.env.ADVISING_DAYS = "Mon,Tue,Wed,Thu,Fri,Sat,Sun";
+  process.env.SEARCH_DAYS = "7";
+  process.env.WORKDAY_START_HOUR = "9";
+  process.env.WORKDAY_END_HOUR = "11";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        t: tokenId
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/availability"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.body, /Your meeting \(accepted\)/);
+    assert.match(response.body, /Your meeting \(pending\)/);
+    assert.match(response.body, /Client Kickoff/);
+    assert.match(response.body, /Pending Review/);
+    assert.match(response.body, /Also busy/);
+    assert.match(response.body, /client-accepted/);
+    assert.match(response.body, /client-pending/);
+    assert.match(response.body, /Overlaps: [1-9]/);
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {

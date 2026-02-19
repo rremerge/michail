@@ -144,3 +144,44 @@ export function resolveClientAdvisingDays({ clientProfile, defaultAdvisingDays, 
   return defaultDays;
 }
 
+export function normalizePolicyPresetRecord(record) {
+  if (!record || typeof record !== "object") {
+    return null;
+  }
+
+  const policyId = normalizePolicyId(record.policyId);
+  if (!policyId) {
+    return null;
+  }
+
+  const advisingDays = parseAdvisingDaysList(record.advisingDays, []);
+  if (advisingDays.length === 0) {
+    return null;
+  }
+
+  return {
+    policyId,
+    advisingDays
+  };
+}
+
+export function mergeClientPolicyPresets(basePolicyPresets, customPolicyRecords) {
+  const output = {
+    ...(basePolicyPresets && typeof basePolicyPresets === "object" ? basePolicyPresets : {})
+  };
+
+  if (!Array.isArray(customPolicyRecords) || customPolicyRecords.length === 0) {
+    return output;
+  }
+
+  for (const record of customPolicyRecords) {
+    const normalized = normalizePolicyPresetRecord(record);
+    if (!normalized) {
+      continue;
+    }
+
+    output[normalized.policyId] = normalized.advisingDays;
+  }
+
+  return output;
+}

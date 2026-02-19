@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { DateTime } from "luxon";
 import { parseSchedulingRequest } from "./intent-parser.js";
 import { generateCandidateSlots } from "./slot-generator.js";
 import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adapter.js";
@@ -13,6 +14,7 @@ import { buildClientResponse } from "./response-builder.js";
 import { buildClientReference, createShortAvailabilityTokenId } from "./availability-link.js";
 import {
   isClientAccessRestricted,
+  mergeClientPolicyPresets,
   normalizeClientAccessState,
   normalizeClientId,
   parseAdvisingDaysList,
@@ -27,6 +29,18 @@ const DEFAULT_AVAILABILITY_LINK_TTL_MINUTES = 7 * 24 * 60;
 const DEFAULT_PROMPT_GUARD_MODE = "heuristic_llm";
 const DEFAULT_PROMPT_GUARD_BLOCK_LEVEL = "high";
 const DEFAULT_PROMPT_GUARD_LLM_TIMEOUT_MS = 3000;
+const DAYPART_PATTERN = /\b(early morning|late morning|late afternoon|morning|afternoon|evening|night|noon|lunch)\b/gi;
+const DAYPART_WINDOWS = {
+  "early morning": { startMinute: 8 * 60, endMinute: 10 * 60 },
+  "late morning": { startMinute: 10 * 60, endMinute: 12 * 60 },
+  morning: { startMinute: 9 * 60, endMinute: 12 * 60 },
+  noon: { startMinute: 12 * 60, endMinute: 13 * 60 },
+  lunch: { startMinute: 12 * 60, endMinute: 13 * 60 },
+  afternoon: { startMinute: 13 * 60, endMinute: 17 * 60 },
+  "late afternoon": { startMinute: 15 * 60, endMinute: 18 * 60 },
+  evening: { startMinute: 17 * 60, endMinute: 20 * 60 },
+  night: { startMinute: 19 * 60, endMinute: 22 * 60 }
+};
 const PROMPT_GUARD_LEVEL_RANK = {
   low: 0,
   medium: 1,
@@ -102,6 +116,61 @@ function normalizeRequestedWindowsToUtc(requestedWindows) {
       };
     })
     .filter(Boolean);
+}
+
+function detectRequestedDaypart(subject, body) {
+  const text = `${String(subject ?? "")}\n${String(body ?? "")}`.toLowerCase();
+  const matches = Array.from(text.matchAll(DAYPART_PATTERN), (match) => String(match[1] ?? "").trim());
+  if (matches.length === 0) {
+    return null;
+  }
+
+  const uniqueMatches = Array.from(new Set(matches));
+  if (uniqueMatches.length !== 1) {
+    return null;
+  }
+
+  const daypart = uniqueMatches[0];
+  return Object.hasOwn(DAYPART_WINDOWS, daypart) ? daypart : null;
+}
+
+function constrainRequestedWindowsToDaypart({ requestedWindows, daypart, timezone }) {
+  const daypartWindow = DAYPART_WINDOWS[daypart];
+  if (!daypartWindow || !Array.isArray(requestedWindows) || requestedWindows.length === 0) {
+    return requestedWindows;
+  }
+
+  const targetZone = timezone || "UTC";
+  const constrainedWindows = [];
+
+  for (const window of requestedWindows) {
+    const startUtc = DateTime.fromISO(window.startIso, { zone: "utc" });
+    const endUtc = DateTime.fromISO(window.endIso, { zone: "utc" });
+    if (!startUtc.isValid || !endUtc.isValid || endUtc <= startUtc) {
+      continue;
+    }
+
+    const startLocal = startUtc.setZone(targetZone);
+    const endLocal = endUtc.setZone(targetZone);
+    let dayCursor = startLocal.startOf("day");
+    const lastDay = endLocal.startOf("day");
+    while (dayCursor <= lastDay) {
+      const daypartStart = dayCursor.startOf("day").plus({ minutes: daypartWindow.startMinute });
+      const daypartEnd = dayCursor.startOf("day").plus({ minutes: daypartWindow.endMinute });
+      const effectiveStart = daypartStart > startLocal ? daypartStart : startLocal;
+      const effectiveEnd = daypartEnd < endLocal ? daypartEnd : endLocal;
+      if (effectiveEnd > effectiveStart) {
+        constrainedWindows.push({
+          startIso: effectiveStart.toUTC().toISO(),
+          endIso: effectiveEnd.toUTC().toISO()
+        });
+      }
+
+      dayCursor = dayCursor.plus({ days: 1 });
+    }
+  }
+
+  return normalizeRequestedWindowsToUtc(constrainedWindows);
 }
 
 function mergeParsedIntent({
@@ -712,7 +781,17 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     env.INTENT_LLM_CONFIDENCE_THRESHOLD ?? String(DEFAULT_INTENT_CONFIDENCE_THRESHOLD)
   );
   const clientProfilesTableName = String(env.CLIENT_PROFILES_TABLE_NAME ?? "").trim();
-  const policyPresets = parseClientPolicyPresets(env.CLIENT_POLICY_PRESETS_JSON, defaultAdvisingDays);
+  const policyPresetsTableName = String(env.POLICY_PRESETS_TABLE_NAME ?? "").trim();
+  const basePolicyPresets = parseClientPolicyPresets(env.CLIENT_POLICY_PRESETS_JSON, defaultAdvisingDays);
+  let policyPresets = basePolicyPresets;
+  if (policyPresetsTableName && typeof deps.listPolicyPresets === "function") {
+    try {
+      const customPolicyRecords = await deps.listPolicyPresets(policyPresetsTableName, advisorId);
+      policyPresets = mergeClientPolicyPresets(basePolicyPresets, customPolicyRecords);
+    } catch {
+      policyPresets = basePolicyPresets;
+    }
+  }
   let promptGuardDecision = "not_run";
   let promptGuardLlmStatus = "disabled";
   let promptInjectionRiskLevel = "low";
@@ -1000,6 +1079,21 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       parsed = parserIntent;
       intentSource = "parser";
       intentLlmStatus = "fallback";
+    }
+  }
+
+  const requestedDaypart = detectRequestedDaypart(payload.subject ?? "", bodyText);
+  if (requestedDaypart && parsed.requestedWindows.length > 0) {
+    const constrainedWindows = constrainRequestedWindowsToDaypart({
+      requestedWindows: parsed.requestedWindows,
+      daypart: requestedDaypart,
+      timezone: parsed.clientTimezone ?? hostTimezone
+    });
+    if (constrainedWindows.length > 0) {
+      parsed = {
+        ...parsed,
+        requestedWindows: constrainedWindows
+      };
     }
   }
 

@@ -234,6 +234,28 @@ Resources:
         - Key: stage
           Value: !Ref Stage
 
+  PolicyPresetsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: advisorId
+          AttributeType: S
+        - AttributeName: policyId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: advisorId
+          KeyType: HASH
+        - AttributeName: policyId
+          KeyType: RANGE
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: application
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
   OAuthStateTable:
     Type: AWS::DynamoDB::Table
     Properties:
@@ -411,6 +433,7 @@ Resources:
           AVAILABILITY_LINK_TABLE_NAME: !Ref AvailabilityLinkTable
           AVAILABILITY_LINK_TTL_MINUTES: !Ref AvailabilityLinkTtlMinutes
           CLIENT_PROFILES_TABLE_NAME: !Ref ClientProfilesTable
+          POLICY_PRESETS_TABLE_NAME: !Ref PolicyPresetsTable
           CLIENT_POLICY_PRESETS_JSON: !Ref ClientPolicyPresetsJson
       Events:
         SpikeApiRequest:
@@ -459,6 +482,11 @@ Resources:
                 - dynamodb:GetItem
                 - dynamodb:UpdateItem
               Resource: !GetAtt ClientProfilesTable.Arn
+            - Sid: ReadPolicyPresets
+              Effect: Allow
+              Action:
+                - dynamodb:Query
+              Resource: !GetAtt PolicyPresetsTable.Arn
             - Sid: ReadConnectionOAuthSecrets
               Effect: Allow
               Action:
@@ -511,6 +539,7 @@ Resources:
           AVAILABILITY_LINK_TABLE_NAME: !Ref AvailabilityLinkTable
           AVAILABILITY_VIEW_MAX_SLOTS: !Ref AvailabilityViewMaxSlots
           CLIENT_PROFILES_TABLE_NAME: !Ref ClientProfilesTable
+          POLICY_PRESETS_TABLE_NAME: !Ref PolicyPresetsTable
           CLIENT_POLICY_PRESETS_JSON: !Ref ClientPolicyPresetsJson
           GOOGLE_OAUTH_SECRET_ARN: !Ref GoogleOAuthSecret
           CONNECTIONS_TABLE_NAME: !Ref ConnectionsTable
@@ -612,6 +641,30 @@ Resources:
             ApiId: !Ref SpikeApi
             Method: PATCH
             Path: /advisor/api/clients/{clientId}
+        AdvisorPoliciesList:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /advisor/api/policies
+        AdvisorPoliciesCreate:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: POST
+            Path: /advisor/api/policies
+        AdvisorPoliciesUpdate:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: PATCH
+            Path: /advisor/api/policies/{policyId}
+        AdvisorPoliciesDelete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: DELETE
+            Path: /advisor/api/policies/{policyId}
       Policies:
         - Statement:
             - Sid: ManageConnections
@@ -678,6 +731,14 @@ Resources:
                 - dynamodb:Query
                 - dynamodb:UpdateItem
               Resource: !GetAtt ClientProfilesTable.Arn
+            - Sid: ManagePolicyPresets
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:DeleteItem
+                - dynamodb:Query
+              Resource: !GetAtt PolicyPresetsTable.Arn
             - Sid: ManageConnectionSecrets
               Effect: Allow
               Action:
@@ -722,6 +783,9 @@ Outputs:
   ClientProfilesTableName:
     Description: DynamoDB table for advisor client profile metadata.
     Value: !Ref ClientProfilesTable
+  PolicyPresetsTableName:
+    Description: DynamoDB table for advisor-defined client policy presets.
+    Value: !Ref PolicyPresetsTable
   AdvisorPortalUrl:
     Description: Advisor portal URL for managing connected calendars.
     Value: !Sub https://${SpikeApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/advisor

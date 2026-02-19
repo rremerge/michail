@@ -3208,3 +3208,362 @@ Validation:
 - Local tests: `cd app && npm test` -> `65/65` passing.
 - Deployed stack: `calendar-agent-spike-dev` in `us-east-1` -> `UPDATE_COMPLETE`.
 - Live HTML verification confirms new CSS rules and values are present on the availability page.
+
+---
+
+Turn 135
+User:
+ok good enough for now. go ahead.
+
+Assistant:
+Checkpoint committed and pushed:
+- Commit: `22255ff`
+- Branch: `main`
+- Remote: `origin/main`
+- Included:
+  - `app/src/portal-handler.js`
+  - `docs/conversation-transcript.txt`
+
+---
+
+Turn 136
+User:
+On the advisor portal, there is an access policy. The user story required that the advisor be able to create multiple such policies (not just the system created policies). Check if this is captured in the user story and the PRD, and add if not. Once that is done, please figure out how to add that capability
+
+Assistant:
+Implemented documentation and code support for advisor-managed custom access policies.
+
+PRD and user story updates:
+- `docs/prd.md`
+  - Added explicit FR-14 requirement that advisors can create/update/remove custom cohort policies from the portal without redeploy.
+  - Added acceptance criteria that newly created policies are applied in both email and web flows.
+  - Added user-story paragraph clarifying advisor-managed policy groups beyond system defaults.
+
+Implementation changes:
+- `template.yaml`
+  - Added `PolicyPresetsTable` (DynamoDB) for advisor-defined policy presets.
+  - Wired `POLICY_PRESETS_TABLE_NAME` env var into both email and advisor-portal Lambdas.
+  - Added IAM permissions and HTTP API routes for policy management.
+- `app/src/runtime-deps.js`
+  - Added policy-preset data access methods (list/get/put/delete).
+- `app/src/client-profile.js`
+  - Added helpers to normalize and merge custom policy records with base/system presets.
+- `app/src/handler.js`
+  - Scheduling flow now loads and applies advisor-defined policies from `PolicyPresetsTable` when present.
+- `app/src/portal-handler.js`
+  - Added policy catalog merging (system + custom).
+  - Added endpoints:
+    - `GET /advisor/api/policies`
+    - `POST /advisor/api/policies`
+    - `PATCH /advisor/api/policies/{policyId}`
+    - `DELETE /advisor/api/policies/{policyId}`
+  - Added advisor portal UI card to create/edit/delete custom policies.
+  - Client policy assignment now validates against merged policy options.
+- `README.md`
+  - Documented portal-managed custom policy workflows.
+
+Validation:
+- Local tests: `cd app && npm test` -> `69/69` passing.
+
+---
+
+Turn 137
+User:
+yes go ahead and deploy
+
+Assistant:
+Deployed successfully to `calendar-agent-spike-dev` in `us-east-1`.
+
+CloudFormation status:
+- Stack update: `UPDATE_COMPLETE`
+- Included resources:
+  - new `PolicyPresetsTable`
+  - advisor policy API route permissions
+  - advisor/email Lambda updates
+  - IAM updates for policy preset table access
+
+Notable output:
+- `PolicyPresetsTableName`: `calendar-agent-spike-dev-PolicyPresetsTable-11DCYTS6K5ENH`
+
+Live route sanity check:
+- `GET /dev/advisor/api/policies` returns `401 Unauthorized` when unauthenticated (expected under advisor Google-auth protection), confirming route is active.
+
+---
+
+Turn 138
+User:
+In the future, the advisor would also like to have the ability to be more granular than just days of the week. Where for example, they can say Monday 12pm to 4pm and Tuesday 9am to 5pm are available for meetings. Dont work on this right now, only make a note of it in the user story and create an actual requirement in the PRD that we can address later.
+
+Assistant:
+Updated `docs/prd.md` only (no implementation changes) to capture this as a deferred requirement and user-story note.
+
+Changes:
+- Added **FR-16 Granular Advising Availability Windows (Deferred / Post-MVP)** with explicit day+time range policy behavior.
+- Added acceptance criterion for granular window enforcement in both suggestions and web availability.
+- Added a future-iteration item for granular policy-based windows in advisor portal policy management.
+- Appended user-story paragraph at the end of the reference user story describing the requested day+time granularity examples.
+
+---
+
+Turn 139
+User:
+Another  two additions to the user story. When a client already has a meeting on the calendar, it would be good to show the detail of the meeting on the calendar instead of showing that slot as  busy.  If the advisor has accepted the meeting, show it as green. If the advisor has not accepted it, show it as yellow. That way the client knows which meetings they have already got on the advisors calendar. If the clients slot is double booked with some other meeting, it is important that the calendar shows that the slot was busy AND there is a client scheduled meeting that is overlapping.  
+To figure out if a meeting on the advisors calendar belongs to a client, the agent can simply match the email domain on the invitee list. If the domain matches, it is considered to be the clients meeting for the display purpose. 
+
+Record this in the user story at the end of the PRD.  Then generate PRD requirements and then create an implementation.
+
+Assistant:
+Implemented PRD updates and code for client-owned meeting overlays in availability view.
+
+PRD updates:
+- `docs/prd.md`
+  - Added `FR-17 Client Meeting Visibility Overlay in Availability View`.
+  - Added acceptance criteria for client-owned meeting detail rendering and overlap signaling.
+  - Added this capability to MVP scope.
+  - Appended user-story paragraph with domain-match classification and accepted/pending/overlap behavior.
+
+Implementation:
+- `app/src/google-adapter.js`
+  - Added `lookupGoogleClientMeetings` to fetch calendar events and classify:
+    - client-owned meetings via attendee domain match (excluding `self` attendee),
+    - non-client busy intervals for overlap indication,
+    - advisor response state (`accepted` vs `pending`).
+- `app/src/portal-handler.js`
+  - Added availability context lookup returning:
+    - `busyIntervals`
+    - `clientMeetings`
+    - `nonClientBusyIntervals`
+  - Updated slot model to carry:
+    - client meeting details/title
+    - accepted/pending state
+    - overlap flag when client meeting coexists with other busy time
+  - Updated availability rendering:
+    - green/yellow client-meeting indicators
+    - overlap indicator
+    - client meeting details in slot
+    - updated legend and summary counters
+    - privacy copy: non-client meeting details remain hidden.
+- `app/test/google-adapter.test.js`
+  - Added coverage for client-domain meeting extraction and non-client busy interval mapping.
+- `app/test/portal-handler.test.js`
+  - Added coverage for accepted/pending client meeting details and overlap indicator rendering.
+
+Validation:
+- Local tests: `cd app && npm test` -> `71/71` passing.
+- Deployed stack: `calendar-agent-spike-dev` in `us-east-1` -> `UPDATE_COMPLETE`.
+- Live HTML check confirms deployed legend/summary/privacy text for new overlay behavior.
+
+---
+
+Turn 140
+User:
+great to run the live test, we need to add another couple emails to the the sandbox. please add manojapte@gmail.com and manojapteindia@gmail.com to the sandbox in aws SES.
+
+Assistant:
+Added both emails as SES identities in `us-east-1` sandbox:
+- `manojapte@gmail.com`
+- `manojapteindia@gmail.com`
+
+Current SES status:
+- both are `VerificationStatus: PENDING` and `SendingEnabled: false` until verification links are clicked in those inboxes.
+
+---
+
+Turn 141
+User:
+done please check
+
+Assistant:
+Rechecked SES identities in `us-east-1`.
+
+Verification result:
+- `manojapte@gmail.com`: `VerificationStatus: SUCCESS`, `SendingEnabled: true`
+- `manojapteindia@gmail.com`: `VerificationStatus: SUCCESS`, `SendingEnabled: true`
+
+---
+
+Turn 142
+User:
+can you check the last email interaction from manojapte@gmail.com . The email text said "hi do you have any availability in the second week of march in the afternoon" . The agent returned suggested times on the right date but for the morning instead of afternoon as requested in the email.
+
+Assistant:
+Investigated trace + runtime behavior and identified root cause:
+- Relevant trace: `1e032817-c124-406d-a911-d29b40e15091`
+- Metadata showed `intentSource=llm`, `requestedWindowCount=1`, `suggestionCount=3`
+- Deployed Lambda did not yet include post-LLM daypart enforcement, so broad LLM windows could produce morning slots.
+
+Validation and fix steps:
+- Confirmed local code path includes daypart enforcement for explicit terms like `afternoon`.
+- Patched failing regression test to set `SEARCH_DAYS=120` for March-window scenario in `app/test/handler.test.js`.
+- Ran full local suite: `72/72` passing.
+- Deployed to `calendar-agent-spike-dev` (`us-east-1`), stack update `UPDATE_COMPLETE`.
+- Ran live API verification with the exact phrase; returned host times were afternoon:
+  - `2026-03-10T13:00:00-07:00`
+  - `2026-03-10T13:30:00-07:00`
+  - `2026-03-10T14:00:00-07:00`
+
+---
+
+Turn 143
+User:
+ok i also checked the overlap display fix. I dont see it working. On Wednesday Feb 18, there are multiple overlaps in the afternoon, but the calendar display is not showing the overlaps.
+
+Assistant:
+Diagnosed and fixed overlap rendering issue in live availability view.
+
+Root cause:
+- `lookupGoogleClientMeetings` used an invalid Google Events API field selector:
+  - `organizer(email,responseStatus,self)`
+- Google returned `400 Invalid field selection responseStatus`.
+- Portal code treats client-meeting overlay fetch errors as best-effort and silently falls back to:
+  - `clientMeetings: []`
+  - `nonClientBusyIntervals: []`
+- Result: no `Your meeting`/`Also busy` markers rendered even when overlaps existed.
+
+Fix implemented:
+- `app/src/google-adapter.js`
+  - Updated Events API fields selector to valid organizer fields:
+  - from `organizer(email,responseStatus,self)`
+  - to `organizer(email,self)`
+- `app/test/google-adapter.test.js`
+  - Added regression assertion that events request fields do not include invalid organizer `responseStatus`.
+
+Validation:
+- Local tests: `cd app && node --test` -> `72/72` passing.
+- Deployed stack: `calendar-agent-spike-dev` (`us-east-1`) -> `UPDATE_COMPLETE`.
+- Live availability check for token `n5yAL3Ow0-vWqRAn` now shows:
+  - `Your meeting slots: 4`
+  - `Overlaps: 4`
+  - rendered `Your meeting (accepted)` and `Also busy` pills on overlapping cells.
+
+---
+
+Turn 144
+User:
+the overlaps do show now. However, for Feb 18, manojapte@gmail.com should see the subject details of only one meeting. The one with subject "test". The other meets in the overlap area are titoneeda@gmail.com meetings that do not include manojapte@gmail.com so no detail should be seen. The requirement is to show details of a meeting only if the calendar viewer is an attendee of the meeting. Otherwise, it must show just busy.
+
+Assistant:
+Investigated and found attendee data discrepancy:
+- Raw Google event payloads for the highlighted events included `manojapte@gmail.com` in attendees for `double booked`, `tripple booked`, and `trippled now` (with `responseStatus: declined`), so they were still treated as client-owned when matching by attendee presence.
+
+---
+
+Turn 145
+User:
+ah actually the requirement was deficient. The requirement was to show any meeting that has attendees with the same domain name. So you are correct in your implementation. However, if the domain is popular free email services such as live.com, gmail.com, mail.google.com, hotmail.com, mail.ru, yahoo.com then the agent should show details only after matching the full email address. In future, when there is a reported bug, it could be because of a mismatch from the PRD requirements. If that happens, then flag that first and lets make sure we want to allow the requested behavior and modify the requirements or it is a corner case to be handeled.
+
+Assistant:
+Implemented the updated ownership rule and PRD alignment:
+
+Code changes:
+- `app/src/google-adapter.js`
+  - Added hybrid ownership matching:
+    - default: domain-based attendee/organizer matching
+    - free-email domains (`live.com`, `gmail.com`, `mail.google.com`, `hotmail.com`, `mail.ru`, `yahoo.com`): exact email matching
+  - Kept non-client events as busy-only overlays.
+- `app/test/google-adapter.test.js`
+  - Added coverage for:
+    - domain matching for non-free domains
+    - exact-email matching for free-email domains
+- `app/src/portal-handler.js`
+  - Availability overlay lookup now passes `clientEmail` into meeting ownership classification path.
+
+PRD changes:
+- `docs/prd.md`
+  - Updated FR-17 and user-story reference text to reflect hybrid rule (domain by default, exact email for listed free domains).
+
+Validation:
+- Local tests: `73/73` passing.
+- Deployed stack: `calendar-agent-spike-dev` in `us-east-1` -> `UPDATE_COMPLETE`.
+- Live page verification confirms deployment is active. Existing highlighted events still appear for the current token because those events include the exact email `manojapte@gmail.com` as attendee.
+
+---
+
+Turn 146
+User:
+For FR-17. Rather than saying client-owned meetings, lets say client-included meetings. The client may not be the owner or creator of the meeting. Even if they are an attendee in the meeting, they should be able to see the detail view.
+
+Assistant:
+Applied PRD terminology updates (docs-only) for FR-17:
+- Replaced `client-owned meeting(s)` with `client-included meeting(s)` in FR-17 requirements.
+- Updated acceptance criteria items 18 and 19 to use `client-included` language.
+- Updated reference user-story paragraph to:
+  - use `client-included` terminology
+  - explicitly state that creator/owner status is not required; attendee inclusion is sufficient.
+
+---
+
+Turn 147
+User:
+now make sure the code and tests match this requirement correctly
+
+Assistant:
+Verified and reinforced implementation/test alignment for FR-17.
+
+Code status:
+- Existing implementation already matched the updated FR-17 logic:
+  - default domain-based inclusion matching
+  - exact email matching for free-email domains
+  - attendee inclusion is sufficient; ownership/creator status not required.
+
+Additional test coverage added:
+- `app/test/google-adapter.test.js`
+  - Non-free domain mode now explicitly validates:
+    - attendee same-domain inclusion
+    - organizer same-domain inclusion
+  - Free-email mode now explicitly validates:
+    - exact attendee-email inclusion
+    - exact organizer-email inclusion
+    - same-domain-but-different-email exclusion
+
+Validation:
+- `cd app && node --test test/google-adapter.test.js` -> pass
+- `cd app && node --test` -> `73/73` passing
+
+No runtime code behavior change was required in this step; changes were test hardening and verification.
+
+---
+
+Turn 148
+User:
+ok is this all upto date on the cloud? Can i test on the portal if the changes show correctly for manojapte@gmail.com
+
+Assistant:
+Checked deployed runtime status:
+- `calendar-agent-spike-dev-EmailSpikeFunction-o4guEUUHXerT` last modified: `2026-02-19T17:33:26.000+0000`
+- `calendar-agent-spike-dev-AdvisorPortalFunction-AZkQhFL1sUNr` last modified: `2026-02-19T17:33:26.000+0000`
+
+Confirmed live availability rendering for `manojapte@gmail.com` link token:
+- Summary currently shows `Your meeting slots: 4 | Overlaps: 4`
+- Meeting details shown include `double booked`, `test`, `tripple booked`, `trippled now`
+
+Conclusion:
+- Cloud runtime is up to date for the implemented matching logic.
+- Portal testing can proceed now.
+
+---
+
+Turn 149
+User:
+The meetings titled "double booked", "tripple booked" and "tripple now" do not show manojapte@gmail.com as an attendee. Please check again.
+
+Assistant:
+Rechecked directly against live Google Calendar Events payload for Feb 18, 2026.
+
+Result:
+- `double booked`: includes attendee `manojapte@gmail.com` with `responseStatus: declined`
+- `tripple booked`: includes attendee `manojapte@gmail.com` with `responseStatus: declined`
+- `trippled now` (event title in Google is `trippled now`): includes attendee `manojapte@gmail.com` with `responseStatus: declined`
+- `test`: includes attendee `manojapte@gmail.com` with `responseStatus: accepted`
+
+Interpretation:
+- The system is currently treating any attendee inclusion as eligible for detail display (including declined attendees), which is why those titles appear.
+
+---
+
+Turn 150
+User:
+No that is correct behavior according to PRD. So no change needed to PRD or code. Good job on pointing that out.
+
+Assistant:
+Acknowledged. No PRD or code changes were made for this step.

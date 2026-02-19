@@ -131,6 +131,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 3. System shall support default advising-day policy (Tuesday/Wednesday) and per-group policy overrides (for example: weekend-only, Monday-only).
 4. System shall allow assigning clients to one or more advisor-defined cohorts/groups where each cohort has allowed day visibility rules.
 5. System shall support per-client day-visibility override when needed, with override precedence higher than cohort/default policy.
+6. System shall allow the advisor to create, update, and remove custom cohort policies from the advisor portal without code changes or stack redeploy.
 
 ### FR-15 Prompt Injection and Untrusted-Input Defense
 1. System shall treat all inbound client email content as untrusted input and sanitize/normalize it before any LLM call.
@@ -138,6 +139,23 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 3. System shall restrict agent actions to an explicit allowlist of scheduling operations; no action may be executed directly from client-authored instructions.
 4. System shall apply injection-detection checks (pattern/risk scoring) and route suspicious requests to safe fallback behavior (clarification request or manual-review path).
 5. System shall record content-free security diagnostics (for example: injection risk level, guardrail decision, fallback reason) to support investigation without storing raw email content.
+
+### FR-16 Granular Advising Availability Windows (Deferred / Post-MVP)
+1. System shall support advisor-defined availability windows with day-of-week and time ranges (for example: Monday 12:00 PM-4:00 PM, Tuesday 9:00 AM-5:00 PM), not only full-day visibility.
+2. System shall allow configuring these windows per policy cohort and optionally per individual client override.
+3. Scheduling suggestions and web availability rendering shall enforce the effective granular windows for the client.
+4. If no granular window is defined for a day, that day shall be treated as unavailable for that policy unless explicitly allowed by fallback configuration.
+
+### FR-17 Client Meeting Visibility Overlay in Availability View
+1. System shall identify client-included meetings using inclusion matching rules:
+   - Default: match attendee (or organizer) email **domain** to the requesting client's email domain.
+   - For common free-email domains (`live.com`, `gmail.com`, `mail.google.com`, `hotmail.com`, `mail.ru`, `yahoo.com`): require **exact email-address** match instead of domain-only match.
+2. Availability view shall display client-included meeting detail (for example: event title/summary) instead of generic busy-only rendering for those client-included slots.
+3. Availability view shall show advisor RSVP state for client-included meetings:
+   - `accepted`: green indicator
+   - `not accepted` (for example `needsAction`, `tentative`, or unknown): yellow indicator
+4. If a client-included meeting overlaps with additional non-client busy time, the slot shall show both a client-included meeting indicator and an overlapping busy indicator.
+5. Non-client meeting details shall remain hidden.
 
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
@@ -193,6 +211,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 8. Advisor client directory with first-contact and usage metrics (metadata only).
 9. Client cohort/day-visibility policy controls, including delete/block access state.
 10. Prompt-injection guardrails for inbound client email content.
+11. Client-owned meeting overlay in availability view (detail + accepted/pending + overlap indicators).
 
 ## 11. Out of Scope for MVP
 1. LinkedIn integration.
@@ -226,12 +245,17 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 13. Given Manoj marks a client as deleted, when that client opens a previously issued availability link or tries a new scheduling request, then access is denied.
 14. Given client cohort policies are configured (for example Tuesday/Wednesday vs weekend vs Monday), when a client views availability, then only days allowed by that client's effective policy are visible.
 15. Given inbound email contains instructions attempting to override system behavior, when the request is processed, then the agent treats those instructions as untrusted content, applies guardrails, and returns a safe scheduling response or clarification without executing unsafe actions.
+16. Given Manoj creates a new policy cohort in the advisor portal, when he assigns a client to that cohort, then both email suggestions and the web availability view use that cohort's day rules immediately.
+17. Given a policy defines granular windows (for example Monday 12:00 PM-4:00 PM), when the client requests or views availability, then only slots within that configured time window are shown and suggested.
+18. Given a client is included in meetings on the advisor calendar, when the client opens the availability view, then client-included meetings are shown with detail and acceptance-state color indicators while non-client meetings remain detail-hidden.
+19. Given a client-included meeting overlaps other busy time, when rendering that slot, then the slot indicates both client-included meeting presence and overlapping busy state.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
 2. Add richer routing optimization for in-person clustering.
 3. Add configurable meeting templates and intake forms.
 4. Add analytics dashboard for conversion and scheduling efficiency.
+5. Add granular policy-based advising windows (day + time ranges) in advisor portal policy management.
 
 ## 15. Reference User Story (Verbatim)
 User story: 
@@ -242,3 +266,9 @@ Manoj would like this workflow to be handled by an intelligent AI agent that loo
 The Advisor would like to have the ability to get a list of all the clients they have interfaced with. They would like to track when they initiated their first connection, and how often the client uses the calendar interface (either via email agent or the website) to book meeting times. The advisor would also like to ensure that they can delete a client so they can no longer so the calendar. While by default the advisor wants to provide tuesday and wednesday calendars to most clients, they may give a different set of days to some other clients. For instance, there maybe groups of clients that only see tuesday and wednesday, another group that see only the weekend, and another group that may see only monday.
 
 The Advisor is worried that LLMs may get tricked by a malicious client with a specially crafted email that makes it interpret the email as instructions. The agent needs to take appropriate precautions and make sure that any email content from a client is first sanitized to ensure there are no prompt injection like attacks.
+
+The Advisor would like to create and manage multiple access policy groups directly in the advisor portal (not only system defaults), then assign those policies to clients so each client or client group can see the intended advising days.
+
+The Advisor would also like future support for more granular availability configuration than only days of the week, such as defining Monday 12:00 PM-4:00 PM and Tuesday 9:00 AM-5:00 PM as bookable windows.
+
+When a client is included in a meeting on the advisor calendar, the availability view should show meeting detail for that client-included meeting instead of only showing the slot as busy. If the advisor has accepted the meeting, show it in green; if not accepted, show it in yellow. If the client-included meeting overlaps with other busy events, the slot should clearly indicate both the busy overlap and the client-included scheduled meeting. For display classification, inclusion defaults to attendee/organizer domain matching, except for common free-email domains (`live.com`, `gmail.com`, `mail.google.com`, `hotmail.com`, `mail.ru`, `yahoo.com`) where exact email-address matching is required. A client does not need to be the creator/owner of the meeting; attendee inclusion is sufficient.
