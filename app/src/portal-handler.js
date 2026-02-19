@@ -920,45 +920,25 @@ function buildAvailabilityPage({
     minute: "2-digit",
     hour12: true
   });
-  const dayGroupHeaders = calendarModel.days
-    .map(
-      (day) =>
-        `<th class="day-header" scope="colgroup" colspan="2" title="${escapeHtml(day.fullLabel)}"><div class="weekday">${escapeHtml(
-          day.weekdayLabel
-        )}</div><div class="date">${escapeHtml(day.dateLabel)}</div></th>`
-    )
-    .join("");
-  const daySubHeaders = calendarModel.days
-    .map((_, dayIndex) => {
-      const localHeaderClass = `sub-header local-time-header${dayIndex > 0 ? " day-divider" : ""}`;
-      return `<th class="${localHeaderClass}"><span class="local-header-title">Local timezone</span><span class="local-header-zone">Detecting...</span></th><th class="sub-header advisor-time-header">Advisor Calendar</th>`;
-    })
-    .join("");
-  const dayCount = Math.max(1, calendarModel.days.length);
-  const localColumnPercent = (30 / dayCount).toFixed(3);
-  const advisorColumnPercent = (70 / dayCount).toFixed(3);
-  const dayColumnGroup = calendarModel.days
-    .map(
-      () =>
-        `<col class="col-local" style="width:${localColumnPercent}%;" /><col class="col-advisor" style="width:${advisorColumnPercent}%;" />`
-    )
-    .join("");
   const advisorCellSpanPlan = buildAdvisorCellSpanPlan(calendarModel.rows, calendarModel.days.length);
-  const bodyRows = calendarModel.rows
-    .map((row, rowIndex) => {
-      const slotCells = row.cells
-        .map((slot, dayIndex) => {
-          const localSlotClass = ["slot", "local-slot", slot.status, dayIndex > 0 ? "day-divider" : ""]
-            .filter(Boolean)
-            .join(" ");
+  const dayTables = calendarModel.days
+    .map((day, dayIndex) => {
+      const dayHeader = `<th class="day-header" scope="colgroup" colspan="2" title="${escapeHtml(day.fullLabel)}"><div class="weekday">${escapeHtml(
+        day.weekdayLabel
+      )}</div><div class="date">${escapeHtml(day.dateLabel)}</div></th>`;
+      const daySubHeaders =
+        '<th class="sub-header local-time-header"><span class="local-header-title">Local timezone</span><span class="local-header-zone">Detecting...</span></th><th class="sub-header advisor-time-header">Advisor Calendar</th>';
 
-          const localCell = `<td class="${localSlotClass}" data-slot-start-utc="${escapeHtml(slot.slotStartUtc)}">
+      const dayRows = calendarModel.rows
+        .map((row, rowIndex) => {
+          const slot = row.cells[dayIndex];
+          const localCell = `<td class="slot local-slot ${slot.status}" data-slot-start-utc="${escapeHtml(slot.slotStartUtc)}">
             <div class="slot-local">Detecting...</div>
           </td>`;
 
           const spanPlan = advisorCellSpanPlan[rowIndex]?.[dayIndex] ?? { render: true, rowspan: 1 };
           if (!spanPlan.render) {
-            return localCell;
+            return `<tr class="slot-row" data-row-index="${rowIndex}">${localCell}</tr>`;
           }
 
           const clientPill = slot.hasClientMeeting
@@ -993,39 +973,36 @@ function buildAvailabilityPage({
               ? `${slot.hostLabel} - ${calendarModel.rows[rowIndex + spanPlan.rowspan - 1]?.cells?.[dayIndex]?.hostEndLabel ?? slot.hostEndLabel}`
               : slot.hostLabel;
 
-          return `${localCell}
+          return `<tr class="slot-row" data-row-index="${rowIndex}">${localCell}
           <td class="${advisorSlotClass}"${rowspanAttr}>
             <div class="slot-pill ${slot.status}">${slot.status === "busy" ? "Busy" : "Open"}</div>
             ${clientPill}
             ${overlapPill}
             <div class="slot-host">${escapeHtml(hostTimeLabel)}</div>
             ${meetingDetails}
-          </td>`;
+          </td></tr>`;
         })
         .join("");
 
-      return `<tr>${slotCells}</tr>`;
+      return `<section class="day-card">
+          <table class="calendar-grid day-grid" data-day-index="${dayIndex}">
+            <colgroup>
+              <col class="col-local" />
+              <col class="col-advisor" />
+            </colgroup>
+            <thead>
+              <tr>${dayHeader}</tr>
+              <tr>${daySubHeaders}</tr>
+            </thead>
+            <tbody>${dayRows}</tbody>
+          </table>
+        </section>`;
     })
     .join("");
 
   const availabilityBody =
     calendarModel.days.length > 0 && calendarModel.rows.length > 0
-      ? `<div class="calendar-scroll">
-          <table class="calendar-grid">
-            <colgroup>
-              ${dayColumnGroup}
-            </colgroup>
-            <thead>
-              <tr>
-                ${dayGroupHeaders}
-              </tr>
-              <tr>
-                ${daySubHeaders}
-              </tr>
-            </thead>
-            <tbody>${bodyRows}</tbody>
-          </table>
-        </div>`
+      ? `<div class="calendar-days">${dayTables}</div>`
       : '<section class="empty"><h2>No advising windows configured</h2><p>No calendar columns were generated for the configured advising days.</p></section>';
 
   const encodedToken = encodeURIComponent(token);
@@ -1069,27 +1046,23 @@ function buildAvailabilityPage({
       .nav-link { text-decoration: none; color: #1d4ed8; font-size: 14px; font-weight: 600; }
       .nav-link:hover { text-decoration: underline; }
       .nav-link.disabled { color: #94a3b8; pointer-events: none; }
-      .calendar-scroll { overflow: auto; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; }
-      .calendar-grid { width: 100%; min-width: 900px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
-      .calendar-grid col.col-local { width: 29px; }
-      .calendar-grid col.col-advisor { width: 167px; }
+      .calendar-days { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 24px; align-items: start; }
+      .day-card { background: #fff; border: 1px solid #d1d5db; border-radius: 14px; overflow: hidden; }
+      .calendar-grid { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+      .calendar-grid col.col-local { width: 30%; }
+      .calendar-grid col.col-advisor { width: 70%; }
       .calendar-grid thead th { background: #f1f5f9; z-index: 2; border-bottom: 1px solid #cbd5e1; }
       .calendar-grid th, .calendar-grid td { border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; padding: 8px; vertical-align: top; }
       .calendar-grid th:last-child, .calendar-grid td:last-child { border-right: 0; }
       .day-header { text-align: center; border-right: 0; }
-      .day-header + .day-header { border-left: 28px solid #fff; }
-      .sub-header.local-time-header.day-divider, .calendar-grid tbody td.local-slot.day-divider { border-left: 28px solid #fff; }
       .sub-header.advisor-time-header, .calendar-grid tbody td.advisor-slot { border-right: 0; }
       .weekday { font-size: 12px; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; }
       .date { font-size: 14px; font-weight: 700; color: #0f172a; }
-      .sub-header { width: 98px; min-width: 98px; text-align: left; font-size: 11px; color: #475569; font-weight: 700; }
-      .sub-header.local-time-header { width: 29px; min-width: 29px; max-width: 29px; white-space: normal; }
-      .sub-header.advisor-time-header { width: 167px; min-width: 167px; }
+      .sub-header { text-align: left; font-size: 11px; color: #475569; font-weight: 700; }
+      .sub-header.local-time-header { white-space: normal; }
       .local-header-title { display: block; line-height: 1.2; }
       .local-header-zone { display: block; margin-top: 2px; line-height: 1.2; font-size: 10px; font-weight: 600; color: #64748b; overflow-wrap: anywhere; }
-      .slot { width: 98px; min-width: 98px; min-height: 60px; }
-      .slot.local-slot { width: 29px; min-width: 29px; }
-      .slot.advisor-slot { width: 167px; min-width: 167px; }
+      .slot { min-height: 60px; }
       .slot.open { background: #f4fbf6; }
       .slot.busy { background: #f8fafc; }
       .slot.client-accepted { background: #ecfdf5; }
@@ -1114,8 +1087,7 @@ function buildAvailabilityPage({
       .empty { background: #fff; border: 1px solid #d1d5db; border-radius: 10px; padding: 16px; }
       .note { font-size: 13px; color: #4b5563; margin-top: 16px; }
       @media (max-width: 768px) {
-        .day-header + .day-header { border-left-width: 14px; }
-        .sub-header.local-time-header.day-divider, .calendar-grid tbody td.local-slot.day-divider { border-left-width: 14px; }
+        .calendar-days { grid-template-columns: 1fr; gap: 14px; }
       }
     </style>
   </head>
@@ -1159,6 +1131,55 @@ function buildAvailabilityPage({
           zone.className = 'local-header-zone';
           zone.textContent = timezoneLabel;
           headerCell.appendChild(zone);
+        }
+
+        function syncSlotRowHeights() {
+          var dayTables = Array.prototype.slice.call(document.querySelectorAll('.day-grid'));
+          if (dayTables.length <= 1) {
+            return;
+          }
+
+          dayTables.forEach(function (table) {
+            var rows = table.querySelectorAll('tbody tr.slot-row');
+            rows.forEach(function (row) {
+              row.style.height = '';
+            });
+          });
+
+          var maxRowCount = 0;
+          dayTables.forEach(function (table) {
+            var rowCount = table.querySelectorAll('tbody tr.slot-row').length;
+            if (rowCount > maxRowCount) {
+              maxRowCount = rowCount;
+            }
+          });
+
+          for (var rowIndex = 0; rowIndex < maxRowCount; rowIndex += 1) {
+            var maxHeight = 0;
+            dayTables.forEach(function (table) {
+              var row = table.querySelector('tbody tr.slot-row[data-row-index="' + rowIndex + '"]');
+              if (!row) {
+                return;
+              }
+
+              var measuredHeight = row.getBoundingClientRect().height;
+              if (measuredHeight > maxHeight) {
+                maxHeight = measuredHeight;
+              }
+            });
+
+            if (maxHeight <= 0) {
+              continue;
+            }
+
+            var targetHeight = Math.ceil(maxHeight);
+            dayTables.forEach(function (table) {
+              var row = table.querySelector('tbody tr.slot-row[data-row-index="' + rowIndex + '"]');
+              if (row) {
+                row.style.height = targetHeight + 'px';
+              }
+            });
+          }
         }
 
         var localTimezone = '';
@@ -1210,6 +1231,24 @@ function buildAvailabilityPage({
           if (slotLabel) {
             slotLabel.textContent = timeFormatter.format(date);
           }
+        });
+
+        if (window.requestAnimationFrame) {
+          window.requestAnimationFrame(function () {
+            syncSlotRowHeights();
+          });
+        } else {
+          syncSlotRowHeights();
+        }
+
+        var resizeTimer = null;
+        window.addEventListener('resize', function () {
+          if (resizeTimer) {
+            clearTimeout(resizeTimer);
+          }
+          resizeTimer = setTimeout(function () {
+            syncSlotRowHeights();
+          }, 80);
         });
       })();
     </script>

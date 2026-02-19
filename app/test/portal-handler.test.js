@@ -1143,6 +1143,7 @@ test("availability page renders open slots for valid short token", async () => {
     assert.match(response.headers["content-type"], /text\/html/);
     assert.match(response.body, /Available Times/);
     assert.match(response.body, /open and busy blocks/i);
+    assert.match(response.body, /calendar-days/);
     assert.match(response.body, /calendar-grid/);
     assert.match(response.body, />Open</);
     assert.match(response.body, />Busy</);
@@ -1157,8 +1158,13 @@ test("availability page renders open slots for valid short token", async () => {
     assert.match(response.body, /advisor-time-header/);
     assert.match(response.body, /local-time-header/);
     assert.match(response.body, /<colgroup>/);
-    assert.match(response.body, /class="col-local" style="width:15\.000%;"/);
-    assert.match(response.body, /class="col-advisor" style="width:35\.000%;"/);
+    assert.match(response.body, /class="day-card"/);
+    assert.match(response.body, /class="col-local"/);
+    assert.match(response.body, /class="col-advisor"/);
+    assert.match(response.body, /class="slot-row" data-row-index="0"/);
+    assert.match(response.body, /function syncSlotRowHeights\(\)/);
+    const dayCardMatches = response.body.match(/class="day-card"/g) ?? [];
+    assert.equal(dayCardMatches.length, 2);
     assert.match(response.body, /local-slot/);
     assert.match(response.body, /slot-local/);
     assert.match(response.body, /slot-host/);
