@@ -1036,10 +1036,11 @@ function buildAvailabilityPage({
     <title>Advisor Availability</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 24px; color: #111827; background: #f8fafc; }
-      main { max-width: 1200px; margin: 0 auto; }
+      main { max-width: 1280px; margin: 0 auto; }
       h1 { margin-bottom: 8px; }
       code { background: #eef2ff; border-radius: 4px; padding: 1px 4px; }
       .muted { color: #4b5563; margin-top: 0; }
+      .hidden-topline { display: none; }
       .legend { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; color: #374151; font-size: 14px; }
       .legend-pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font-weight: 600; font-size: 12px; border: 1px solid; }
       .legend-pill.open { background: #e8f5e9; color: #065f46; border-color: #9dd7a6; }
@@ -1054,7 +1055,7 @@ function buildAvailabilityPage({
       .nav-link:hover { text-decoration: underline; }
       .nav-link.disabled { color: #94a3b8; pointer-events: none; }
       .calendar-carousel { display: flex; align-items: center; gap: 10px; }
-      .carousel-viewport { flex: 1; overflow-x: auto; scroll-behavior: smooth; border-radius: 16px; padding: 2px; }
+      .carousel-viewport { flex: 1; overflow-x: auto; overflow-y: hidden; scroll-behavior: smooth; border-radius: 16px; padding: 2px 4px 2px 2px; }
       .carousel-viewport::-webkit-scrollbar { height: 10px; }
       .carousel-viewport::-webkit-scrollbar-track { background: #e2e8f0; border-radius: 999px; }
       .carousel-viewport::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 999px; }
@@ -1065,6 +1066,7 @@ function buildAvailabilityPage({
       .carousel-status { margin: 8px 0 10px; color: #475569; font-size: 12px; font-weight: 600; text-align: right; }
       .calendar-carousel.single-day + .carousel-status { visibility: hidden; }
       .calendar-days { display: flex; gap: 24px; align-items: stretch; width: max-content; min-width: 100%; }
+      .calendar-days.centered { width: 100%; min-width: 100%; justify-content: center; }
       .day-card { background: #fff; border: 1px solid #d1d5db; border-radius: 14px; overflow: hidden; flex: 0 0 auto; width: 100%; }
       .calendar-grid { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
       .calendar-grid col.col-local { width: 30%; }
@@ -1119,9 +1121,9 @@ function buildAvailabilityPage({
           ? `<p class="muted">Availability for <code>${escapeHtml(clientDisplayName)}</code></p>`
           : ""
       }
-      <p class="muted">Calendar-style view of open and busy blocks. Busy meeting details are hidden by default; meetings tied to your domain are shown.</p>
+      <p class="muted">Please find a slot that works for you and send a calendar invitation to the advisor.</p>
       <p class="muted">Advisor timezone: <code>${escapeHtml(hostTimezone)}</code> | Local timezone: <code id="local-timezone-code">Detecting...</code></p>
-      <p class="muted">Link expires: ${escapeHtml(expiresAtLabel)} (${escapeHtml(hostTimezone)})</p>
+      <p class="muted hidden-topline" aria-hidden="true">Link expires: ${escapeHtml(expiresAtLabel)} (${escapeHtml(hostTimezone)})</p>
       <div class="legend">
         <span class="legend-pill open">Open</span>
         <span class="legend-pill busy">Busy</span>
@@ -1129,7 +1131,7 @@ function buildAvailabilityPage({
         <span class="legend-pill client-pending">Your Meeting Pending</span>
         <span class="legend-pill overlap">Advisor Calendar Conflict</span>
       </div>
-      <p class="summary">Open slots: ${calendarModel.openSlotCount} | Busy blocks: ${calendarModel.busySlotCount} | Your meeting slots: ${calendarModel.clientMeetingSlotCount} | Overlaps: ${calendarModel.clientOverlapSlotCount}</p>
+      <p class="summary" aria-hidden="true">&nbsp;</p>
       <div class="week-nav">
         ${previousButton}
         <div class="week-range">${escapeHtml(windowLabel)}</div>
@@ -1204,9 +1206,6 @@ function buildAvailabilityPage({
 
         function getCardsPerView() {
           var viewportWidth = window.innerWidth || document.documentElement.clientWidth || 1024;
-          if (viewportWidth >= 1200) {
-            return 3;
-          }
           if (viewportWidth >= 768) {
             return 2;
           }
@@ -1283,13 +1282,26 @@ function buildAvailabilityPage({
               return;
             }
 
-            var cardWidth = (viewportWidth - gapPx * (cardsPerView - 1)) / cardsPerView;
+            var hasMoreCards = cards.length > cardsPerView;
+            var visibleCardCount = hasMoreCards ? cardsPerView : Math.max(1, cards.length);
+            var peekPx = hasMoreCards ? Math.max(gapPx + 24, Math.round(viewportWidth * 0.10)) : 0;
+            var cardWidth = (viewportWidth - gapPx * (visibleCardCount - 1) - peekPx) / visibleCardCount;
+
+            if (!hasMoreCards) {
+              var maxCenteredWidth = visibleCardCount === 1 ? 620 : 520;
+              cardWidth = Math.min(cardWidth, maxCenteredWidth);
+            }
+
             var normalizedCardWidth = Math.max(240, Math.floor(cardWidth));
             cards.forEach(function (card) {
               card.style.width = normalizedCardWidth + 'px';
             });
+            track.classList.toggle('centered', !hasMoreCards);
 
             var maxScrollLeft = measureMaxScrollLeft();
+            if (!hasMoreCards) {
+              viewport.scrollLeft = 0;
+            }
             if (viewport.scrollLeft > maxScrollLeft) {
               viewport.scrollLeft = maxScrollLeft;
             }

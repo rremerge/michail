@@ -1142,7 +1142,8 @@ test("availability page renders open slots for valid short token", async () => {
     assert.equal(response.statusCode, 200);
     assert.match(response.headers["content-type"], /text\/html/);
     assert.match(response.body, /Available Times/);
-    assert.match(response.body, /open and busy blocks/i);
+    assert.match(response.body, /Please find a slot that works for you and send a calendar invitation to the advisor\./);
+    assert.match(response.body, /class="summary" aria-hidden="true">&nbsp;<\/p>/);
     assert.match(response.body, /calendar-carousel/);
     assert.match(response.body, /carousel-viewport/);
     assert.match(response.body, /carousel-nav prev/);
@@ -1402,7 +1403,6 @@ test("availability page shows busy blocks without exposing meeting details", asy
     assert.equal(response.statusCode, 200);
     assert.match(response.body, /class="slot advisor-slot busy"/);
     assert.match(response.body, /class="slot local-slot busy"/);
-    assert.match(response.body, /Busy blocks: [1-9]/);
     assert.equal(response.body.includes("Quarterly Board Review"), false);
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
@@ -1534,7 +1534,6 @@ test("availability page shows client meeting details with accepted/pending and o
     assert.match(response.body, /Potential conflict/);
     assert.match(response.body, /client-accepted/);
     assert.match(response.body, /client-pending/);
-    assert.match(response.body, /Overlaps: [1-9]/);
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {
