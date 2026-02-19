@@ -656,7 +656,8 @@ function buildAvailabilityCalendarModel({
       openSlotCount: 0,
       busySlotCount: 0,
       clientMeetingSlotCount: 0,
-      clientOverlapSlotCount: 0
+      clientOverlapSlotCount: 0,
+      slotMinutes
     };
   }
 
@@ -735,7 +736,8 @@ function buildAvailabilityCalendarModel({
       openSlotCount: 0,
       busySlotCount: 0,
       clientMeetingSlotCount: 0,
-      clientOverlapSlotCount: 0
+      clientOverlapSlotCount: 0,
+      slotMinutes
     };
   }
 
@@ -806,7 +808,9 @@ function buildAvailabilityCalendarModel({
       return {
         status: isBusy ? "busy" : "open",
         slotStartUtc: slotStartLocal.toUTC().toISO(),
+        slotEndUtc: slotEndLocal.toUTC().toISO(),
         hostLabel,
+        hostEndLabel: slotEndLocal.toFormat("h:mm a"),
         hasClientMeeting,
         clientMeetingState,
         clientMeetings: meetingDetails,
@@ -827,8 +831,73 @@ function buildAvailabilityCalendarModel({
     openSlotCount,
     busySlotCount,
     clientMeetingSlotCount,
-    clientOverlapSlotCount
+    clientOverlapSlotCount,
+    slotMinutes
   };
+}
+
+function formatMeetingStateLabel(advisorResponseStatus) {
+  return advisorResponseStatus === "accepted" ? "Accepted" : "Pending";
+}
+
+function buildAdvisorMergeKey(slot) {
+  if (!slot?.hasClientMeeting || !Array.isArray(slot.clientMeetings) || slot.clientMeetings.length !== 1) {
+    return null;
+  }
+
+  const meeting = slot.clientMeetings[0];
+  return [
+    slot.status,
+    slot.clientMeetingState ?? "",
+    slot.hasOverlap ? "1" : "0",
+    meeting.title ?? "",
+    meeting.advisorResponseStatus ?? ""
+  ].join("|");
+}
+
+function buildAdvisorCellSpanPlan(rows, dayCount) {
+  const plan = rows.map(() =>
+    Array.from({ length: dayCount }, () => ({
+      render: true,
+      rowspan: 1
+    }))
+  );
+
+  for (let dayIndex = 0; dayIndex < dayCount; dayIndex += 1) {
+    let rowIndex = 0;
+    while (rowIndex < rows.length) {
+      const slot = rows[rowIndex]?.cells?.[dayIndex];
+      const mergeKey = buildAdvisorMergeKey(slot);
+      if (!mergeKey) {
+        rowIndex += 1;
+        continue;
+      }
+
+      let span = 1;
+      while (rowIndex + span < rows.length) {
+        const nextSlot = rows[rowIndex + span]?.cells?.[dayIndex];
+        if (buildAdvisorMergeKey(nextSlot) !== mergeKey) {
+          break;
+        }
+        span += 1;
+      }
+
+      plan[rowIndex][dayIndex] = {
+        render: true,
+        rowspan: span
+      };
+      for (let offset = 1; offset < span; offset += 1) {
+        plan[rowIndex + offset][dayIndex] = {
+          render: false,
+          rowspan: 0
+        };
+      }
+
+      rowIndex += span;
+    }
+  }
+
+  return plan;
 }
 
 function buildAvailabilityPage({
@@ -860,10 +929,10 @@ function buildAvailabilityPage({
     )
     .join("");
   const daySubHeaders = calendarModel.days
-    .map(
-      () =>
-        '<th class="sub-header local-time-header"><span class="local-header-title">Local timezone</span><span class="local-header-zone">Detecting...</span></th><th class="sub-header advisor-time-header">Advisor Calendar</th>'
-    )
+    .map((_, dayIndex) => {
+      const localHeaderClass = `sub-header local-time-header${dayIndex > 0 ? " day-divider" : ""}`;
+      return `<th class="${localHeaderClass}"><span class="local-header-title">Local timezone</span><span class="local-header-zone">Detecting...</span></th><th class="sub-header advisor-time-header">Advisor Calendar</th>`;
+    })
     .join("");
   const dayCount = Math.max(1, calendarModel.days.length);
   const localColumnPercent = (30 / dayCount).toFixed(3);
@@ -874,10 +943,24 @@ function buildAvailabilityPage({
         `<col class="col-local" style="width:${localColumnPercent}%;" /><col class="col-advisor" style="width:${advisorColumnPercent}%;" />`
     )
     .join("");
+  const advisorCellSpanPlan = buildAdvisorCellSpanPlan(calendarModel.rows, calendarModel.days.length);
   const bodyRows = calendarModel.rows
-    .map((row) => {
+    .map((row, rowIndex) => {
       const slotCells = row.cells
-        .map((slot) => {
+        .map((slot, dayIndex) => {
+          const localSlotClass = ["slot", "local-slot", slot.status, dayIndex > 0 ? "day-divider" : ""]
+            .filter(Boolean)
+            .join(" ");
+
+          const localCell = `<td class="${localSlotClass}" data-slot-start-utc="${escapeHtml(slot.slotStartUtc)}">
+            <div class="slot-local">Detecting...</div>
+          </td>`;
+
+          const spanPlan = advisorCellSpanPlan[rowIndex]?.[dayIndex] ?? { render: true, rowspan: 1 };
+          if (!spanPlan.render) {
+            return localCell;
+          }
+
           const clientPill = slot.hasClientMeeting
             ? `<div class="slot-pill client-${slot.clientMeetingState}">Your meeting (${slot.clientMeetingState === "accepted" ? "accepted" : "pending"})</div>`
             : "";
@@ -888,9 +971,9 @@ function buildAvailabilityPage({
                   (meeting) =>
                     `<div class="client-meeting-item"><span class="meeting-title">${escapeHtml(
                       meeting.title
-                    )}</span><span class="meeting-state ${escapeHtml(meeting.advisorResponseStatus)}">${
-                      meeting.advisorResponseStatus === "accepted" ? "Accepted" : "Pending"
-                    }</span></div>`
+                    )}</span><span class="meeting-state ${escapeHtml(meeting.advisorResponseStatus)}">${formatMeetingStateLabel(
+                      meeting.advisorResponseStatus
+                    )}</span></div>`
                 )
                 .join("")}</div>`
             : "";
@@ -899,19 +982,23 @@ function buildAvailabilityPage({
             "advisor-slot",
             slot.status,
             slot.hasClientMeeting ? `client-${slot.clientMeetingState}` : "",
-            slot.hasOverlap ? "client-overlap" : ""
+            slot.hasOverlap ? "client-overlap" : "",
+            spanPlan.rowspan > 1 ? "merged-span" : ""
           ]
             .filter(Boolean)
             .join(" ");
+          const rowspanAttr = spanPlan.rowspan > 1 ? ` rowspan="${spanPlan.rowspan}"` : "";
+          const hostTimeLabel =
+            spanPlan.rowspan > 1
+              ? `${slot.hostLabel} - ${calendarModel.rows[rowIndex + spanPlan.rowspan - 1]?.cells?.[dayIndex]?.hostEndLabel ?? slot.hostEndLabel}`
+              : slot.hostLabel;
 
-          return `<td class="slot local-slot ${slot.status}" data-slot-start-utc="${escapeHtml(slot.slotStartUtc)}">
-            <div class="slot-local">Detecting...</div>
-          </td>
-          <td class="${advisorSlotClass}">
+          return `${localCell}
+          <td class="${advisorSlotClass}"${rowspanAttr}>
             <div class="slot-pill ${slot.status}">${slot.status === "busy" ? "Busy" : "Open"}</div>
             ${clientPill}
             ${overlapPill}
-            <div class="slot-host">${escapeHtml(slot.hostLabel)}</div>
+            <div class="slot-host">${escapeHtml(hostTimeLabel)}</div>
             ${meetingDetails}
           </td>`;
         })
@@ -991,8 +1078,8 @@ function buildAvailabilityPage({
       .calendar-grid th:last-child, .calendar-grid td:last-child { border-right: 0; }
       .day-header { text-align: center; border-right: 0; }
       .day-header + .day-header { border-left: 28px solid #fff; }
-      .sub-header:nth-child(2n + 3), .calendar-grid tbody td:nth-child(2n + 3) { border-left: 28px solid #fff; }
-      .sub-header:nth-child(2n + 2), .calendar-grid tbody td:nth-child(2n + 2) { border-right: 0; }
+      .sub-header.local-time-header.day-divider, .calendar-grid tbody td.local-slot.day-divider { border-left: 28px solid #fff; }
+      .sub-header.advisor-time-header, .calendar-grid tbody td.advisor-slot { border-right: 0; }
       .weekday { font-size: 12px; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; }
       .date { font-size: 14px; font-weight: 700; color: #0f172a; }
       .sub-header { width: 98px; min-width: 98px; text-align: left; font-size: 11px; color: #475569; font-weight: 700; }
@@ -1015,6 +1102,7 @@ function buildAvailabilityPage({
       .slot-pill.client-pending { color: #854d0e; background: #fef3c7; border-color: #fcd34d; margin-top: 4px; }
       .slot-pill.overlap { color: #991b1b; background: #fee2e2; border-color: #fca5a5; margin-top: 4px; }
       .slot-host { margin-top: 6px; font-size: 11px; font-weight: 700; color: #0f172a; }
+      .advisor-slot.merged-span .slot-host { margin-top: 8px; }
       .slot-local { margin-top: 6px; font-size: 11px; font-weight: 600; color: #475569; }
       .local-slot .slot-local { white-space: normal; line-height: 1.25; overflow-wrap: anywhere; }
       .client-meeting-list { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
@@ -1027,7 +1115,7 @@ function buildAvailabilityPage({
       .note { font-size: 13px; color: #4b5563; margin-top: 16px; }
       @media (max-width: 768px) {
         .day-header + .day-header { border-left-width: 14px; }
-        .sub-header:nth-child(2n + 3), .calendar-grid tbody td:nth-child(2n + 3) { border-left-width: 14px; }
+        .sub-header.local-time-header.day-divider, .calendar-grid tbody td.local-slot.day-divider { border-left-width: 14px; }
       }
     </style>
   </head>

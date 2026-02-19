@@ -3734,3 +3734,85 @@ Files changed:
 Validation:
 - Regenerated preview HTML: `cd app && npm run preview:availability`
 - Verified both meetings appear in output: `tmp/availability-preview.html`
+
+---
+
+Turn 158
+User:
+no need to push to remote. I have another UI enhancement request. When there is a single meeting that spans multiple 30 minute slots. Showing the same text again and again looks redundant. Can we collate the boxes on the right column into a single box that spans the entire time when its a single long meeting. Or if you have a better idea please go ahead and suggest it.
+
+Assistant:
+Implemented row-span merging for long single client-included meetings in the advisor column.
+
+What changed:
+- `app/src/portal-handler.js`
+  - Added advisor-cell span planning to detect consecutive slots that represent the same single meeting and merge them into one `<td rowspan="N">` block.
+  - Added per-slot `slotEndUtc` and `hostEndLabel` so merged blocks can display a readable range like `10:30 AM - 1:00 PM`.
+  - Kept local-time cells per 30-minute row, while rendering advisor details once for merged spans.
+  - Refactored column-gap CSS from `:nth-child` selectors to class-based `day-divider` so layout remains correct with row-spanned cells.
+  - Added a small merged-cell style adjustment (`.advisor-slot.merged-span .slot-host`).
+- `app/test/portal-handler.test.js`
+  - Added test: `availability page merges long single client meeting into one advisor block`.
+  - Verifies merged HTML contains `rowspan="3"`, merged host range `9:00 AM - 10:30 AM`, and only one rendered meeting title occurrence.
+
+Validation:
+- `cd app && npm test` -> `74/74` passing.
+- `cd app && npm run preview:availability` -> preview generated successfully.
+- Preview HTML confirms merged rendering:
+  - `Two and a Half Hour Workshop` appears once with `rowspan="5"` and `10:30 AM - 1:00 PM`.
+  - `One Hour Strategy Session` appears once with `rowspan="2"`.
+
+---
+
+Turn 159
+User:
+looks great.  yes lets see what vertical centering looks like. i am not sure we need it.
+
+Assistant:
+Implemented a lightweight visual experiment for vertical centering of merged advisor blocks.
+
+Changes:
+- `app/src/portal-handler.js`
+  - Wrapped advisor cell content in `<div class="advisor-slot-content">`.
+  - Added merged-cell centering styles only for row-spanned advisor cells:
+    - `.advisor-slot.merged-span { vertical-align: middle; }`
+    - `.advisor-slot.merged-span .advisor-slot-content { justify-content: center; min-height: 100%; }`
+  - Kept non-merged slot behavior unchanged.
+
+Validation:
+- `cd app && npm test` -> `74/74` passing.
+- `cd app && npm run preview:availability` -> preview regenerated at `tmp/availability-preview.html`.
+
+---
+
+Turn 160
+User:
+i prefer the way it was
+
+Assistant:
+Reverted the vertical-centering experiment and restored the previous merged-block appearance.
+
+Changes:
+- `app/src/portal-handler.js`
+  - Removed the temporary `advisor-slot-content` wrapper.
+  - Removed merged-cell centering CSS rules:
+    - `.advisor-slot-content { ... }`
+    - `.advisor-slot.merged-span { vertical-align: middle; }`
+    - `.advisor-slot.merged-span .advisor-slot-content { ... }`
+  - Kept long-meeting row-span merging behavior unchanged.
+
+Validation:
+- `cd app && npm test` -> `74/74` passing.
+- Regenerated local preview: `cd app && npm run preview:availability`.
+
+---
+
+Turn 161
+User:
+ok check this in.
+
+Assistant:
+Created a local checkpoint commit (no remote push) including:
+- Revert of vertical-centering experiment while keeping merged long-meeting row-span behavior
+- Availability portal rendering updates and tests
+- Conversation transcript update
