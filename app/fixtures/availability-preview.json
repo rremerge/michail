@@ -1,0 +1,71 @@
+{
+  "name": "representative-default",
+  "advisor": {
+    "id": "manoj",
+    "timezone": "America/Los_Angeles",
+    "advisingDays": ["Tue", "Wed"],
+    "workdayStartHour": 9,
+    "workdayEndHour": 17,
+    "calendarAccountEmail": "advisor@example.com"
+  },
+  "client": {
+    "id": "preview.client@example.com",
+    "email": "preview.client@example.com",
+    "displayName": "Preview Client",
+    "reference": "preview-client"
+  },
+  "durationMinutes": 30,
+  "busyIntervals": [
+    { "day": "Tue", "start": "10:00", "end": "10:30" },
+    { "day": "Tue", "start": "12:00", "end": "13:00" },
+    { "day": "Wed", "start": "09:00", "end": "09:30" },
+    { "day": "Wed", "start": "15:30", "end": "16:30" }
+  ],
+  "clientMeetings": [
+    {
+      "day": "Tue",
+      "start": "09:30",
+      "end": "10:00",
+      "title": "Accepted Intro",
+      "advisorResponseStatus": "accepted"
+    },
+    {
+      "day": "Tue",
+      "start": "10:30",
+      "end": "11:00",
+      "title": "Tentative Follow-up",
+      "advisorResponseStatus": "tentative"
+    },
+    {
+      "day": "Wed",
+      "start": "13:30",
+      "end": "14:30",
+      "title": "Design Review",
+      "advisorResponseStatus": "accepted"
+    },
+    {
+      "day": "Wed",
+      "start": "14:00",
+      "end": "14:30",
+      "title": "Second Invite Same Slot",
+      "advisorResponseStatus": "needsAction"
+    },
+    {
+      "day": "Tue",
+      "start": "13:00",
+      "end": "14:00",
+      "title": "One Hour Strategy Session",
+      "advisorResponseStatus": "accepted"
+    },
+    {
+      "day": "Wed",
+      "start": "10:30",
+      "end": "13:00",
+      "title": "Two and a Half Hour Workshop",
+      "advisorResponseStatus": "tentative"
+    }
+  ],
+  "nonClientConflictIntervals": [
+    { "day": "Wed", "start": "14:00", "end": "15:00" }
+  ]
+}

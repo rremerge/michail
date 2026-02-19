@@ -20,3 +20,4 @@ cdk.out/
 .aws-sam/
 .npm-cache/
 .gcloud/
+tmp/

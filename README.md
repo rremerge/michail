@@ -46,6 +46,41 @@ npm install
 npm test
 ```
 
+## Local UI Preview (No Deploy)
+Use this to iterate on portal calendar UI quickly with representative mock data.
+
+```bash
+cd app
+npm run preview:availability:open
+```
+
+What it does:
+- Renders the real `/availability` HTML using `app/src/portal-handler.js`.
+- Uses local fixture data from `app/fixtures/availability-preview.json`.
+- Writes output to `tmp/availability-preview.html` and opens it in your browser.
+
+The representative fixture includes:
+- Open and busy slots
+- Client-included meetings
+- Accepted and tentative/pending client meeting states
+- Overlapping non-client busy blocks to visualize conflicts
+
+Useful options:
+
+```bash
+# Render without auto-open
+npm run preview:availability
+
+# Re-render automatically on local file changes (refresh browser tab)
+npm run preview:availability:watch
+
+# Preview a different week
+npm run preview:availability -- --week-offset 1
+
+# Use a custom fixture file
+npm run preview:availability -- --fixture ./fixtures/my-preview.json
+```
+
 ## Deploy (Isolated Stack)
 ```bash
 sam build --template-file template.yaml

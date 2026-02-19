@@ -10,6 +10,9 @@
   "scripts": {
     "test": "node --test",
     "check": "node --test",
+    "preview:availability": "node scripts/preview-availability.mjs",
+    "preview:availability:watch": "node --watch scripts/preview-availability.mjs",
+    "preview:availability:open": "node scripts/preview-availability.mjs --open",
     "test:e2e:inbound": "node scripts/e2e-inbound-email.mjs",
     "test:e2e:feedback": "node scripts/e2e-feedback.mjs"
   },

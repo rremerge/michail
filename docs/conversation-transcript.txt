@@ -3684,3 +3684,53 @@ Validation:
 - Local tests: `cd app && node --test` -> `73/73` passing
 - Deployed stack: `calendar-agent-spike-dev` in `us-east-1` -> `UPDATE_COMPLETE`
 - Live HTML check confirms legend text `Advisor Calendar Conflict`
+
+---
+
+Turn 156
+User:
+When we are doing UI changes to the portal. We should figure out a more efficient way to make changes, and do a visual test locally. Pushing it to cloud each time to reload a webpage takes long. We also dont necessarily need to pull real data to test what various scenarios will look like. Can you create a local test capability where we can just open the page as it will get rendered in a browser and make sure it looks good with representative data before we push. It will help us iterate faster. Think through creation of the static representative data set that looks like the calendar we retrieve from google. The data set should have a few meetings with and without conflicts, accepted and tenative status and any other such variations so we can see all the scenarios. Then figure out how to generate the page locally so we can load it in a local browser to check visual representation.
+
+Assistant:
+Implemented local UI preview workflow for `/availability` using representative fixture data, without cloud deploy.
+
+Changes:
+- Added preview fixture:
+  - `app/fixtures/availability-preview.json`
+  - Includes open/busy periods, client-included meetings, accepted/tentative/pending statuses, and overlapping non-client conflicts.
+- Added local renderer script:
+  - `app/scripts/preview-availability.mjs`
+  - Invokes `createPortalHandler` with dependency overrides and fixture-backed data.
+  - Generates real availability HTML to `tmp/availability-preview.html`.
+  - Supports `--open`, `--week-offset`, `--fixture`, and `--output` flags.
+- Added npm scripts:
+  - `app/package.json`
+    - `preview:availability`
+    - `preview:availability:watch`
+    - `preview:availability:open`
+- Added docs:
+  - `README.md` section "Local UI Preview (No Deploy)" with commands and options.
+- Added ignore rule:
+  - `.gitignore` now ignores `tmp/` preview output.
+
+Validation:
+- Preview generation: `cd app && npm run preview:availability` -> success, HTML written to `tmp/availability-preview.html`.
+- Test suite: `cd app && npm test` -> `73/73` passing.
+
+---
+
+Turn 157
+User:
+in the data set, add a couple meetings that are 1 hour and 2 and half hours
+
+Assistant:
+Updated the local preview fixture with two additional client meetings:
+- `One Hour Strategy Session` on Tue `13:00-14:00` (60 minutes, accepted)
+- `Two and a Half Hour Workshop` on Wed `10:30-13:00` (150 minutes, tentative)
+
+Files changed:
+- `app/fixtures/availability-preview.json`
+
+Validation:
+- Regenerated preview HTML: `cd app && npm run preview:availability`
+- Verified both meetings appear in output: `tmp/availability-preview.html`
