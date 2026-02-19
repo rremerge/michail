@@ -3567,3 +3567,120 @@ No that is correct behavior according to PRD. So no change needed to PRD or code
 
 Assistant:
 Acknowledged. No PRD or code changes were made for this step.
+
+---
+
+Turn 151
+User:
+good time to create a checkpoint and checkin to git. Then we can go further.
+
+Assistant:
+Created checkpoint commit and pushed to GitHub:
+- Commit: `4ff3372`
+- Message: `feat: checkpoint FR-17 inclusion rules and advisor portal enhancements`
+- Push: `origin/main` updated from `22255ff` to `4ff3372`
+- Validation before commit: `cd app && node --test` -> `73/73` passing
+
+---
+
+Turn 152
+User:
+ok lets do a little UI cleanup now. For the client calendar view. There are two columns shown for each date. "Local Timezone" and "Advisor Timezone" . Do the following things:
+1. Change the title of the second column from "Advisor Timezone" to  "Advisor Calendar". 
+2. Reduce the column width of the first column for "Local Timezone" to 30% of its current size, and allocate that space to the second  column that has "Advisor Calendar".
+
+Assistant:
+Implemented UI cleanup for the availability calendar view:
+- `app/src/portal-handler.js`
+  - Changed second sub-header title to `Advisor Calendar`
+  - Adjusted per-day column widths:
+    - local column: `29px` (about 30% of previous `98px`)
+    - advisor column: `167px` (absorbs remaining width)
+- `app/test/portal-handler.test.js`
+  - Added assertion for `Advisor Calendar` header presence
+
+Validation:
+- Local tests: `cd app && node --test` -> `73/73` passing
+- Deployed stack: `calendar-agent-spike-dev` in `us-east-1` -> `UPDATE_COMPLETE`
+- Live HTML check confirms:
+  - `Advisor Calendar` header appears
+  - CSS widths include `local: 29px`, `advisor: 167px`
+
+---
+
+Turn 153
+User:
+visually it changed a little bit, but not really. The first column should be much narrower. Maybe the style sheet is expanding it to accomodate the full title of "Local timezone (America/Los_Angeles)" in a single row. Splitting it in two rows in the header may help?
+
+Assistant:
+Implemented layout tightening for the local column and two-line local header rendering.
+
+Changes:
+- `app/src/portal-handler.js`
+  - Local sub-header now renders as two lines:
+    - title: `Local timezone`
+    - zone line: browser timezone value
+  - Added fixed table layout to enforce column widths:
+    - `.calendar-grid { table-layout: fixed; }`
+  - Kept narrow local column and widened advisor column:
+    - local header/cells: `29px` (`min/max` constrained)
+    - advisor header/cells: `167px`
+  - Added local header/title styles and local slot wrapping behavior.
+  - Updated browser script to set local header via DOM nodes (`local-header-title` + `local-header-zone`) instead of one long text string.
+
+Validation:
+- Local tests: `cd app && node --test` -> `73/73` passing
+- Deployed stack: `calendar-agent-spike-dev` in `us-east-1` -> `UPDATE_COMPLETE`
+- Live HTML check confirms:
+  - `table-layout: fixed`
+  - two-line local header spans
+  - narrow local column width constraints active
+
+---
+
+Turn 154
+User:
+it does have two rows that looks good. But the first column size visually has not changed on the page. Even with a hard refresh, chrome is rendering the "Local timezone" column quite wide.
+
+Assistant:
+Implemented explicit column-group width enforcement to ensure Chrome honors the ratio per day.
+
+Changes:
+- `app/src/portal-handler.js`
+  - Added `<colgroup>` with per-day width percentages:
+    - local column: `15%` of total table width per day pair
+    - advisor column: `35%` of total table width per day pair
+  - Kept `table-layout: fixed` and two-line local header.
+- `app/test/portal-handler.test.js`
+  - Added assertions for `<colgroup>` and expected `15.000%` / `35.000%` column widths.
+
+Validation:
+- Local tests: `cd app && node --test` -> `73/73` passing
+- Deployed stack: `calendar-agent-spike-dev` in `us-east-1` -> `UPDATE_COMPLETE`
+- Live HTML check confirms:
+  - `<colgroup>` present
+  - `col-local` width `15.000%`
+  - `col-advisor` width `35.000%`
+
+---
+
+Turn 155
+User:
+much better now. Another small fix. When there is a conflict, instead of the words "Also busy" , say "Potential conflict". And in the legend bar replace the words "Overlapping Busy" with "Advisor Calendar Conflict"
+
+Assistant:
+Implemented wording updates in availability view:
+- `app/src/portal-handler.js`
+  - Overlap pill text changed:
+    - from `Also busy`
+    - to `Potential conflict`
+  - Legend overlap label changed:
+    - from `Overlapping Busy`
+    - to `Advisor Calendar Conflict`
+- `app/test/portal-handler.test.js`
+  - Updated overlap text assertion to `Potential conflict`
+
+Validation:
+- Local tests: `cd app && node --test` -> `73/73` passing
+- Deployed stack: `calendar-agent-spike-dev` in `us-east-1` -> `UPDATE_COMPLETE`
+- Live HTML check confirms legend text `Advisor Calendar Conflict`

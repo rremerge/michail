@@ -862,9 +862,16 @@ function buildAvailabilityPage({
   const daySubHeaders = calendarModel.days
     .map(
       () =>
-        `<th class="sub-header local-time-header">Local timezone</th><th class="sub-header advisor-time-header">Advisor timezone (${escapeHtml(
-          hostTimezone
-        )})</th>`
+        '<th class="sub-header local-time-header"><span class="local-header-title">Local timezone</span><span class="local-header-zone">Detecting...</span></th><th class="sub-header advisor-time-header">Advisor Calendar</th>'
+    )
+    .join("");
+  const dayCount = Math.max(1, calendarModel.days.length);
+  const localColumnPercent = (30 / dayCount).toFixed(3);
+  const advisorColumnPercent = (70 / dayCount).toFixed(3);
+  const dayColumnGroup = calendarModel.days
+    .map(
+      () =>
+        `<col class="col-local" style="width:${localColumnPercent}%;" /><col class="col-advisor" style="width:${advisorColumnPercent}%;" />`
     )
     .join("");
   const bodyRows = calendarModel.rows
@@ -874,7 +881,7 @@ function buildAvailabilityPage({
           const clientPill = slot.hasClientMeeting
             ? `<div class="slot-pill client-${slot.clientMeetingState}">Your meeting (${slot.clientMeetingState === "accepted" ? "accepted" : "pending"})</div>`
             : "";
-          const overlapPill = slot.hasOverlap ? '<div class="slot-pill overlap">Also busy</div>' : "";
+          const overlapPill = slot.hasOverlap ? '<div class="slot-pill overlap">Potential conflict</div>' : "";
           const meetingDetails = slot.hasClientMeeting
             ? `<div class="client-meeting-list">${slot.clientMeetings
                 .map(
@@ -918,6 +925,9 @@ function buildAvailabilityPage({
     calendarModel.days.length > 0 && calendarModel.rows.length > 0
       ? `<div class="calendar-scroll">
           <table class="calendar-grid">
+            <colgroup>
+              ${dayColumnGroup}
+            </colgroup>
             <thead>
               <tr>
                 ${dayGroupHeaders}
@@ -973,7 +983,9 @@ function buildAvailabilityPage({
       .nav-link:hover { text-decoration: underline; }
       .nav-link.disabled { color: #94a3b8; pointer-events: none; }
       .calendar-scroll { overflow: auto; border: 1px solid #d1d5db; border-radius: 10px; background: #fff; }
-      .calendar-grid { width: 100%; min-width: 900px; border-collapse: separate; border-spacing: 0; }
+      .calendar-grid { width: 100%; min-width: 900px; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+      .calendar-grid col.col-local { width: 29px; }
+      .calendar-grid col.col-advisor { width: 167px; }
       .calendar-grid thead th { background: #f1f5f9; z-index: 2; border-bottom: 1px solid #cbd5e1; }
       .calendar-grid th, .calendar-grid td { border-right: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; padding: 8px; vertical-align: top; }
       .calendar-grid th:last-child, .calendar-grid td:last-child { border-right: 0; }
@@ -984,7 +996,13 @@ function buildAvailabilityPage({
       .weekday { font-size: 12px; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; }
       .date { font-size: 14px; font-weight: 700; color: #0f172a; }
       .sub-header { width: 98px; min-width: 98px; text-align: left; font-size: 11px; color: #475569; font-weight: 700; }
+      .sub-header.local-time-header { width: 29px; min-width: 29px; max-width: 29px; white-space: normal; }
+      .sub-header.advisor-time-header { width: 167px; min-width: 167px; }
+      .local-header-title { display: block; line-height: 1.2; }
+      .local-header-zone { display: block; margin-top: 2px; line-height: 1.2; font-size: 10px; font-weight: 600; color: #64748b; overflow-wrap: anywhere; }
       .slot { width: 98px; min-width: 98px; min-height: 60px; }
+      .slot.local-slot { width: 29px; min-width: 29px; }
+      .slot.advisor-slot { width: 167px; min-width: 167px; }
       .slot.open { background: #f4fbf6; }
       .slot.busy { background: #f8fafc; }
       .slot.client-accepted { background: #ecfdf5; }
@@ -998,6 +1016,7 @@ function buildAvailabilityPage({
       .slot-pill.overlap { color: #991b1b; background: #fee2e2; border-color: #fca5a5; margin-top: 4px; }
       .slot-host { margin-top: 6px; font-size: 11px; font-weight: 700; color: #0f172a; }
       .slot-local { margin-top: 6px; font-size: 11px; font-weight: 600; color: #475569; }
+      .local-slot .slot-local { white-space: normal; line-height: 1.25; overflow-wrap: anywhere; }
       .client-meeting-list { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
       .client-meeting-item { font-size: 11px; line-height: 1.3; display: flex; flex-direction: column; gap: 2px; padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 6px; background: #ffffff; }
       .meeting-title { font-weight: 600; color: #0f172a; word-break: break-word; }
@@ -1028,7 +1047,7 @@ function buildAvailabilityPage({
         <span class="legend-pill busy">Busy</span>
         <span class="legend-pill client-accepted">Your Meeting Accepted</span>
         <span class="legend-pill client-pending">Your Meeting Pending</span>
-        <span class="legend-pill overlap">Overlapping Busy</span>
+        <span class="legend-pill overlap">Advisor Calendar Conflict</span>
       </div>
       <p class="summary">Open slots: ${calendarModel.openSlotCount} | Busy blocks: ${calendarModel.busySlotCount} | Your meeting slots: ${calendarModel.clientMeetingSlotCount} | Overlaps: ${calendarModel.clientOverlapSlotCount}</p>
       <div class="week-nav">
@@ -1041,6 +1060,19 @@ function buildAvailabilityPage({
     </main>
     <script>
       (function () {
+        function setLocalHeaderLabel(headerCell, timezoneLabel) {
+          headerCell.innerHTML = '';
+          var title = document.createElement('span');
+          title.className = 'local-header-title';
+          title.textContent = 'Local timezone';
+          headerCell.appendChild(title);
+
+          var zone = document.createElement('span');
+          zone.className = 'local-header-zone';
+          zone.textContent = timezoneLabel;
+          headerCell.appendChild(zone);
+        }
+
         var localTimezone = '';
         try {
           localTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
@@ -1055,7 +1087,7 @@ function buildAvailabilityPage({
             timezoneCode.textContent = 'Unavailable';
           }
           localHeaders.forEach(function (headerCell) {
-            headerCell.textContent = 'Local timezone';
+            setLocalHeaderLabel(headerCell, 'Unavailable');
           });
           return;
         }
@@ -1064,7 +1096,7 @@ function buildAvailabilityPage({
           timezoneCode.textContent = localTimezone;
         }
         localHeaders.forEach(function (headerCell) {
-          headerCell.textContent = 'Local timezone (' + localTimezone + ')';
+          setLocalHeaderLabel(headerCell, localTimezone);
         });
 
         var timeFormatter = new Intl.DateTimeFormat('en-US', {

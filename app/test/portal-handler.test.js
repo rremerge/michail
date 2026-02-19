@@ -1153,8 +1153,12 @@ test("availability page renders open slots for valid short token", async () => {
     assert.equal(response.body.includes('id="local-time-column-label"'), false);
     assert.match(response.body, /Advisor timezone/);
     assert.match(response.body, /Local timezone/);
+    assert.match(response.body, /Advisor Calendar/);
     assert.match(response.body, /advisor-time-header/);
     assert.match(response.body, /local-time-header/);
+    assert.match(response.body, /<colgroup>/);
+    assert.match(response.body, /class="col-local" style="width:15\.000%;"/);
+    assert.match(response.body, /class="col-advisor" style="width:35\.000%;"/);
     assert.match(response.body, /local-slot/);
     assert.match(response.body, /slot-local/);
     assert.match(response.body, /slot-host/);
@@ -1515,7 +1519,7 @@ test("availability page shows client meeting details with accepted/pending and o
     assert.match(response.body, /Your meeting \(pending\)/);
     assert.match(response.body, /Client Kickoff/);
     assert.match(response.body, /Pending Review/);
-    assert.match(response.body, /Also busy/);
+    assert.match(response.body, /Potential conflict/);
     assert.match(response.body, /client-accepted/);
     assert.match(response.body, /client-pending/);
     assert.match(response.body, /Overlaps: [1-9]/);
