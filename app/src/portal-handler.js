@@ -1067,11 +1067,19 @@ function buildAvailabilityPage({
       code { background: #eef2ff; border-radius: 4px; padding: 1px 4px; }
       .muted { color: #4b5563; margin-top: 0; }
       .hidden-topline { display: none; }
-      .brand-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
-      .brand-header .page-title { margin: 0; }
+      .brand-header {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 6px;
+      }
+      .brand-header .brand-spacer { grid-column: 1; }
+      .brand-header .page-title { grid-column: 2; margin: 0; text-align: center; }
+      .brand-header .brand-logo { grid-column: 3; justify-self: end; }
       .brand-logo {
         display: block;
-        height: 68px;
+        height: 61px;
         width: auto;
         max-width: 260px;
         object-fit: contain;
@@ -1080,7 +1088,9 @@ function buildAvailabilityPage({
         border-radius: 10px;
         padding: 4px 8px;
       }
-      .legend { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; color: #374151; font-size: 14px; }
+      .availability-intro { text-align: center; }
+      .availability-intro .muted { text-align: center; }
+      .legend { display: flex; align-items: center; justify-content: center; gap: 12px; margin-bottom: 14px; color: #374151; font-size: 14px; flex-wrap: wrap; }
       .legend-pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font-weight: 600; font-size: 12px; border: 1px solid; }
       .legend-pill.open { background: #e8f5e9; color: #065f46; border-color: #9dd7a6; }
       .legend-pill.busy { background: #eceff1; color: #374151; border-color: #cbd5e1; }
@@ -1153,13 +1163,14 @@ function buildAvailabilityPage({
         .calendar-carousel { gap: 6px; }
         .carousel-nav { width: 30px; height: 30px; }
         .calendar-days { gap: 14px; }
-        .brand-logo { height: 60px; max-width: 220px; }
+        .brand-logo { height: 54px; max-width: 220px; }
       }
     </style>
   </head>
   <body>
     <main>
       <header class="brand-header">
+        <span class="brand-spacer" aria-hidden="true"></span>
         <h1 class="page-title">Available Times</h1>
         <img
           id="brand-logo"
@@ -1169,14 +1180,16 @@ function buildAvailabilityPage({
           alt="LetsConnect.ai logo"
         />
       </header>
-      ${
-        clientDisplayName
-          ? `<p class="muted">Availability for <code>${escapeHtml(clientDisplayName)}</code></p>`
-          : ""
-      }
-      <p class="muted">Please find a slot that works for you and send a calendar invitation to the advisor.</p>
-      <p class="muted">Advisor timezone: <code>${escapeHtml(hostTimezone)}</code> | Local timezone: <code id="local-timezone-code">Detecting...</code></p>
-      <p class="muted hidden-topline" aria-hidden="true">Link expires: ${escapeHtml(expiresAtLabel)} (${escapeHtml(hostTimezone)})</p>
+      <section class="availability-intro">
+        ${
+          clientDisplayName
+            ? `<p class="muted">Availability for <code>${escapeHtml(clientDisplayName)}</code></p>`
+            : ""
+        }
+        <p class="muted">Please find a slot that works for you and send a calendar invitation to the advisor.</p>
+        <p class="muted">Advisor timezone: <code>${escapeHtml(hostTimezone)}</code> | Local timezone: <code id="local-timezone-code">Detecting...</code></p>
+        <p class="muted hidden-topline" aria-hidden="true">Link expires: ${escapeHtml(expiresAtLabel)} (${escapeHtml(hostTimezone)})</p>
+      </section>
       <div class="legend">
         <span class="legend-pill open">Open</span>
         <span class="legend-pill busy">Busy</span>
@@ -1191,7 +1204,6 @@ function buildAvailabilityPage({
         ${nextButton}
       </div>
       ${availabilityBody}
-      <p class="note">Reply to the email with the time that works best and the agent will continue the booking flow.</p>
       <footer class="site-footer">
         <p class="copyright">${escapeHtml(BRAND_COPYRIGHT_NOTICE)}</p>
         <p id="powered-by" class="powered-by hidden">${escapeHtml(BRAND_POWERED_BY_NOTICE)}</p>
