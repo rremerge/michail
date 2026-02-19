@@ -21,3 +21,6 @@ cdk.out/
 .npm-cache/
 .gcloud/
 tmp/
+
+# Sensitive local docs
+docs/conversation-transcript.txt
