@@ -35,6 +35,8 @@ test("advisor portal home serves html", async () => {
     assert.equal(response.statusCode, 200);
     assert.match(response.headers["content-type"], /text\/html/);
     assert.match(response.body, /Connected Calendars/);
+    assert.match(response.body, /id="portalBrandLogo"/);
+    assert.match(response.body, /Copyright \(C\) 2026\. RR Emerge LLC/);
   } finally {
     if (previousConnectionsTable === undefined) {
       delete process.env.CONNECTIONS_TABLE_NAME;
@@ -1142,6 +1144,8 @@ test("availability page renders open slots for valid short token", async () => {
     assert.equal(response.statusCode, 200);
     assert.match(response.headers["content-type"], /text\/html/);
     assert.match(response.body, /Available Times/);
+    assert.match(response.body, /id="brand-logo"/);
+    assert.match(response.body, /Copyright \(C\) 2026\. RR Emerge LLC/);
     assert.match(response.body, /Please find a slot that works for you and send a calendar invitation to the advisor\./);
     assert.match(response.body, /class="summary" aria-hidden="true">&nbsp;<\/p>/);
     assert.match(response.body, /calendar-carousel/);

@@ -4033,3 +4033,198 @@ great go ahead
 
 Assistant:
 Ran tests, then checked in, pushed to GitHub, and updated the AWS cloud stack with the latest availability UI changes.
+
+---
+
+Turn 173
+User:
+Lets get some branding copyright etc in the right places on both, Advisor portal and availability view. Update the PRD to say that whenever a webpage is displayed it must always display a copyright notice the agent company. "Copyright (C) 2026. RR Emerge LLC". The top of both the pages should have a logo for letsconnect.ai displayed by default. Dont make it too big. It should fit nicely with the pages as they have been designed.  It should be possible to replace the logo easily if the advisor wishes to change it by uploading it to the advisor portal (allow whitelabeling). If the advisors logo is used, then the bottom copyright notice should also say "Powered by LetsConnect.ai" .  Update the PRD for branding and whitelabel guidelines. Then implement local only so we can see what it looks like.
+
+Assistant:
+Implemented local-only branding and white-label support for both advisor portal and availability view, and updated PRD requirements.
+
+Changes:
+- `docs/prd.md`
+  - Added `FR-18 Web Branding and White-Labeling` with requirements for default logo, legal footer, advisor logo override, powered-by behavior, and fallback behavior.
+  - Added branding consistency NFR.
+  - Added branding config validation requirement under data/policy requirements.
+  - Added MVP scope item and acceptance criteria coverage for branding.
+  - Appended branding addendum text to the user-story reference section.
+
+- `app/src/portal-handler.js`
+  - Added shared branding constants:
+    - `BRAND_STORAGE_KEY`
+    - `BRAND_COPYRIGHT_NOTICE`
+    - `BRAND_POWERED_BY_NOTICE`
+    - `DEFAULT_BRAND_LOGO_DATA_URI`
+  - Availability page:
+    - Added top logo header (`id="brand-logo"`).
+    - Added footer legal text + hidden powered-by line (`id="powered-by"`).
+    - Added client-side branding loader from localStorage; powered-by shows only when advisor custom logo exists.
+  - Advisor portal page:
+    - Added top logo header (`id="portalBrandLogo"`).
+    - Added Branding card with logo preview, file upload, apply/reset buttons.
+    - Added localStorage-based white-label save/reset behavior with validation (image-only, max 1MB).
+    - Added footer legal text + powered-by line (`id="portalPoweredBy"`) shown only for custom logo.
+
+- Local preview tooling:
+  - Added `app/scripts/preview-advisor.mjs` to generate advisor portal HTML locally.
+  - Added npm scripts:
+    - `preview:advisor`
+    - `preview:advisor:open`
+
+Validation:
+- `cd app && npm test` -> `74/74` passing.
+- Local previews generated:
+  - `tmp/advisor-preview.html`
+  - `tmp/availability-preview.html`
+- Verified required branding strings in both preview HTML files.
+
+Notes:
+- Local-only implementation uses browser localStorage for white-label logo preview/persistence to enable fast UI iteration without cloud deployment.
+
+---
+
+Turn 174
+User:
+letsconnect.ai default logo is in the base directory for the source. Please move it to the appropriate place and use it.
+
+Assistant:
+Moved the default logo into app assets and wired the app to use it as the default branding source.
+
+Changes:
+- Moved file:
+  - `letsConnectLogo.png` -> `app/assets/letsconnect-logo.png`
+- Updated `app/src/portal-handler.js`:
+  - Added filesystem/path imports.
+  - Added startup loader to read `app/assets/letsconnect-logo.png` and convert it to a PNG data URI.
+  - Replaced hardcoded inline SVG as primary default logo with the PNG asset-backed data URI.
+  - Kept the previous SVG as fallback if the PNG asset cannot be read.
+
+Validation:
+- `cd app && npm test` -> `74/74` passing.
+- Regenerated local previews:
+  - `tmp/advisor-preview.html`
+  - `tmp/availability-preview.html`
+- Verified previews now contain `data:image/png;base64,...` as the default logo source.
+
+---
+
+Turn 175
+User:
+lets also center the copyright notices at the bottom.
+
+Assistant:
+Centered footer legal text on both pages.
+
+Changes:
+- `app/src/portal-handler.js`
+  - Updated availability-view footer CSS:
+    - `.site-footer` now includes `text-align: center;`
+  - Updated advisor-portal footer CSS:
+    - `.site-footer` now includes `text-align: center;`
+
+Validation:
+- `cd app && npm test` -> `74/74` passing.
+- Regenerated local previews:
+  - `tmp/advisor-preview.html`
+  - `tmp/availability-preview.html`
+
+---
+
+Turn 176
+User:
+move the logo to the right since there is plenty of whitespace there, and leave it in its original size.
+
+Assistant:
+Shifted the top logo alignment to the right on both pages without changing logo dimensions.
+
+Changes:
+- `app/src/portal-handler.js`
+  - Availability page header CSS:
+    - `.brand-header` now uses `justify-content: flex-end;`
+  - Advisor portal header CSS:
+    - `.portal-brand-header` now uses `justify-content: flex-end;`
+
+Validation:
+- `cd app && npm test` -> `74/74` passing.
+- Regenerated local previews:
+  - `tmp/advisor-preview.html`
+  - `tmp/availability-preview.html`
+
+---
+
+Turn 177
+User:
+The line for the logo is empty. Lets have the title start at the top.. the logo can be to the right of the page title "Available Times". For the Advisor portal, add a title "Advisor Portal" at the top
+
+Assistant:
+Updated both page headers so title and logo share the same top row.
+
+Changes:
+- `app/src/portal-handler.js`
+  - Availability page:
+    - Header now renders `Available Times` on the left and logo on the right in one row.
+    - Removed separate standalone `<h1>` below the logo row.
+    - Header layout updated to `justify-content: space-between` with top alignment.
+  - Advisor portal:
+    - Added top-page title `Advisor Portal` on the left of the logo in the header row.
+    - Updated header layout to `justify-content: space-between` with top alignment.
+    - Changed first card title from `<h1>` to `<h2>` (`Connected Calendars`) since page-level title is now at top.
+
+Validation:
+- `cd app && npm test` -> `74/74` passing.
+- Regenerated local previews:
+  - `tmp/advisor-preview.html`
+  - `tmp/availability-preview.html`
+
+---
+
+Turn 178
+User:
+make the logo height double the size allocated right now
+
+Assistant:
+Doubled the top logo height on both pages.
+
+Changes:
+- `app/src/portal-handler.js`
+  - Availability view logo CSS:
+    - `.brand-logo` height `34px` -> `68px`
+    - mobile `.brand-logo` height `30px` -> `60px`
+  - Advisor portal logo CSS:
+    - `.portal-brand-logo` height `34px` -> `68px`
+
+Validation:
+- `cd app && npm test` -> `74/74` passing.
+- Regenerated local previews:
+  - `tmp/advisor-preview.html`
+  - `tmp/availability-preview.html`
+
+---
+
+Turn 179
+User:
+put a light bounding box line around the logo with rounded corners.
+
+Assistant:
+Added a subtle rounded bordered container style directly on the top logos for both pages.
+
+Changes:
+- `app/src/portal-handler.js`
+  - Availability top logo (`.brand-logo`):
+    - Added `background: #ffffff`
+    - Added light border `1px solid #d1d5db`
+    - Added `border-radius: 10px`
+    - Added `padding: 4px 8px`
+  - Advisor portal top logo (`.portal-brand-logo`):
+    - Added `background: #ffffff`
+    - Added light border `1px solid #d0d7e2`
+    - Added `border-radius: 10px`
+    - Added `padding: 4px 8px`
+
+Validation:
+- `cd app && npm test` -> `74/74` passing.
+- Regenerated local previews:
+  - `tmp/advisor-preview.html`
+  - `tmp/availability-preview.html`

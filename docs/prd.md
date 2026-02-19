@@ -157,6 +157,14 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 4. If a client-included meeting overlaps with additional non-client busy time, the slot shall show both a client-included meeting indicator and an overlapping busy indicator.
 5. Non-client meeting details shall remain hidden.
 
+### FR-18 Web Branding and White-Labeling
+1. Every rendered web page in this product (advisor portal and client availability view) shall display a legal footer notice: `Copyright (C) 2026. RR Emerge LLC`.
+2. Advisor portal and client availability pages shall display a default `letsconnect.ai` logo at the top of the page.
+3. Advisor portal shall provide a simple branding control to upload and apply an advisor logo for white-label display.
+4. If an advisor-custom logo is active, the page footer shall additionally display `Powered by LetsConnect.ai`.
+5. Branding assets and behavior shall be designed so the advisor logo can be replaced without code changes.
+6. If no advisor logo is configured, the system shall automatically fall back to the default `letsconnect.ai` logo.
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -173,6 +181,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 10. Advisor client-directory queries must support at least 10,000 client identities with paginated response p95 <= 2 seconds for first-page loads.
 11. Access revocation SLA: deleted/blocked clients must lose availability-page access within 5 minutes.
 12. Prompt-injection resilience: high-risk injection attempts shall be blocked from changing system/tool behavior and shall trigger fallback handling in <= 5 seconds p95.
+13. Branding consistency: all web pages must render required legal footer text and deterministic default branding when no custom advisor branding is configured.
 
 ## 8. Data and Policy Requirements
 1. Persist only non-content metadata required for operations (for example: request ids, workflow status, provider event ids, policy decision outcomes).
@@ -185,6 +194,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 8. Do not persist client email/calendar content in client-directory records; references must remain metadata-only.
 9. On client deletion, revoke active availability tokens/links and keep only minimal suppression metadata required to enforce blocked/deleted state.
 10. For security analysis, store only metadata-level injection indicators and guardrail outcomes; never persist raw adversarial prompt content after task completion.
+11. Branding configuration shall store only the minimum data needed for rendering (for example: advisor branding preference and logo reference/content), with validation for image type and size.
 
 ## 9. Success Metrics
 1. Reduce manual scheduling time by >= 70% within first 60 days.
@@ -212,6 +222,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 9. Client cohort/day-visibility policy controls, including delete/block access state.
 10. Prompt-injection guardrails for inbound client email content.
 11. Client-owned meeting overlay in availability view (detail + accepted/pending + overlap indicators).
+12. Branded web experience with default letsconnect.ai logo, legal footer notice, and advisor white-label logo override.
 
 ## 11. Out of Scope for MVP
 1. LinkedIn integration.
@@ -249,6 +260,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 17. Given a policy defines granular windows (for example Monday 12:00 PM-4:00 PM), when the client requests or views availability, then only slots within that configured time window are shown and suggested.
 18. Given a client is included in meetings on the advisor calendar, when the client opens the availability view, then client-included meetings are shown with detail and acceptance-state color indicators while non-client meetings remain detail-hidden.
 19. Given a client-included meeting overlaps other busy time, when rendering that slot, then the slot indicates both client-included meeting presence and overlapping busy state.
+20. Given advisor and client web pages are rendered, when page loads, then required legal footer notice is visible, default letsconnect.ai logo is shown unless advisor branding is configured, and `Powered by LetsConnect.ai` appears when advisor custom logo is active.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
@@ -272,3 +284,5 @@ The Advisor would like to create and manage multiple access policy groups direct
 The Advisor would also like future support for more granular availability configuration than only days of the week, such as defining Monday 12:00 PM-4:00 PM and Tuesday 9:00 AM-5:00 PM as bookable windows.
 
 When a client is included in a meeting on the advisor calendar, the availability view should show meeting detail for that client-included meeting instead of only showing the slot as busy. If the advisor has accepted the meeting, show it in green; if not accepted, show it in yellow. If the client-included meeting overlaps with other busy events, the slot should clearly indicate both the busy overlap and the client-included scheduled meeting. For display classification, inclusion defaults to attendee/organizer domain matching, except for common free-email domains (`live.com`, `gmail.com`, `mail.google.com`, `hotmail.com`, `mail.ru`, `yahoo.com`) where exact email-address matching is required. A client does not need to be the creator/owner of the meeting; attendee inclusion is sufficient.
+
+For branding, every webpage should always show a legal copyright notice (`Copyright (C) 2026. RR Emerge LLC`). The advisor portal and client availability page should show a default letsconnect.ai logo at the top, and the advisor should be able to upload and use their own logo for white-labeling. When advisor logo branding is active, the footer should also include `Powered by LetsConnect.ai`.

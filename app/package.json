@@ -10,6 +10,8 @@
   "scripts": {
     "test": "node --test",
     "check": "node --test",
+    "preview:advisor": "node scripts/preview-advisor.mjs",
+    "preview:advisor:open": "node scripts/preview-advisor.mjs --open",
     "preview:availability": "node scripts/preview-availability.mjs",
     "preview:availability:watch": "node --watch scripts/preview-availability.mjs",
     "preview:availability:open": "node scripts/preview-availability.mjs --open",

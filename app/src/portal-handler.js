@@ -1,4 +1,7 @@
 import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createRuntimeDeps } from "./runtime-deps.js";
 import { DateTime, Interval } from "luxon";
 import { parseGoogleOauthSecret, lookupGoogleBusyIntervals, lookupGoogleClientMeetings } from "./google-adapter.js";
@@ -26,6 +29,29 @@ function parseClampedIntEnv(value, fallback, minimum, maximum) {
 }
 
 const AVAILABILITY_VIEW_DAYS = 7;
+const BRAND_STORAGE_KEY = "letsconnect.whitelabel.logo.dataurl";
+const BRAND_COPYRIGHT_NOTICE = "Copyright (C) 2026. RR Emerge LLC";
+const BRAND_POWERED_BY_NOTICE = "Powered by LetsConnect.ai";
+const DEFAULT_BRAND_LOGO_FALLBACK_DATA_URI = `data:image/svg+xml;utf8,${encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" width="420" height="64" viewBox="0 0 420 64"><rect x="0.5" y="0.5" width="419" height="63" rx="14" fill="#ffffff" stroke="#cbd5e1"/><rect x="14" y="14" width="36" height="36" rx="10" fill="#0ea5e9"/><circle cx="26" cy="32" r="6" fill="#ffffff"/><circle cx="38" cy="32" r="6" fill="#ffffff"/><text x="62" y="40" font-family="Arial, sans-serif" font-size="24" font-weight="700" fill="#0f172a">letsconnect.ai</text></svg>'
+)}`;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DEFAULT_BRAND_LOGO_FILE_PATH = path.resolve(__dirname, "../assets/letsconnect-logo.png");
+const DEFAULT_BRAND_LOGO_DATA_URI = loadDefaultBrandLogoDataUri();
+
+function loadDefaultBrandLogoDataUri() {
+  try {
+    const imageBytes = fs.readFileSync(DEFAULT_BRAND_LOGO_FILE_PATH);
+    if (!imageBytes.length) {
+      return DEFAULT_BRAND_LOGO_FALLBACK_DATA_URI;
+    }
+
+    return `data:image/png;base64,${imageBytes.toString("base64")}`;
+  } catch {
+    return DEFAULT_BRAND_LOGO_FALLBACK_DATA_URI;
+  }
+}
 
 function normalizeTimezone(value, fallbackTimezone) {
   const candidate = String(value ?? "").trim();
@@ -1041,6 +1067,19 @@ function buildAvailabilityPage({
       code { background: #eef2ff; border-radius: 4px; padding: 1px 4px; }
       .muted { color: #4b5563; margin-top: 0; }
       .hidden-topline { display: none; }
+      .brand-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+      .brand-header .page-title { margin: 0; }
+      .brand-logo {
+        display: block;
+        height: 68px;
+        width: auto;
+        max-width: 260px;
+        object-fit: contain;
+        background: #ffffff;
+        border: 1px solid #d1d5db;
+        border-radius: 10px;
+        padding: 4px 8px;
+      }
       .legend { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; color: #374151; font-size: 14px; }
       .legend-pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font-weight: 600; font-size: 12px; border: 1px solid; }
       .legend-pill.open { background: #e8f5e9; color: #065f46; border-color: #9dd7a6; }
@@ -1106,16 +1145,30 @@ function buildAvailabilityPage({
       .meeting-state.pending { color: #854d0e; }
       .empty { background: #fff; border: 1px solid #d1d5db; border-radius: 10px; padding: 16px; }
       .note { font-size: 13px; color: #4b5563; margin-top: 16px; }
+      .site-footer { margin-top: 18px; padding-top: 10px; border-top: 1px solid #d1d5db; text-align: center; }
+      .copyright { margin: 0; font-size: 12px; color: #475569; font-weight: 600; }
+      .powered-by { margin: 4px 0 0; font-size: 12px; color: #64748b; }
+      .powered-by.hidden { display: none; }
       @media (max-width: 768px) {
         .calendar-carousel { gap: 6px; }
         .carousel-nav { width: 30px; height: 30px; }
         .calendar-days { gap: 14px; }
+        .brand-logo { height: 60px; max-width: 220px; }
       }
     </style>
   </head>
   <body>
     <main>
-      <h1>Available Times</h1>
+      <header class="brand-header">
+        <h1 class="page-title">Available Times</h1>
+        <img
+          id="brand-logo"
+          class="brand-logo"
+          src="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+          data-default-logo="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+          alt="LetsConnect.ai logo"
+        />
+      </header>
       ${
         clientDisplayName
           ? `<p class="muted">Availability for <code>${escapeHtml(clientDisplayName)}</code></p>`
@@ -1139,9 +1192,34 @@ function buildAvailabilityPage({
       </div>
       ${availabilityBody}
       <p class="note">Reply to the email with the time that works best and the agent will continue the booking flow.</p>
+      <footer class="site-footer">
+        <p class="copyright">${escapeHtml(BRAND_COPYRIGHT_NOTICE)}</p>
+        <p id="powered-by" class="powered-by hidden">${escapeHtml(BRAND_POWERED_BY_NOTICE)}</p>
+      </footer>
     </main>
     <script>
       (function () {
+        function applyBrandingFromStorage() {
+          var logoNode = document.getElementById('brand-logo');
+          var poweredByNode = document.getElementById('powered-by');
+          if (!logoNode) {
+            return;
+          }
+
+          var defaultLogo = logoNode.getAttribute('data-default-logo') || logoNode.getAttribute('src') || '';
+          var customLogo = '';
+          try {
+            customLogo = localStorage.getItem('${BRAND_STORAGE_KEY}') || '';
+          } catch (_error) {
+            customLogo = '';
+          }
+
+          logoNode.setAttribute('src', customLogo || defaultLogo);
+          if (poweredByNode) {
+            poweredByNode.classList.toggle('hidden', !customLogo);
+          }
+        }
+
         function setLocalHeaderLabel(headerCell, timezoneLabel) {
           headerCell.innerHTML = '';
           var title = document.createElement('span');
@@ -1377,6 +1455,7 @@ function buildAvailabilityPage({
 
         var timezoneCode = document.getElementById('local-timezone-code');
         var localHeaders = document.querySelectorAll('.local-time-header');
+        applyBrandingFromStorage();
         if (!localTimezone) {
           if (timezoneCode) {
             timezoneCode.textContent = 'Unavailable';
@@ -1819,6 +1898,19 @@ function buildAdvisorPage() {
     <title>Advisor Portal - Connected Calendars</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 24px; background: #f5f7fb; color: #1f2937; }
+      .portal-brand-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+      .portal-page-title { margin: 0; }
+      .portal-brand-logo {
+        display: block;
+        height: 68px;
+        width: auto;
+        max-width: 260px;
+        object-fit: contain;
+        background: #ffffff;
+        border: 1px solid #d0d7e2;
+        border-radius: 10px;
+        padding: 4px 8px;
+      }
       .card { background: #fff; border: 1px solid #d0d7e2; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
       h1 { margin-top: 0; }
       button { padding: 8px 12px; margin-right: 8px; cursor: pointer; }
@@ -1839,17 +1931,53 @@ function buildAdvisorPage() {
       .inline-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
       .small-button { padding: 4px 8px; font-size: 12px; }
       .small-select { padding: 4px 8px; font-size: 12px; }
+      .brand-preview { display: block; height: 34px; width: auto; max-width: 260px; border: 1px solid #d0d7e2; border-radius: 8px; background: #fff; padding: 4px 8px; }
+      .brand-status { margin-top: 10px; }
+      .site-footer { margin-top: 16px; padding-top: 10px; border-top: 1px solid #d0d7e2; text-align: center; }
+      .copyright { margin: 0; font-size: 12px; color: #475569; font-weight: 600; }
+      .powered-by { margin: 4px 0 0; font-size: 12px; color: #64748b; }
+      .powered-by.hidden { display: none; }
     </style>
   </head>
   <body>
+    <header class="portal-brand-header">
+      <h1 class="portal-page-title">Advisor Portal</h1>
+      <img
+        id="portalBrandLogo"
+        class="portal-brand-logo"
+        src="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+        data-default-logo="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+        alt="LetsConnect.ai logo"
+      />
+    </header>
+
     <div class="card">
-      <h1>Connected Calendars</h1>
+      <h2 style="margin-top:0;">Connected Calendars</h2>
       <div id="statusBanner" style="display:none"></div>
       <p class="muted">Add calendars for availability checks without manually editing AWS secrets.</p>
       <button id="addMock">Add Mock Calendar (Test)</button>
       <button id="googleConnect">Connect Google (Sign In)</button>
       <button id="logout">Logout</button>
       <span class="muted">Google flow requires app credentials configured in backend secret.</span>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0;">Branding</h2>
+      <p class="muted">Default letsconnect.ai logo is shown unless you upload an advisor logo.</p>
+      <div class="row inline-controls">
+        <img
+          id="brandLogoPreview"
+          class="brand-preview"
+          src="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+          data-default-logo="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+          alt="Current brand logo preview"
+        />
+        <input id="brandLogoFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif" />
+        <button id="saveBrandLogo">Use Uploaded Logo</button>
+        <button id="resetBrandLogo">Use LetsConnect Logo</button>
+      </div>
+      <p id="brandStatus" class="muted brand-status">Current branding: LetsConnect.ai default.</p>
+      <p class="muted">Local preview mode: uploaded logo is stored in this browser only for now.</p>
     </div>
 
     <div class="card">
@@ -1934,9 +2062,114 @@ function buildAdvisorPage() {
       <pre id="traceResult">{}</pre>
     </div>
 
+    <footer class="site-footer">
+      <p class="copyright">${escapeHtml(BRAND_COPYRIGHT_NOTICE)}</p>
+      <p id="portalPoweredBy" class="powered-by hidden">${escapeHtml(BRAND_POWERED_BY_NOTICE)}</p>
+    </footer>
+
     <script>
       let lastTrace = null;
       let policyOptions = ['default', 'weekend', 'monday'];
+      const BRAND_STORAGE_KEY = '${BRAND_STORAGE_KEY}';
+      const BRAND_MAX_BYTES = 1024 * 1024;
+
+      function getStoredBrandLogo() {
+        try {
+          return String(localStorage.getItem(BRAND_STORAGE_KEY) || '');
+        } catch (_error) {
+          return '';
+        }
+      }
+
+      function removeStoredBrandLogo() {
+        try {
+          localStorage.removeItem(BRAND_STORAGE_KEY);
+          return true;
+        } catch (_error) {
+          return false;
+        }
+      }
+
+      function storeBrandLogo(dataUrl) {
+        try {
+          localStorage.setItem(BRAND_STORAGE_KEY, dataUrl);
+          return true;
+        } catch (_error) {
+          return false;
+        }
+      }
+
+      function setBrandStatus(text, cssClass) {
+        const node = document.getElementById('brandStatus');
+        if (!node) {
+          return;
+        }
+        node.className = 'muted brand-status' + (cssClass ? ' ' + cssClass : '');
+        node.textContent = text;
+      }
+
+      function applyPortalBranding() {
+        const portalLogo = document.getElementById('portalBrandLogo');
+        const previewLogo = document.getElementById('brandLogoPreview');
+        const poweredBy = document.getElementById('portalPoweredBy');
+        const storedLogo = getStoredBrandLogo();
+        const defaultLogo =
+          (portalLogo && portalLogo.getAttribute('data-default-logo')) ||
+          (previewLogo && previewLogo.getAttribute('data-default-logo')) ||
+          '';
+        const effectiveLogo = storedLogo || defaultLogo;
+
+        if (portalLogo && effectiveLogo) {
+          portalLogo.setAttribute('src', effectiveLogo);
+        }
+        if (previewLogo && effectiveLogo) {
+          previewLogo.setAttribute('src', effectiveLogo);
+        }
+        if (poweredBy) {
+          poweredBy.classList.toggle('hidden', !storedLogo);
+        }
+
+        if (storedLogo) {
+          setBrandStatus('Current branding: advisor uploaded logo active.', 'ok');
+        } else {
+          setBrandStatus('Current branding: LetsConnect.ai default.');
+        }
+      }
+
+      function readFileAsDataUrl(file) {
+        return new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ''));
+          reader.onerror = () => reject(new Error('Unable to read selected image.'));
+          reader.readAsDataURL(file);
+        });
+      }
+
+      async function saveUploadedBrandLogo() {
+        const input = document.getElementById('brandLogoFile');
+        if (!input || !input.files || input.files.length === 0) {
+          throw new Error('Select an image file first.');
+        }
+
+        const selectedFile = input.files[0];
+        if (!String(selectedFile.type || '').startsWith('image/')) {
+          throw new Error('Only image files are allowed.');
+        }
+        if (Number(selectedFile.size || 0) > BRAND_MAX_BYTES) {
+          throw new Error('Please use a logo under 1MB.');
+        }
+
+        const dataUrl = await readFileAsDataUrl(selectedFile);
+        if (!dataUrl.startsWith('data:image/')) {
+          throw new Error('Invalid image format.');
+        }
+
+        if (!storeBrandLogo(dataUrl)) {
+          throw new Error('Unable to save logo in local browser storage.');
+        }
+
+        applyPortalBranding();
+      }
 
       function showStatusFromQuery() {
         const banner = document.getElementById('statusBanner');
@@ -2242,6 +2475,28 @@ function buildAdvisorPage() {
         await loadConnections();
       });
 
+      document.getElementById('saveBrandLogo').addEventListener('click', async () => {
+        try {
+          await saveUploadedBrandLogo();
+        } catch (error) {
+          setBrandStatus(error.message || 'Logo upload failed.', 'error');
+        }
+      });
+
+      document.getElementById('resetBrandLogo').addEventListener('click', () => {
+        const input = document.getElementById('brandLogoFile');
+        if (input) {
+          input.value = '';
+        }
+
+        if (!removeStoredBrandLogo()) {
+          setBrandStatus('Unable to clear custom logo from this browser.', 'error');
+          return;
+        }
+
+        applyPortalBranding();
+      });
+
       document.getElementById('createPolicy').addEventListener('click', async () => {
         try {
           await createPolicyPreset();
@@ -2324,6 +2579,7 @@ function buildAdvisorPage() {
         await submitAdvisorFeedback('helpful');
       });
 
+      applyPortalBranding();
       showStatusFromQuery();
       loadConnections().catch((error) => {
         console.error(error);
