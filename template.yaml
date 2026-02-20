@@ -513,6 +513,7 @@ Resources:
               Effect: Allow
               Action:
                 - dynamodb:GetItem
+                - dynamodb:PutItem
                 - dynamodb:UpdateItem
               Resource: !GetAtt ClientProfilesTable.Arn
             - Sid: ReadPolicyPresets

@@ -1048,6 +1048,135 @@ test("advisor portal updates client policy using advisor-defined custom policy",
   }
 });
 
+test("advisor portal can add a client to admission allowlist", async () => {
+  const writes = [];
+  const handler = createPortalHandler({
+    async getClientProfile(tableName, advisorId, clientId) {
+      assert.equal(tableName, "ClientProfilesTable");
+      assert.equal(advisorId, "manoj");
+      assert.equal(clientId, "newclient@example.com");
+      return null;
+    },
+    async putClientProfile(tableName, item) {
+      assert.equal(tableName, "ClientProfilesTable");
+      writes.push(item);
+    }
+  });
+
+  const previousValues = {
+    CLIENT_PROFILES_TABLE_NAME: process.env.CLIENT_PROFILES_TABLE_NAME,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    CLIENT_POLICY_PRESETS_JSON: process.env.CLIENT_POLICY_PRESETS_JSON
+  };
+
+  process.env.CLIENT_PROFILES_TABLE_NAME = "ClientProfilesTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_ID = "manoj";
+  process.env.CLIENT_POLICY_PRESETS_JSON = '{"default":["Tue","Wed"],"weekend":["Sat","Sun"],"monday":["Mon"]}';
+
+  try {
+    const response = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "POST" }
+      },
+      rawPath: "/dev/advisor/api/clients",
+      body: JSON.stringify({
+        clientEmail: "newclient@example.com",
+        clientDisplayName: "New Client",
+        policyId: "weekend"
+      })
+    });
+
+    assert.equal(response.statusCode, 201);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].clientId, "newclient@example.com");
+    assert.equal(writes[0].clientEmail, "newclient@example.com");
+    assert.equal(writes[0].policyId, "weekend");
+    assert.equal(writes[0].accessState, "active");
+    assert.equal(writes[0].admittedSource, "advisor_portal");
+    const payload = JSON.parse(response.body);
+    assert.equal(payload.created, true);
+    assert.equal(payload.client.clientEmail, "newclient@example.com");
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("advisor portal can bulk import clients into allowlist", async () => {
+  const writes = [];
+  const handler = createPortalHandler({
+    async getClientProfile(_tableName, _advisorId, clientId) {
+      if (clientId === "existing@example.com") {
+        return {
+          advisorId: "manoj",
+          clientId,
+          clientEmail: clientId,
+          clientDisplayName: "Existing Client",
+          accessState: "active",
+          policyId: "default",
+          createdAt: "2026-02-01T00:00:00.000Z"
+        };
+      }
+      return null;
+    },
+    async putClientProfile(tableName, item) {
+      assert.equal(tableName, "ClientProfilesTable");
+      writes.push(item);
+    }
+  });
+
+  const previousValues = {
+    CLIENT_PROFILES_TABLE_NAME: process.env.CLIENT_PROFILES_TABLE_NAME,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    CLIENT_POLICY_PRESETS_JSON: process.env.CLIENT_POLICY_PRESETS_JSON
+  };
+
+  process.env.CLIENT_PROFILES_TABLE_NAME = "ClientProfilesTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_ID = "manoj";
+  process.env.CLIENT_POLICY_PRESETS_JSON = '{"default":["Tue","Wed"],"weekend":["Sat","Sun"],"monday":["Mon"]}';
+
+  try {
+    const response = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "POST" }
+      },
+      rawPath: "/dev/advisor/api/clients/import",
+      body: JSON.stringify({
+        clientEmails: ["newclient@example.com", "existing@example.com"],
+        policyId: "weekend"
+      })
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(writes.length, 2);
+    assert.equal(writes[0].policyId, "weekend");
+    assert.equal(writes[1].policyId, "weekend");
+    const payload = JSON.parse(response.body);
+    assert.equal(payload.importedCount, 2);
+    assert.equal(payload.createdCount, 1);
+    assert.equal(payload.updatedCount, 1);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
 test("advisor portal settings api returns and updates advisor profile settings", async () => {
   const writes = [];
   let stored = {

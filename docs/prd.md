@@ -170,8 +170,9 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 2. The client must explicitly grant read-only calendar access for a single browser session using provider OAuth consent (for example Google) before any client-calendar fetch occurs.
 3. OAuth tokens for this feature shall be handled client-side only, with session-scoped lifetime and automatic discard on logout/session end/page close; backend storage of client OAuth refresh/access tokens for this compare feature is not allowed.
 4. Client-calendar busy windows fetched via this mode shall be compared in browser JavaScript with advisor busy/free windows to compute intersection slots open for both parties.
-5. UI shall clearly indicate that dual-availability results are computed from temporary client consent and may be disabled at any time by the client.
-6. If client consent is denied, revoked, expired, or provider API fails, the page shall gracefully fall back to advisor-only availability rendering.
+5. Backend services shall not proxy client-calendar read requests for this feature and shall not receive raw client-calendar event payloads from browser compare mode.
+6. UI shall clearly indicate that dual-availability results are computed from temporary client consent and may be disabled at any time by the client.
+7. If client consent is denied, revoked, expired, or provider API fails, the page shall gracefully fall back to advisor-only availability rendering.
 
 ### FR-20 Advisor Profile Defaults and Editable Scheduling Identity
 1. System shall initialize advisor profile defaults at first successful advisor-portal Google login:
@@ -202,6 +203,29 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 7. Default `agentEmail` shall be derived at advisor onboarding from advisor identity using `{advisor-local-part}.agent@{configured-agent-domain}` and may be changed later by advisor.
 8. If inbound destination alias does not map to a known advisor, system shall fall back to configured default advisor context for backward compatibility until strict multi-tenant routing mode is enabled.
 
+### FR-22 Client Admission Control and Unknown-Sender Blackhole
+1. The agent shall respond only to:
+   - the advisor identity for that tenant, or
+   - clients that already exist in that advisor's client directory with `active` state.
+2. Unknown senders shall receive no response (blackhole behavior), and no scheduling/LLM workflow shall execute for them.
+3. System shall support only these client-admission paths:
+   - advisor-originated email interactions (participants explicitly listed by advisor in advisor-thread context), or
+   - advisor-portal actions (single add/edit or bulk import).
+4. There shall be no automatic client creation from unknown inbound email senders.
+5. Unknown-sender events shall still produce metadata-only security traces (for example sender hash/domain, reason code, timestamp) without persisting email body content.
+6. Advisor portal shall allow advisor to review and manage admitted clients (including block/delete) without exposing unknown-sender email content.
+
+### FR-23 Advisor Cost Visibility and Advisor-Provided LLM Credentials
+1. Advisor portal shall display per-advisor LLM usage metrics, including token counts by model/provider and time window (daily/weekly/monthly).
+2. System shall provide per-advisor estimated cost views combining:
+   - LLM token-based estimates, and
+   - key infrastructure usage signals relevant to cost (for example email sends, calendar API calls, function invocations).
+3. Advisors shall be able to configure their own LLM provider API key(s) in advisor portal (BYOK), scoped per advisor.
+4. Advisor BYOK secrets shall be stored encrypted in AWS Secrets Manager and never rendered in full after save.
+5. For request processing, advisor-specific key shall be used when configured; otherwise system shall use tenant default/provider fallback per policy.
+6. If advisor key is missing, invalid, or quota-exhausted, system shall apply deterministic fallback behavior (safe template response and advisor notification) without failing silently.
+7. Cost and usage reporting shall be tenant-isolated; an advisor must not see another advisor's usage or estimated billing data.
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -223,6 +247,9 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 15. Advisor profile consistency: advisor profile defaults and updates shall propagate to email response behavior within one request cycle (no manual restart required).
 16. Multi-tenant isolation: no request may read or mutate another advisor's tenant-scoped data; all tenant resolution paths must be deterministic (session advisor identity for portal, destination agent alias for inbound email).
 17. Multi-advisor concurrency: architecture shall support at least 1,000 active advisors and 10,000+ total clients while preserving tenant isolation and response SLAs.
+18. Unknown-sender abuse control: unknown inbound senders shall be rejected in <= 2 seconds p95 without invoking LLM/calendar providers.
+19. Cost observability freshness: advisor cost/usage dashboard data shall be available with <= 15 minute lag for operational decision-making.
+20. BYOK security: advisor-provided LLM credentials shall be encrypted at rest, never logged, and access-controlled to least privilege per advisor scope.
 
 ## 8. Data and Policy Requirements
 1. Persist only non-content metadata required for operations (for example: request ids, workflow status, provider event ids, policy decision outcomes).
@@ -239,6 +266,10 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 12. For optional browser-side client-calendar compare, do not persist client calendar OAuth tokens or raw client event content on backend services; only minimal derived metadata (for example: feature-used flag and timestamp) may be recorded if needed.
 13. Persist advisor profile metadata only (`advisorId`, `inviteEmail`, `preferredName`, `timezone`, timestamps); do not store additional identity/profile content beyond scheduling needs.
 14. Persist advisor routing metadata `agentEmail` as tenant metadata and enforce uniqueness across advisors using indexed lookup; do not store additional email content.
+15. Persist client-admission metadata (admission source, advisor approver/import batch id, timestamps, state) to support allowlist enforcement and audits.
+16. Unknown-sender events may store only metadata-level suppression artifacts (for example normalized hash, domain, timestamps, reason code); raw unknown email content must not be retained.
+17. Persist per-advisor usage/cost aggregates and meter records (token totals, model/provider ids, estimated unit costs, timestamp buckets) without storing prompt or response content.
+18. Advisor BYOK LLM credentials shall be stored only in encrypted secret stores, referenced by advisor-scoped metadata pointers; plaintext key material shall not be persisted in application tables or logs.
 
 ## 9. Success Metrics
 1. Reduce manual scheduling time by >= 70% within first 60 days.
@@ -268,6 +299,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 11. Client-owned meeting overlay in availability view (detail + accepted/pending + overlap indicators).
 12. Branded web experience with default letsconnect.ai logo, legal footer notice, and advisor white-label logo override.
 13. Multi-advisor tenancy with destination-alias routing and advisor-configurable `agentEmail`.
+14. Unknown-sender admission control with blackhole response policy.
 
 ## 11. Out of Scope for MVP
 1. LinkedIn integration.
@@ -314,6 +346,9 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 25. Given inbound email is sent to `lalita.agent@agent.letsconnect.ai`, when processed, then advisor context resolves to Lalita and does not use Manoj's calendars/settings.
 26. Given advisor updates `agentEmail` in advisor portal, when value is valid and unique, then future inbound alias routing and outbound sender identity use the new value.
 27. Given advisor attempts to set `agentEmail` already assigned to another advisor, when saving settings, then system rejects update with validation error and no persistence.
+28. Given inbound email is from an unknown sender not admitted as advisor/existing client, when processed, then no response is sent and the request is suppressed with metadata-only trace.
+29. Given advisor bulk-imports clients in portal, when imported clients send scheduling requests, then agent responds normally while still blackholing non-imported unknown senders.
+30. Given advisor configures their own LLM API key, when scheduling requests are processed, then LLM calls for that advisor use their key and usage/cost telemetry appears in advisor-only reporting.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.

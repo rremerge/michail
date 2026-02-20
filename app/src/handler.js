@@ -17,6 +17,7 @@ import {
   mergeClientPolicyPresets,
   normalizeClientAccessState,
   normalizeClientId,
+  normalizePolicyId,
   parseAdvisingDaysList,
   parseClientPolicyPresets,
   resolveClientAdvisingDays
@@ -697,11 +698,36 @@ function extractDomainFromEmail(normalizedEmail) {
   return normalizedEmail.slice(atIndex + 1);
 }
 
+function normalizeEmailList(input) {
+  if (Array.isArray(input)) {
+    const values = [];
+    for (const item of input) {
+      values.push(...normalizeEmailList(item));
+    }
+    return values;
+  }
+
+  const raw = String(input ?? "").trim();
+  if (!raw) {
+    return [];
+  }
+
+  const values = [];
+  for (const token of raw.split(",")) {
+    const normalized = normalizeEmailAddress(token);
+    if (normalized) {
+      values.push(normalized);
+    }
+  }
+
+  return values;
+}
+
 function extractDestinationEmails(payload) {
   const candidates = [];
   const pushEmail = (value) => {
-    const normalized = normalizeEmailAddress(value);
-    if (normalized) {
+    const normalizedValues = normalizeEmailList(value);
+    for (const normalized of normalizedValues) {
       candidates.push(normalized);
     }
   };
@@ -710,6 +736,12 @@ function extractDestinationEmails(payload) {
 
   if (Array.isArray(payload?.toEmails)) {
     for (const value of payload.toEmails) {
+      pushEmail(value);
+    }
+  }
+
+  if (Array.isArray(payload?.ccEmails)) {
+    for (const value of payload.ccEmails) {
       pushEmail(value);
     }
   }
@@ -727,6 +759,123 @@ function extractDestinationEmails(payload) {
   }
 
   return [...new Set(candidates)];
+}
+
+function collectAdvisorIdentityEmails({
+  advisorSettings,
+  advisorInviteEmailOverride,
+  senderEmail,
+  advisorId,
+  env
+}) {
+  return new Set(
+    [
+      advisorSettings?.advisorEmail,
+      advisorSettings?.inviteEmail,
+      advisorInviteEmailOverride,
+      env.ADVISOR_EMAIL,
+      env.ADVISOR_ALLOWED_EMAIL,
+      env.ADVISOR_INVITE_EMAIL,
+      senderEmail,
+      advisorId
+    ]
+      .map((item) => normalizeEmailAddress(item))
+      .filter(Boolean)
+  );
+}
+
+function hashSenderIdentity(normalizedEmail) {
+  return crypto
+    .createHash("sha256")
+    .update(String(normalizedEmail ?? ""))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function collectAdvisorMentionedClientEmails({
+  payload,
+  advisorIdentityEmails,
+  advisorSenderEmail,
+  inboundAgentEmail
+}) {
+  const candidates = extractDestinationEmails(payload);
+  const exclusions = new Set(advisorIdentityEmails);
+  const normalizedAdvisorSender = normalizeEmailAddress(advisorSenderEmail);
+  const normalizedInboundAgentEmail = normalizeEmailAddress(inboundAgentEmail);
+  if (normalizedAdvisorSender) {
+    exclusions.add(normalizedAdvisorSender);
+  }
+  if (normalizedInboundAgentEmail) {
+    exclusions.add(normalizedInboundAgentEmail);
+  }
+
+  return candidates.filter((email) => !exclusions.has(email));
+}
+
+async function admitClientsFromAdvisorMessage({
+  payload,
+  advisorId,
+  advisorIdentityEmails,
+  advisorSenderEmail,
+  inboundAgentEmail,
+  clientProfilesTableName,
+  deps,
+  admittedAtIso
+}) {
+  if (
+    !clientProfilesTableName ||
+    typeof deps.putClientProfile !== "function" ||
+    typeof deps.getClientProfile !== "function"
+  ) {
+    return [];
+  }
+
+  const admittedClientIds = [];
+  const admittedEmails = collectAdvisorMentionedClientEmails({
+    payload,
+    advisorIdentityEmails,
+    advisorSenderEmail,
+    inboundAgentEmail
+  });
+  if (admittedEmails.length === 0) {
+    return admittedClientIds;
+  }
+
+  for (const email of admittedEmails) {
+    const clientId = normalizeClientId(email);
+    if (!clientId) {
+      continue;
+    }
+
+    let existing = null;
+    try {
+      existing = await deps.getClientProfile(clientProfilesTableName, advisorId, clientId);
+    } catch {
+      existing = null;
+    }
+
+    const accessState = normalizeClientAccessState(existing?.accessState, "active");
+    const policyId = normalizePolicyId(existing?.policyId) ?? "default";
+    const nextProfile = {
+      ...(existing ?? {}),
+      advisorId,
+      clientId,
+      clientEmail: email,
+      clientDisplayName: existing?.clientDisplayName ?? deriveClientDisplayName(email, email),
+      accessState,
+      policyId,
+      admittedSource: existing?.admittedSource ?? "advisor_email",
+      admittedBy: existing?.admittedBy ?? advisorSenderEmail,
+      admittedAt: existing?.admittedAt ?? admittedAtIso,
+      createdAt: existing?.createdAt ?? admittedAtIso,
+      updatedAt: admittedAtIso
+    };
+
+    await deps.putClientProfile(clientProfilesTableName, nextProfile);
+    admittedClientIds.push(clientId);
+  }
+
+  return admittedClientIds;
 }
 
 function normalizeAdvisorId(rawValue, fallback = "advisor") {
@@ -901,6 +1050,8 @@ function parseIncomingPayload(event) {
     return {
       fromEmail: commonHeaders.from?.[0] ?? sesMail.source ?? "",
       subject: commonHeaders.subject ?? "",
+      toEmails: Array.isArray(commonHeaders.to) ? commonHeaders.to : [],
+      ccEmails: Array.isArray(commonHeaders.cc) ? commonHeaders.cc : [],
       body: "",
       channel: "email",
       ses: {
@@ -1134,6 +1285,9 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   let promptInjectionSignals = [];
 
   let clientProfile = null;
+  const admissionControlEnabled = Boolean(
+    clientProfilesTableName && typeof deps.getClientProfile === "function"
+  );
   if (clientProfilesTableName && typeof deps.getClientProfile === "function") {
     try {
       clientProfile = await deps.getClientProfile(clientProfilesTableName, advisorId, clientId);
@@ -1142,8 +1296,86 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     }
   }
 
-  const accessState = normalizeClientAccessState(clientProfile?.accessState, "active");
-  if (isClientAccessRestricted(clientProfile)) {
+  const advisorIdentityEmails = collectAdvisorIdentityEmails({
+    advisorSettings,
+    advisorInviteEmailOverride,
+    senderEmail,
+    advisorId,
+    env
+  });
+  const isAdvisorSender = advisorIdentityEmails.has(fromEmail);
+  const accessState = isAdvisorSender
+    ? "advisor"
+    : normalizeClientAccessState(clientProfile?.accessState, admissionControlEnabled ? "unknown" : "active");
+
+  if (admissionControlEnabled && !isAdvisorSender && !clientProfile) {
+    const completedAtMs = now();
+    await deps.writeTrace(env.TRACE_TABLE_NAME, {
+      requestId,
+      responseId,
+      advisorId,
+      status: "suppressed",
+      stage: "admission_control",
+      errorCode: "UNKNOWN_SENDER_BLACKHOLE",
+      providerStatus: "skipped",
+      channel: payload.channel ?? "email",
+      fromDomain,
+      senderHash: hashSenderIdentity(fromEmail),
+      admissionDecision: "blackhole",
+      admissionReason: "unknown_sender",
+      responseMode,
+      calendarMode,
+      llmMode,
+      llmStatus: "skipped_unknown_sender",
+      bodySource,
+      intentSource: "parser",
+      intentLlmStatus: "skipped",
+      promptGuardMode,
+      promptGuardDecision,
+      promptGuardLlmStatus,
+      promptInjectionRiskLevel,
+      promptInjectionSignalCount: 0,
+      availabilityLinkStatus: "not_applicable",
+      requestedWindowCount: 0,
+      accessState: "unknown",
+      createdAt: startedAtIso,
+      updatedAt: new Date(completedAtMs).toISOString(),
+      latencyMs: completedAtMs - startedAtMs,
+      expiresAt: Math.floor((startedAtMs + 7 * 24 * 60 * 60 * 1000) / 1000)
+    });
+
+    return {
+      http: ok({
+        requestId,
+        responseId,
+        deliveryStatus: "suppressed",
+        llmStatus: "skipped_unknown_sender",
+        suggestionCount: 0,
+        suggestions: [],
+        blackholed: true,
+        admissionDecision: "blackhole"
+      })
+    };
+  }
+
+  if (isAdvisorSender) {
+    try {
+      await admitClientsFromAdvisorMessage({
+        payload,
+        advisorId,
+        advisorIdentityEmails,
+        advisorSenderEmail: fromEmail,
+        inboundAgentEmail,
+        clientProfilesTableName,
+        deps,
+        admittedAtIso: startedAtIso
+      });
+    } catch {
+      // Best-effort admission from advisor-authored thread recipients.
+    }
+  }
+
+  if (!isAdvisorSender && isClientAccessRestricted(clientProfile)) {
     const deniedMessage = ensurePersonalizedGreetingAndSignature({
       responseMessage: buildAccessDeniedResponseMessage(),
       clientDisplayName,
@@ -1324,7 +1556,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         expiresAt: Math.floor((startedAtMs + 7 * 24 * 60 * 60 * 1000) / 1000)
       });
 
-      if (clientProfilesTableName && typeof deps.recordClientEmailInteraction === "function") {
+      if (!isAdvisorSender && clientProfilesTableName && typeof deps.recordClientEmailInteraction === "function") {
         try {
           await deps.recordClientEmailInteraction(clientProfilesTableName, {
             advisorId,
@@ -1576,7 +1808,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         expiresAt: Math.floor((startedAtMs + 7 * 24 * 60 * 60 * 1000) / 1000)
       });
 
-      if (clientProfilesTableName && typeof deps.recordClientEmailInteraction === "function") {
+      if (!isAdvisorSender && clientProfilesTableName && typeof deps.recordClientEmailInteraction === "function") {
         try {
           await deps.recordClientEmailInteraction(clientProfilesTableName, {
             advisorId,
@@ -1854,7 +2086,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     expiresAt: Math.floor((startedAtMs + 7 * 24 * 60 * 60 * 1000) / 1000)
   });
 
-  if (clientProfilesTableName && typeof deps.recordClientEmailInteraction === "function") {
+  if (!isAdvisorSender && clientProfilesTableName && typeof deps.recordClientEmailInteraction === "function") {
     try {
       await deps.recordClientEmailInteraction(clientProfilesTableName, {
         advisorId,

@@ -301,6 +301,33 @@ function sanitizeClientDisplayName(value) {
   return candidate.replace(/\s+/g, " ").slice(0, 64);
 }
 
+function deriveClientDisplayNameFromEmail(clientEmail) {
+  const localPart = String(clientEmail ?? "")
+    .split("@")[0]
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!localPart) {
+    return "Client";
+  }
+
+  return localPart
+    .split(" ")
+    .filter(Boolean)
+    .map((word) => word[0].toUpperCase() + word.slice(1))
+    .join(" ")
+    .slice(0, 64);
+}
+
+function parseBulkClientEmailList(rawValue) {
+  return String(rawValue ?? "")
+    .split(/\r?\n/)
+    .map((line) => String(line ?? "").trim())
+    .filter(Boolean)
+    .map((email) => normalizeAdvisorEmail(email))
+    .filter(Boolean);
+}
+
 function normalizeClientReference(value) {
   const candidate = String(value ?? "")
     .toLowerCase()
@@ -2050,6 +2077,9 @@ function selectTraceMetadata(trace) {
     intentSource: trace.intentSource,
     intentLlmStatus: trace.intentLlmStatus,
     requestedWindowCount: trace.requestedWindowCount,
+    admissionDecision: trace.admissionDecision,
+    admissionReason: trace.admissionReason,
+    senderHash: trace.senderHash,
     fromDomain: trace.fromDomain,
     latencyMs: trace.latencyMs,
     createdAt: trace.createdAt,
@@ -2073,6 +2103,11 @@ function buildTraceDiagnosis(trace) {
     if (trace.errorCode === "CALENDAR_LOOKUP_FAILED") {
       actions.push("Verify advisor calendar connection and OAuth token validity.");
     }
+  }
+
+  if (trace.status === "suppressed" && trace.admissionDecision === "blackhole") {
+    categories.push("admission_suppressed");
+    actions.push("Sender is not in advisor allowlist/client directory. Add or import client in Advisor Portal if this sender should be allowed.");
   }
 
   if (trace.llmStatus === "fallback") {
@@ -2286,6 +2321,17 @@ function buildAdvisorPage() {
     <div class="card">
       <h2 style="margin-top:0;">Client Directory</h2>
       <p class="muted">Metadata-only client list with first contact, usage counters, and access policy controls.</p>
+      <div class="row inline-controls">
+        <input id="newClientEmail" placeholder="client email (example: client@example.com)" style="min-width: 260px;" />
+        <input id="newClientDisplayName" placeholder="display name (optional)" style="min-width: 200px;" />
+        <select id="newClientPolicy" class="small-select"></select>
+        <button id="addClient">Add Client</button>
+      </div>
+      <div class="row inline-controls">
+        <textarea id="bulkClientEmails" rows="4" style="min-width: 520px;" placeholder="Bulk import client emails (one per line)"></textarea>
+        <button id="bulkImportClients">Bulk Import</button>
+      </div>
+      <p id="clientImportStatus" class="muted">Add one client or bulk import emails to control who can receive agent responses.</p>
       <table>
         <thead>
           <tr>
@@ -2619,6 +2665,95 @@ function buildAdvisorPage() {
           .filter(Boolean);
       }
 
+      function normalizeClientEmailInput(value) {
+        const normalized = String(value || '').trim().toLowerCase();
+        const match = normalized.match(/[a-z0-9._%+-]+@[a-z0-9.-]+/);
+        return match ? match[0] : '';
+      }
+
+      function renderClientPolicyOptions() {
+        const selector = document.getElementById('newClientPolicy');
+        if (!selector) {
+          return;
+        }
+
+        const options = Array.isArray(policyOptions) && policyOptions.length > 0
+          ? policyOptions
+          : ['default'];
+        selector.innerHTML = options
+          .map((policyId) => '<option value="' + escapeHtml(policyId) + '">' + escapeHtml(policyId) + '</option>')
+          .join('');
+      }
+
+      function setClientImportStatus(text, cssClass) {
+        const node = document.getElementById('clientImportStatus');
+        if (!node) {
+          return;
+        }
+        node.className = cssClass || 'muted';
+        node.textContent = text;
+      }
+
+      async function addSingleClient() {
+        const emailInput = document.getElementById('newClientEmail');
+        const displayNameInput = document.getElementById('newClientDisplayName');
+        const policyInput = document.getElementById('newClientPolicy');
+        const clientEmail = normalizeClientEmailInput(emailInput.value);
+        if (!clientEmail) {
+          throw new Error('Enter a valid client email.');
+        }
+
+        const payload = {
+          clientEmail,
+          clientDisplayName: String(displayNameInput.value || '').trim(),
+          policyId: String(policyInput?.value || 'default').trim() || 'default'
+        };
+        const response = await fetch('./advisor/api/clients', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const result = await response.json();
+        if (!response.ok) {
+          throw new Error(result.error || 'Client add failed');
+        }
+
+        emailInput.value = '';
+        displayNameInput.value = '';
+        setClientImportStatus('Client added to allowlist: ' + clientEmail, 'ok');
+        await loadClients();
+      }
+
+      async function bulkImportClientEmails() {
+        const textarea = document.getElementById('bulkClientEmails');
+        const policyInput = document.getElementById('newClientPolicy');
+        const clientEmails = String(textarea.value || '')
+          .split(/\\r?\\n/)
+          .map((line) => normalizeClientEmailInput(line))
+          .filter(Boolean);
+        if (clientEmails.length === 0) {
+          throw new Error('Enter at least one client email for bulk import.');
+        }
+
+        const response = await fetch('./advisor/api/clients/import', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            clientEmails,
+            policyId: String(policyInput?.value || 'default').trim() || 'default'
+          })
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || 'Bulk import failed');
+        }
+
+        textarea.value = '';
+        const importedCount = Number(payload.importedCount || 0);
+        setClientImportStatus('Bulk import complete. Imported/updated clients: ' + importedCount, 'ok');
+        await loadClients();
+      }
+
       async function loadPolicies() {
         const tbody = document.getElementById('policiesBody');
         tbody.innerHTML = '';
@@ -2631,6 +2766,7 @@ function buildAdvisorPage() {
           row.innerHTML = '<td colspan="4" class="error">' + escapeHtml(payload.error || 'Unable to load policies.') + '</td>';
           tbody.appendChild(row);
           policyOptions = ['default', 'weekend', 'monday'];
+          renderClientPolicyOptions();
           return;
         }
 
@@ -2638,6 +2774,7 @@ function buildAdvisorPage() {
         policyOptions = Array.isArray(payload.policyOptions) && payload.policyOptions.length > 0
           ? payload.policyOptions
           : ['default', 'weekend', 'monday'];
+        renderClientPolicyOptions();
 
         if (policies.length === 0) {
           const row = document.createElement('tr');
@@ -2858,6 +2995,22 @@ function buildAdvisorPage() {
           await createPolicyPreset();
         } catch (error) {
           window.alert(error.message || 'Policy create failed');
+        }
+      });
+
+      document.getElementById('addClient').addEventListener('click', async () => {
+        try {
+          await addSingleClient();
+        } catch (error) {
+          setClientImportStatus(error.message || 'Client add failed.', 'error');
+        }
+      });
+
+      document.getElementById('bulkImportClients').addEventListener('click', async () => {
+        try {
+          await bulkImportClientEmails();
+        } catch (error) {
+          setClientImportStatus(error.message || 'Bulk import failed.', 'error');
         }
       });
 
@@ -3783,6 +3936,186 @@ export function createPortalHandler(overrides = {}) {
         policyOptions: policyCatalog.policyOptions,
         policies: policyCatalog.policies,
         clients: clientProfiles.map((item) => normalizeClientProfileForApi(item))
+      });
+    }
+
+    if (method === "POST" && rawPath === "/advisor/api/clients") {
+      if (!clientProfilesTableName) {
+        return serverError("CLIENT_PROFILES_TABLE_NAME is required");
+      }
+
+      let body;
+      try {
+        body = parseBody(event);
+      } catch {
+        return badRequest("Request body must be valid JSON");
+      }
+
+      const clientEmail = normalizeAdvisorEmail(body.clientEmail);
+      if (!clientEmail || !clientEmail.includes("@")) {
+        return badRequest("clientEmail must be a valid email address");
+      }
+
+      const clientId = normalizeClientId(clientEmail);
+      if (!clientId || clientId.length > 254) {
+        return badRequest("Invalid clientId");
+      }
+
+      const hasAccessState = Object.prototype.hasOwnProperty.call(body, "accessState");
+      const normalizedAccessState = normalizeClientAccessState(
+        hasAccessState ? body.accessState : undefined,
+        "active"
+      );
+      if (!["active", "blocked", "deleted"].includes(normalizedAccessState)) {
+        return badRequest("accessState must be one of: active, blocked, deleted");
+      }
+
+      const hasPolicyId = Object.prototype.hasOwnProperty.call(body, "policyId");
+      const normalizedPolicyId = normalizePolicyId(hasPolicyId ? body.policyId : "default");
+      if (!normalizedPolicyId || !Object.prototype.hasOwnProperty.call(policyPresets, normalizedPolicyId)) {
+        return badRequest(`policyId must be one of: ${policyCatalog.policyOptions.join(", ")}`);
+      }
+
+      const nowIso = new Date().toISOString();
+      const existing = await deps.getClientProfile(clientProfilesTableName, advisorId, clientId);
+      const resolvedAccessState = hasAccessState
+        ? normalizedAccessState
+        : normalizeClientAccessState(existing?.accessState, "active");
+      const resolvedPolicyId = hasPolicyId
+        ? normalizedPolicyId
+        : normalizePolicyId(existing?.policyId) ?? normalizedPolicyId;
+      const next = {
+        ...(existing ?? {}),
+        advisorId,
+        clientId,
+        clientEmail,
+        clientDisplayName:
+          sanitizeClientDisplayName(body.clientDisplayName) ??
+          existing?.clientDisplayName ??
+          deriveClientDisplayNameFromEmail(clientEmail),
+        accessState: resolvedAccessState,
+        policyId: resolvedPolicyId,
+        admittedSource: existing?.admittedSource ?? "advisor_portal",
+        admittedBy: existing?.admittedBy ?? advisorId,
+        admittedAt: existing?.admittedAt ?? nowIso,
+        createdAt: existing?.createdAt ?? nowIso,
+        updatedAt: nowIso
+      };
+      await deps.putClientProfile(clientProfilesTableName, next);
+
+      return jsonResponse(existing ? 200 : 201, {
+        advisorId,
+        created: !existing,
+        client: normalizeClientProfileForApi(next)
+      });
+    }
+
+    if (method === "POST" && rawPath === "/advisor/api/clients/import") {
+      if (!clientProfilesTableName) {
+        return serverError("CLIENT_PROFILES_TABLE_NAME is required");
+      }
+
+      let body;
+      try {
+        body = parseBody(event);
+      } catch {
+        return badRequest("Request body must be valid JSON");
+      }
+
+      const defaultPolicyId = normalizePolicyId(body.policyId ?? "default");
+      if (!defaultPolicyId || !Object.prototype.hasOwnProperty.call(policyPresets, defaultPolicyId)) {
+        return badRequest(`policyId must be one of: ${policyCatalog.policyOptions.join(", ")}`);
+      }
+
+      let rows = [];
+      if (Array.isArray(body.clients)) {
+        rows = body.clients;
+      } else if (Array.isArray(body.clientEmails)) {
+        rows = body.clientEmails.map((clientEmail) => ({ clientEmail }));
+      } else {
+        rows = parseBulkClientEmailList(body.clientEmails ?? body.bulkText ?? body.csv ?? "").map((clientEmail) => ({
+          clientEmail
+        }));
+      }
+
+      if (rows.length === 0) {
+        return badRequest("At least one client email is required");
+      }
+
+      const dedupedRows = [];
+      const seenClientIds = new Set();
+      for (let index = 0; index < rows.length; index += 1) {
+        const row = rows[index] ?? {};
+        const clientEmail = normalizeAdvisorEmail(row.clientEmail ?? row.email ?? row.client_id ?? "");
+        if (!clientEmail || !clientEmail.includes("@")) {
+          return badRequest(`clients[${index}] has invalid clientEmail`);
+        }
+
+        const clientId = normalizeClientId(clientEmail);
+        if (!clientId || clientId.length > 254) {
+          return badRequest(`clients[${index}] has invalid clientId`);
+        }
+
+        const rowPolicyId = normalizePolicyId(row.policyId ?? defaultPolicyId);
+        if (!rowPolicyId || !Object.prototype.hasOwnProperty.call(policyPresets, rowPolicyId)) {
+          return badRequest(
+            `clients[${index}].policyId must be one of: ${policyCatalog.policyOptions.join(", ")}`
+          );
+        }
+
+        const rowAccessState = normalizeClientAccessState(row.accessState, "active");
+        if (!["active", "blocked", "deleted"].includes(rowAccessState)) {
+          return badRequest(`clients[${index}].accessState must be one of: active, blocked, deleted`);
+        }
+
+        if (seenClientIds.has(clientId)) {
+          continue;
+        }
+        seenClientIds.add(clientId);
+        dedupedRows.push({
+          clientId,
+          clientEmail,
+          clientDisplayName: sanitizeClientDisplayName(row.clientDisplayName),
+          accessState: rowAccessState,
+          policyId: rowPolicyId
+        });
+      }
+
+      const nowIso = new Date().toISOString();
+      let createdCount = 0;
+      let updatedCount = 0;
+      for (const row of dedupedRows) {
+        const existing = await deps.getClientProfile(clientProfilesTableName, advisorId, row.clientId);
+        const next = {
+          ...(existing ?? {}),
+          advisorId,
+          clientId: row.clientId,
+          clientEmail: row.clientEmail,
+          clientDisplayName:
+            row.clientDisplayName ??
+            existing?.clientDisplayName ??
+            deriveClientDisplayNameFromEmail(row.clientEmail),
+          accessState: row.accessState,
+          policyId: row.policyId,
+          admittedSource: existing?.admittedSource ?? "advisor_portal_import",
+          admittedBy: existing?.admittedBy ?? advisorId,
+          admittedAt: existing?.admittedAt ?? nowIso,
+          createdAt: existing?.createdAt ?? nowIso,
+          updatedAt: nowIso
+        };
+        await deps.putClientProfile(clientProfilesTableName, next);
+        if (existing) {
+          updatedCount += 1;
+        } else {
+          createdCount += 1;
+        }
+      }
+
+      return jsonResponse(200, {
+        advisorId,
+        importedCount: dedupedRows.length,
+        createdCount,
+        updatedCount
       });
     }
 

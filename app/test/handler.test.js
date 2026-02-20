@@ -883,6 +883,133 @@ test("processSchedulingEmail uses client policy days and records email interacti
   assert.equal(interactionUpdates[0].clientDisplayName, "Client");
 });
 
+test("processSchedulingEmail blackholes unknown senders when admission control is enabled", async () => {
+  const traceItems = [];
+  const sentMessages = [];
+  let llmCalls = 0;
+  let interactionCalls = 0;
+  const deps = {
+    async getClientProfile(tableName, advisorId, clientId) {
+      assert.equal(tableName, "ClientProfilesTable");
+      assert.equal(advisorId, "manoj");
+      assert.equal(clientId, "unknown@example.com");
+      return null;
+    },
+    async draftResponseWithLlm() {
+      llmCalls += 1;
+      return {
+        subject: "should not run",
+        bodyText: "should not run"
+      };
+    },
+    async recordClientEmailInteraction() {
+      interactionCalls += 1;
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    CLIENT_PROFILES_TABLE_NAME: "ClientProfilesTable",
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    LLM_MODE: "openai",
+    ADVISOR_EMAIL: "advisor@example.com"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "unknown@example.com",
+      subject: "Need time this week"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const body = JSON.parse(result.http.body);
+  assert.equal(body.blackholed, true);
+  assert.equal(body.admissionDecision, "blackhole");
+  assert.equal(body.suggestionCount, 0);
+  assert.equal(body.deliveryStatus, "suppressed");
+
+  assert.equal(sentMessages.length, 0);
+  assert.equal(llmCalls, 0);
+  assert.equal(interactionCalls, 0);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].status, "suppressed");
+  assert.equal(traceItems[0].stage, "admission_control");
+  assert.equal(traceItems[0].errorCode, "UNKNOWN_SENDER_BLACKHOLE");
+  assert.equal(traceItems[0].admissionDecision, "blackhole");
+  assert.equal(traceItems[0].admissionReason, "unknown_sender");
+  assert.equal(traceItems[0].llmStatus, "skipped_unknown_sender");
+  assert.equal(String(traceItems[0].senderHash).length, 16);
+});
+
+test("processSchedulingEmail admits recipients when advisor sends email thread", async () => {
+  const traceItems = [];
+  const admittedProfiles = [];
+  const deps = {
+    async getClientProfile(tableName, advisorId, clientId) {
+      assert.equal(tableName, "ClientProfilesTable");
+      assert.equal(advisorId, "manoj");
+      if (clientId === "advisor@example.com") {
+        return null;
+      }
+      if (clientId === "newclient@example.com") {
+        return null;
+      }
+      return null;
+    },
+    async putClientProfile(tableName, item) {
+      assert.equal(tableName, "ClientProfilesTable");
+      admittedProfiles.push(item);
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async recordClientEmailInteraction() {
+      throw new Error("recordClientEmailInteraction should not run for advisor sender");
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    CLIENT_PROFILES_TABLE_NAME: "ClientProfilesTable",
+    ADVISOR_EMAIL: "advisor@example.com",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "advisor@example.com",
+      toEmails: ["agent@agent.letsconnect.ai", "newclient@example.com"],
+      subject: "Please add this person and find times"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.suggestionCount, 3);
+  assert.equal(admittedProfiles.length, 1);
+  assert.equal(admittedProfiles[0].clientId, "newclient@example.com");
+  assert.equal(admittedProfiles[0].clientEmail, "newclient@example.com");
+  assert.equal(admittedProfiles[0].admittedSource, "advisor_email");
+  assert.equal(admittedProfiles[0].admittedBy, "advisor@example.com");
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].status, "completed");
+});
+
 test("processSchedulingEmail denies blocked client access", async () => {
   const traceItems = [];
   const sentMessages = [];
