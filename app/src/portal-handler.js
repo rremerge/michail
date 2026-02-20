@@ -28,6 +28,19 @@ function parseClampedIntEnv(value, fallback, minimum, maximum) {
   return Math.min(Math.max(parsed, minimum), maximum);
 }
 
+function parseBooleanEnv(value, fallback = false) {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (normalized === "true") {
+    return true;
+  }
+  if (normalized === "false") {
+    return false;
+  }
+  return fallback;
+}
+
 const AVAILABILITY_VIEW_DAYS = 7;
 const DEFAULT_ADVISOR_TIMEZONE = "America/Los_Angeles";
 const DEFAULT_AGENT_EMAIL_DOMAIN = "agent.letsconnect.ai";
@@ -803,6 +816,15 @@ function escapeHtml(rawValue) {
     .replaceAll("'", "&#39;");
 }
 
+function serializeForInlineScript(value) {
+  return JSON.stringify(value)
+    .replace(/</g, "\\u003c")
+    .replace(/>/g, "\\u003e")
+    .replace(/&/g, "\\u0026")
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
+}
+
 function normalizeWeekdays(weekdays) {
   const accepted = new Set();
   for (const weekday of weekdays) {
@@ -918,6 +940,7 @@ function buildAvailabilityCalendarModel({
   workdayStartHour,
   workdayEndHour,
   slotMinutes,
+  requestedDurationMinutes,
   maxCells
 }) {
   const acceptedWeekdays = normalizeWeekdays(advisingDays);
@@ -931,7 +954,8 @@ function buildAvailabilityCalendarModel({
       busySlotCount: 0,
       clientMeetingSlotCount: 0,
       clientOverlapSlotCount: 0,
-      slotMinutes
+      slotMinutes,
+      requestedDurationMinutes
     };
   }
 
@@ -1011,7 +1035,8 @@ function buildAvailabilityCalendarModel({
       busySlotCount: 0,
       clientMeetingSlotCount: 0,
       clientOverlapSlotCount: 0,
-      slotMinutes
+      slotMinutes,
+      requestedDurationMinutes
     };
   }
 
@@ -1088,7 +1113,8 @@ function buildAvailabilityCalendarModel({
         hasClientMeeting,
         clientMeetingState,
         clientMeetings: meetingDetails,
-        hasOverlap
+        hasOverlap,
+        fitsRequestedDuration: false
       };
     });
 
@@ -1099,6 +1125,33 @@ function buildAvailabilityCalendarModel({
     rowStart = rowStart.plus({ minutes: slotMinutes });
   }
 
+  const normalizedRequestedDurationMinutes =
+    Number.isFinite(requestedDurationMinutes) && requestedDurationMinutes > 0
+      ? Math.max(slotMinutes, Math.trunc(requestedDurationMinutes))
+      : slotMinutes;
+  const requiredContiguousSlots = Math.max(1, Math.ceil(normalizedRequestedDurationMinutes / slotMinutes));
+  if (requiredContiguousSlots > 1) {
+    for (let dayIndex = 0; dayIndex < days.length; dayIndex += 1) {
+      for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+        const startSlot = rows[rowIndex]?.cells?.[dayIndex];
+        if (!startSlot || startSlot.status !== "open") {
+          continue;
+        }
+
+        let fitsDuration = true;
+        for (let offset = 1; offset < requiredContiguousSlots; offset += 1) {
+          const nextSlot = rows[rowIndex + offset]?.cells?.[dayIndex];
+          if (!nextSlot || nextSlot.status !== "open") {
+            fitsDuration = false;
+            break;
+          }
+        }
+
+        startSlot.fitsRequestedDuration = fitsDuration;
+      }
+    }
+  }
+
   return {
     days,
     rows,
@@ -1106,12 +1159,30 @@ function buildAvailabilityCalendarModel({
     busySlotCount,
     clientMeetingSlotCount,
     clientOverlapSlotCount,
-    slotMinutes
+    slotMinutes,
+    requestedDurationMinutes: normalizedRequestedDurationMinutes
   };
 }
 
 function formatMeetingStateLabel(advisorResponseStatus) {
   return advisorResponseStatus === "accepted" ? "Accepted" : "Pending";
+}
+
+function formatDurationMinutes(durationMinutes) {
+  const normalizedMinutes = Number.isFinite(durationMinutes) ? Math.max(0, Math.trunc(durationMinutes)) : 0;
+  if (normalizedMinutes <= 0) {
+    return "";
+  }
+
+  const hours = Math.floor(normalizedMinutes / 60);
+  const minutes = normalizedMinutes % 60;
+  if (hours > 0 && minutes > 0) {
+    return `${hours}h ${minutes}m`;
+  }
+  if (hours > 0) {
+    return `${hours}h`;
+  }
+  return `${minutes}m`;
 }
 
 function buildAdvisorMergeKey(slot) {
@@ -1177,13 +1248,17 @@ function buildAdvisorCellSpanPlan(rows, dayCount) {
 function buildAvailabilityPage({
   calendarModel,
   hostTimezone,
+  windowStartIso,
+  windowEndIso,
   expiresAtMs,
   tokenParamName,
   token,
   weekOffset,
   windowLabel,
   clientDisplayName,
-  clientReference
+  clientReference,
+  browserGoogleClientId,
+  compareUiEnabled
 }) {
   const expiresAtLabel = new Date(expiresAtMs).toLocaleString("en-US", {
     timeZone: hostTimezone,
@@ -1194,6 +1269,19 @@ function buildAvailabilityPage({
     minute: "2-digit",
     hour12: true
   });
+  const compareConfig = {
+    enabled: Boolean(compareUiEnabled) && Boolean(browserGoogleClientId),
+    clientId: String(browserGoogleClientId ?? ""),
+    scope: "https://www.googleapis.com/auth/calendar.readonly",
+    timeMinIso: String(windowStartIso ?? ""),
+    timeMaxIso: String(windowEndIso ?? ""),
+    slotMinutes: Number(calendarModel.slotMinutes ?? 30)
+  };
+  const requestedDurationHighlightEnabled =
+    Number(calendarModel.requestedDurationMinutes ?? 0) > Number(calendarModel.slotMinutes ?? 30);
+  const requestedDurationLabel = requestedDurationHighlightEnabled
+    ? formatDurationMinutes(calendarModel.requestedDurationMinutes)
+    : "";
   const advisorCellSpanPlan = buildAdvisorCellSpanPlan(calendarModel.rows, calendarModel.days.length);
   const dayTables = calendarModel.days
     .map((day, dayIndex) => {
@@ -1206,7 +1294,19 @@ function buildAvailabilityPage({
       const dayRows = calendarModel.rows
         .map((row, rowIndex) => {
           const slot = row.cells[dayIndex];
-          const localCell = `<td class="slot local-slot ${slot.status}" data-slot-start-utc="${escapeHtml(slot.slotStartUtc)}">
+          const localCellClass = [
+            "slot",
+            "local-slot",
+            slot.status,
+            requestedDurationHighlightEnabled && slot.fitsRequestedDuration ? "fit-request" : ""
+          ]
+            .filter(Boolean)
+            .join(" ");
+          const localCell = `<td class="${localCellClass}" data-slot-key="${escapeHtml(
+            slot.slotStartUtc
+          )}" data-slot-start-utc="${escapeHtml(slot.slotStartUtc)}" data-slot-end-utc="${escapeHtml(
+            slot.slotEndUtc
+          )}" data-slot-status="${escapeHtml(slot.status)}">
             <div class="slot-local">Detecting...</div>
           </td>`;
 
@@ -1219,6 +1319,10 @@ function buildAvailabilityPage({
             ? `<div class="slot-pill client-${slot.clientMeetingState}">Your meeting (${slot.clientMeetingState === "accepted" ? "accepted" : "pending"})</div>`
             : "";
           const overlapPill = slot.hasOverlap ? '<div class="slot-pill overlap">Potential conflict</div>' : "";
+          const fitRequestedPill =
+            requestedDurationHighlightEnabled && slot.fitsRequestedDuration && slot.status === "open"
+              ? `<div class="slot-pill fit-request">Fits requested ${escapeHtml(requestedDurationLabel)} meeting</div>`
+              : "";
           const meetingDetails = slot.hasClientMeeting
             ? `<div class="client-meeting-list">${slot.clientMeetings
                 .map(
@@ -1237,6 +1341,7 @@ function buildAvailabilityPage({
             slot.status,
             slot.hasClientMeeting ? `client-${slot.clientMeetingState}` : "",
             slot.hasOverlap ? "client-overlap" : "",
+            requestedDurationHighlightEnabled && slot.fitsRequestedDuration ? "fit-request" : "",
             spanPlan.rowspan > 1 ? "merged-span" : ""
           ]
             .filter(Boolean)
@@ -1248,10 +1353,13 @@ function buildAvailabilityPage({
               : slot.hostLabel;
 
           return `<tr class="slot-row" data-row-index="${rowIndex}">${localCell}
-          <td class="${advisorSlotClass}"${rowspanAttr}>
+          <td class="${advisorSlotClass}" data-slot-key="${escapeHtml(slot.slotStartUtc)}" data-slot-start-utc="${escapeHtml(
+            slot.slotStartUtc
+          )}" data-slot-end-utc="${escapeHtml(slot.slotEndUtc)}" data-slot-status="${escapeHtml(slot.status)}"${rowspanAttr}>
             <div class="slot-pill ${slot.status}">${slot.status === "busy" ? "Busy" : "Open"}</div>
             ${clientPill}
             ${overlapPill}
+            ${fitRequestedPill}
             <div class="slot-host">${escapeHtml(hostTimeLabel)}</div>
             ${meetingDetails}
           </td></tr>`;
@@ -1301,6 +1409,18 @@ function buildAvailabilityPage({
     nextWeekOffset > 52
       ? '<span class="nav-link disabled" aria-disabled="true">Next Week &gt;</span>'
       : `<a class="nav-link" href="${escapeHtml(nextHref)}">Next Week &gt;</a>`;
+  const compareConfigJson = serializeForInlineScript(compareConfig);
+  const compareCard = compareConfig.enabled
+    ? `<section class="compare-card" id="compare-card">
+          <p class="compare-title">Optional: compare with your Google Calendar</p>
+          <p class="muted compare-note">Runs only in this browser session. LetsConnect.ai does not store your client calendar token or raw event details.</p>
+          <div class="compare-actions">
+            <button type="button" class="primary" id="compare-connect">Connect Google Calendar</button>
+            <button type="button" id="compare-clear" disabled>Clear compare</button>
+          </div>
+          <p class="compare-status" id="compare-status">Advisor-only availability is shown right now.</p>
+        </section>`
+    : "";
 
   return `<!doctype html>
 <html lang="en">
@@ -1345,6 +1465,20 @@ function buildAvailabilityPage({
       .legend-pill.client-accepted { background: #dcfce7; color: #166534; border-color: #86efac; }
       .legend-pill.client-pending { background: #fef9c3; color: #854d0e; border-color: #fde68a; }
       .legend-pill.overlap { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
+      .legend-pill.fit-request { background: #ecfeff; color: #155e75; border-color: #67e8f9; }
+      .legend-pill.both-open { background: #e0f2fe; color: #075985; border-color: #7dd3fc; }
+      .legend-pill.hidden { display: none; }
+      .compare-card { border: 1px solid #cbd5e1; border-radius: 10px; background: #ffffff; padding: 12px; margin: 10px 0 14px; }
+      .compare-title { margin: 0 0 4px; font-size: 14px; font-weight: 700; color: #0f172a; }
+      .compare-note { margin: 0; }
+      .compare-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+      .compare-actions button { border: 1px solid #cbd5e1; border-radius: 8px; background: #f8fafc; color: #0f172a; font-weight: 600; font-size: 13px; padding: 7px 10px; cursor: pointer; }
+      .compare-actions button.primary { background: #e0f2fe; border-color: #7dd3fc; color: #0c4a6e; }
+      .compare-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .compare-status { margin: 8px 0 0; font-size: 13px; color: #475569; }
+      .compare-status.ok { color: #166534; }
+      .compare-status.warn { color: #854d0e; }
+      .compare-status.error { color: #991b1b; }
       .summary { font-size: 14px; color: #374151; margin-bottom: 12px; }
       .week-nav { display: flex; align-items: center; justify-content: space-between; margin: 14px 0; gap: 10px; }
       .week-range { font-size: 14px; font-weight: 700; color: #0f172a; text-align: center; flex: 1; }
@@ -1385,12 +1519,15 @@ function buildAvailabilityPage({
       .slot.client-accepted { background: #ecfdf5; }
       .slot.client-pending { background: #fffbeb; }
       .slot.client-overlap { box-shadow: inset 0 0 0 2px #fca5a5; }
+      .slot.fit-request { box-shadow: inset 0 0 0 2px #67e8f9; }
+      .slot.both-open { background: #e0f2fe; box-shadow: inset 0 0 0 2px #7dd3fc; }
       .slot-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid; }
       .slot-pill.open { color: #065f46; background: #dcfce7; border-color: #86efac; }
       .slot-pill.busy { color: #334155; background: #e2e8f0; border-color: #cbd5e1; }
       .slot-pill.client-accepted { color: #166534; background: #dcfce7; border-color: #86efac; margin-top: 4px; }
       .slot-pill.client-pending { color: #854d0e; background: #fef3c7; border-color: #fcd34d; margin-top: 4px; }
       .slot-pill.overlap { color: #991b1b; background: #fee2e2; border-color: #fca5a5; margin-top: 4px; }
+      .slot-pill.fit-request { color: #155e75; background: #ecfeff; border-color: #67e8f9; margin-top: 4px; }
       .slot-host { margin-top: 6px; font-size: 11px; font-weight: 700; color: #0f172a; }
       .advisor-slot.merged-span .slot-host { margin-top: 8px; }
       .slot-local { margin-top: 6px; font-size: 11px; font-weight: 600; color: #475569; }
@@ -1435,6 +1572,13 @@ function buildAvailabilityPage({
             : ""
         }
         <p class="muted">Please find a slot that works for you and send a calendar invitation to the advisor.</p>
+        ${
+          requestedDurationHighlightEnabled
+            ? `<p class="muted">Highlighted start times can fit your requested meeting length of <code>${escapeHtml(
+                requestedDurationLabel
+              )}</code>.</p>`
+            : ""
+        }
         <p class="muted">Advisor timezone: <code>${escapeHtml(hostTimezone)}</code> | Local timezone: <code id="local-timezone-code">Detecting...</code></p>
         <p class="muted hidden-topline" aria-hidden="true">Link expires: ${escapeHtml(expiresAtLabel)} (${escapeHtml(hostTimezone)})</p>
       </section>
@@ -1444,7 +1588,14 @@ function buildAvailabilityPage({
         <span class="legend-pill client-accepted">Your Meeting Accepted</span>
         <span class="legend-pill client-pending">Your Meeting Pending</span>
         <span class="legend-pill overlap">Advisor Calendar Conflict</span>
+        ${
+          requestedDurationHighlightEnabled
+            ? `<span class="legend-pill fit-request">Fits requested ${escapeHtml(requestedDurationLabel)} meeting</span>`
+            : ""
+        }
+        <span id="legend-both-open" class="legend-pill both-open hidden">Open on Both Calendars</span>
       </div>
+      ${compareCard}
       <p class="summary" aria-hidden="true">&nbsp;</p>
       <div class="week-nav">
         ${previousButton}
@@ -1457,8 +1608,370 @@ function buildAvailabilityPage({
         <p id="powered-by" class="powered-by hidden">${escapeHtml(BRAND_POWERED_BY_NOTICE)}</p>
       </footer>
     </main>
+    ${
+      compareConfig.enabled
+        ? '<script src="https://accounts.google.com/gsi/client" async defer></script>'
+        : ""
+    }
     <script>
       (function () {
+        var compareConfig = ${compareConfigJson};
+        var compareConnectButton = null;
+        var compareClearButton = null;
+        var compareStatusNode = null;
+        var compareLegendNode = null;
+        var clientBusyIntervals = [];
+        var compareTokenClient = null;
+        var compareAccessToken = '';
+        var compareApplied = false;
+
+        function setCompareStatus(message, tone) {
+          if (!compareStatusNode) {
+            return;
+          }
+          compareStatusNode.textContent = message;
+          compareStatusNode.classList.remove('ok', 'warn', 'error');
+          if (tone === 'ok' || tone === 'warn' || tone === 'error') {
+            compareStatusNode.classList.add(tone);
+          }
+        }
+
+        function setCompareButtonsDisabled(disabled) {
+          if (compareConnectButton) {
+            compareConnectButton.disabled = disabled;
+          }
+          if (compareClearButton) {
+            compareClearButton.disabled = disabled || !compareApplied;
+          }
+        }
+
+        function clearBothOpenHighlighting() {
+          var highlightedSlots = document.querySelectorAll('.slot.both-open');
+          highlightedSlots.forEach(function (slot) {
+            slot.classList.remove('both-open');
+          });
+          if (compareLegendNode) {
+            compareLegendNode.classList.add('hidden');
+          }
+          clientBusyIntervals = [];
+          compareApplied = false;
+        }
+
+        function getSlotIntervals() {
+          var localSlots = document.querySelectorAll('.local-slot[data-slot-start-utc][data-slot-end-utc]');
+          var advisorSlotByStart = new Map();
+          document.querySelectorAll('.advisor-slot[data-slot-start-utc]').forEach(function (advisorSlot) {
+            var startIso = advisorSlot.getAttribute('data-slot-start-utc');
+            if (startIso) {
+              advisorSlotByStart.set(startIso, advisorSlot);
+            }
+          });
+
+          var slotIntervals = [];
+          localSlots.forEach(function (localSlot) {
+            var startIso = localSlot.getAttribute('data-slot-start-utc');
+            var endIso = localSlot.getAttribute('data-slot-end-utc');
+            var status = localSlot.getAttribute('data-slot-status');
+            if (!startIso || !endIso || !status) {
+              return;
+            }
+
+            var startMs = Date.parse(startIso);
+            var endMs = Date.parse(endIso);
+            if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+              return;
+            }
+
+            slotIntervals.push({
+              startIso: startIso,
+              startMs: startMs,
+              endMs: endMs,
+              status: status,
+              localSlot: localSlot,
+              advisorSlot: advisorSlotByStart.get(startIso) || null
+            });
+          });
+          return slotIntervals;
+        }
+
+        function hasBusyOverlap(slotStartMs, slotEndMs, busyIntervals) {
+          for (var index = 0; index < busyIntervals.length; index += 1) {
+            var busyInterval = busyIntervals[index];
+            if (slotStartMs < busyInterval.endMs && slotEndMs > busyInterval.startMs) {
+              return true;
+            }
+          }
+          return false;
+        }
+
+        function applyBothOpenHighlighting() {
+          clearBothOpenHighlighting();
+          compareApplied = true;
+          if (!Array.isArray(clientBusyIntervals) || clientBusyIntervals.length === 0) {
+            setCompareStatus('No busy windows were returned from your calendar in this week. All advisor open slots are open for you.', 'ok');
+            if (compareLegendNode) {
+              compareLegendNode.classList.remove('hidden');
+            }
+            var noBusySlots = 0;
+            getSlotIntervals().forEach(function (slot) {
+              if (slot.status !== 'open') {
+                return;
+              }
+              slot.localSlot.classList.add('both-open');
+              if (slot.advisorSlot) {
+                slot.advisorSlot.classList.add('both-open');
+              }
+              noBusySlots += 1;
+            });
+            if (noBusySlots === 0) {
+              setCompareStatus('No advisor-open slots are available in this week.', 'warn');
+              if (compareLegendNode) {
+                compareLegendNode.classList.add('hidden');
+              }
+            }
+            return;
+          }
+
+          var bothOpenCount = 0;
+          getSlotIntervals().forEach(function (slot) {
+            if (slot.status !== 'open') {
+              return;
+            }
+            if (hasBusyOverlap(slot.startMs, slot.endMs, clientBusyIntervals)) {
+              return;
+            }
+            slot.localSlot.classList.add('both-open');
+            if (slot.advisorSlot) {
+              slot.advisorSlot.classList.add('both-open');
+            }
+            bothOpenCount += 1;
+          });
+
+          if (bothOpenCount > 0) {
+            setCompareStatus('Found ' + String(bothOpenCount) + ' slots open on both calendars for this week.', 'ok');
+            if (compareLegendNode) {
+              compareLegendNode.classList.remove('hidden');
+            }
+          } else {
+            setCompareStatus('No shared open slots found for this week. Use week navigation to check another week.', 'warn');
+            if (compareLegendNode) {
+              compareLegendNode.classList.add('hidden');
+            }
+          }
+        }
+
+        function initializeGoogleTokenClient() {
+          if (compareTokenClient) {
+            return compareTokenClient;
+          }
+          if (
+            !window.google ||
+            !window.google.accounts ||
+            !window.google.accounts.oauth2 ||
+            typeof window.google.accounts.oauth2.initTokenClient !== 'function'
+          ) {
+            return null;
+          }
+          compareTokenClient = window.google.accounts.oauth2.initTokenClient({
+            client_id: compareConfig.clientId,
+            scope: compareConfig.scope,
+            callback: function () {}
+          });
+          return compareTokenClient;
+        }
+
+        function requestGoogleAccessToken() {
+          return new Promise(function (resolve, reject) {
+            var tokenClient = initializeGoogleTokenClient();
+            if (!tokenClient) {
+              reject(new Error('Google Sign-In is still loading. Please try again in a moment.'));
+              return;
+            }
+
+            tokenClient.callback = function (response) {
+              if (!response) {
+                reject(new Error('Google authorization did not return a token.'));
+                return;
+              }
+              if (response.error) {
+                reject(new Error('Google authorization failed: ' + response.error));
+                return;
+              }
+              if (!response.access_token) {
+                reject(new Error('Google authorization completed without an access token.'));
+                return;
+              }
+              compareAccessToken = response.access_token;
+              resolve(response.access_token);
+            };
+
+            tokenClient.requestAccessToken({
+              prompt: compareAccessToken ? '' : 'consent'
+            });
+          });
+        }
+
+        function mergeBusyIntervals(intervals) {
+          if (!Array.isArray(intervals) || intervals.length <= 1) {
+            return Array.isArray(intervals) ? intervals : [];
+          }
+
+          var sorted = intervals
+            .slice()
+            .sort(function (left, right) {
+              return left.startMs - right.startMs;
+            });
+          var merged = [
+            {
+              startMs: sorted[0].startMs,
+              endMs: sorted[0].endMs
+            }
+          ];
+
+          for (var index = 1; index < sorted.length; index += 1) {
+            var current = sorted[index];
+            var tail = merged[merged.length - 1];
+            if (current.startMs <= tail.endMs) {
+              tail.endMs = Math.max(tail.endMs, current.endMs);
+              continue;
+            }
+            merged.push({
+              startMs: current.startMs,
+              endMs: current.endMs
+            });
+          }
+
+          return merged;
+        }
+
+        async function fetchBrowserCalendarIds(accessToken) {
+          var response = await fetch(
+            'https://www.googleapis.com/calendar/v3/users/me/calendarList?minAccessRole=reader&showDeleted=false&showHidden=false&maxResults=250',
+            {
+              method: 'GET',
+              headers: {
+                authorization: 'Bearer ' + accessToken
+              }
+            }
+          );
+
+          if (!response.ok) {
+            return ['primary'];
+          }
+
+          var payload = await response.json();
+          var items = payload && Array.isArray(payload.items) ? payload.items : [];
+          var calendarIds = [];
+          items.forEach(function (item) {
+            if (!item || typeof item.id !== 'string') {
+              return;
+            }
+            if (item.deleted === true) {
+              return;
+            }
+            var calendarId = item.id.trim();
+            if (!calendarId) {
+              return;
+            }
+            calendarIds.push(calendarId);
+          });
+
+          if (calendarIds.length === 0) {
+            return ['primary'];
+          }
+          return Array.from(new Set(calendarIds));
+        }
+
+        async function fetchBrowserBusyIntervals(accessToken, fallbackCalendarId) {
+          var calendarIds = fallbackCalendarId ? [fallbackCalendarId] : await fetchBrowserCalendarIds(accessToken);
+          var body = {
+            timeMin: compareConfig.timeMinIso,
+            timeMax: compareConfig.timeMaxIso,
+            timeZone: 'UTC',
+            items: calendarIds.map(function (calendarId) {
+              return { id: calendarId };
+            })
+          };
+          var response = await fetch('https://www.googleapis.com/calendar/v3/freeBusy', {
+            method: 'POST',
+            headers: {
+              authorization: 'Bearer ' + accessToken,
+              'content-type': 'application/json'
+            },
+            body: JSON.stringify(body)
+          });
+
+          if (!response.ok) {
+            var responseText = '';
+            try {
+              responseText = await response.text();
+            } catch (_error) {
+              responseText = '';
+            }
+            throw new Error('Google Calendar freeBusy failed (' + String(response.status) + ')' + (responseText ? ': ' + responseText : ''));
+          }
+
+          var payload = await response.json();
+          var normalizedBusyIntervals = [];
+          var calendarsPayload = payload && payload.calendars && typeof payload.calendars === 'object' ? payload.calendars : {};
+          Object.keys(calendarsPayload).forEach(function (calendarId) {
+            var calendarBusy = Array.isArray(calendarsPayload[calendarId] && calendarsPayload[calendarId].busy)
+              ? calendarsPayload[calendarId].busy
+              : [];
+            calendarBusy.forEach(function (interval) {
+              var startMs = Date.parse(interval.start);
+              var endMs = Date.parse(interval.end);
+              if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
+                return;
+              }
+              normalizedBusyIntervals.push({
+                startMs: startMs,
+                endMs: endMs
+              });
+            });
+          });
+
+          var mergedBusyIntervals = mergeBusyIntervals(normalizedBusyIntervals);
+          if (!fallbackCalendarId && mergedBusyIntervals.length === 0 && !calendarIds.includes('primary')) {
+            // Some accounts only return data when querying primary directly.
+            return fetchBrowserBusyIntervals(accessToken, 'primary');
+          }
+          return mergedBusyIntervals;
+        }
+
+        async function runBrowserCalendarCompare() {
+          if (!compareConfig.enabled) {
+            return;
+          }
+          setCompareButtonsDisabled(true);
+          setCompareStatus('Connecting to Google Calendar...', 'warn');
+          try {
+            var accessToken = await requestGoogleAccessToken();
+            setCompareStatus('Reading busy slots from your selected Google calendars...', 'warn');
+            clientBusyIntervals = await fetchBrowserBusyIntervals(accessToken);
+            applyBothOpenHighlighting();
+          } catch (error) {
+            clearBothOpenHighlighting();
+            setCompareStatus(
+              (error && error.message ? error.message : 'Unable to compare calendars right now.') +
+                ' Showing advisor-only availability.',
+              'error'
+            );
+          } finally {
+            setCompareButtonsDisabled(false);
+          }
+        }
+
+        function clearBrowserCalendarCompare() {
+          compareAccessToken = '';
+          clearBothOpenHighlighting();
+          compareApplied = false;
+          setCompareStatus('Advisor-only availability is shown right now.', null);
+          if (compareClearButton) {
+            compareClearButton.disabled = true;
+          }
+        }
+
         function applyBrandingFromStorage() {
           var logoNode = document.getElementById('brand-logo');
           var poweredByNode = document.getElementById('powered-by');
@@ -1715,6 +2228,10 @@ function buildAvailabilityPage({
 
         var timezoneCode = document.getElementById('local-timezone-code');
         var localHeaders = document.querySelectorAll('.local-time-header');
+        compareConnectButton = document.getElementById('compare-connect');
+        compareClearButton = document.getElementById('compare-clear');
+        compareStatusNode = document.getElementById('compare-status');
+        compareLegendNode = document.getElementById('legend-both-open');
         applyBrandingFromStorage();
         if (!localTimezone) {
           if (timezoneCode) {
@@ -1757,6 +2274,21 @@ function buildAvailabilityPage({
             slotLabel.textContent = timeFormatter.format(date);
           }
         });
+
+        if (compareConfig.enabled && compareConnectButton && compareClearButton) {
+          compareConnectButton.addEventListener('click', function () {
+            runBrowserCalendarCompare().catch(function () {
+              setCompareStatus('Unable to compare calendars right now. Showing advisor-only availability.', 'error');
+            });
+          });
+          compareClearButton.addEventListener('click', function () {
+            clearBrowserCalendarCompare();
+          });
+          window.addEventListener('beforeunload', function () {
+            compareAccessToken = '';
+            clientBusyIntervals = [];
+          });
+        }
 
         if (window.requestAnimationFrame) {
           window.requestAnimationFrame(function () {
@@ -3191,6 +3723,8 @@ export function createPortalHandler(overrides = {}) {
     const normalizedWorkdayEndHour = Math.min(24, Math.max(workdayEndHour, workdayStartHour + 1));
     const defaultDurationMinutes = parseClampedIntEnv(process.env.DEFAULT_DURATION_MINUTES, 30, 15, 180);
     const maxDurationMinutes = parseClampedIntEnv(process.env.MAX_DURATION_MINUTES, 120, 15, 240);
+    const availabilitySlotMinutes = parseClampedIntEnv(process.env.AVAILABILITY_VIEW_SLOT_MINUTES, 30, 15, 60);
+    const availabilityCompareUiEnabled = parseBooleanEnv(process.env.AVAILABILITY_COMPARE_UI_ENABLED, false);
     const availabilityViewMaxSlots = parseClampedIntEnv(process.env.AVAILABILITY_VIEW_MAX_SLOTS, 240, 24, 1200);
 
     const authFailure = await authorizePortalRequest({ event, rawPath, deps });
@@ -3370,7 +3904,8 @@ export function createPortalHandler(overrides = {}) {
         searchEndIso,
         workdayStartHour,
         workdayEndHour: normalizedWorkdayEndHour,
-        slotMinutes: durationMinutes,
+        slotMinutes: availabilitySlotMinutes,
+        requestedDurationMinutes: durationMinutes,
         maxCells: availabilityViewMaxSlots
       });
 
@@ -3394,18 +3929,32 @@ export function createPortalHandler(overrides = {}) {
         }
       }
 
+      let browserGoogleClientId = "";
+      if (googleAppSecretArn && typeof deps.getSecretString === "function") {
+        try {
+          const appSecret = parseGoogleAppSecret(await deps.getSecretString(googleAppSecretArn));
+          browserGoogleClientId = String(appSecret.clientId ?? "").trim();
+        } catch {
+          browserGoogleClientId = "";
+        }
+      }
+
       return htmlResponse(
         200,
         buildAvailabilityPage({
           calendarModel,
           hostTimezone: availabilityHostTimezone,
+          windowStartIso: searchStartIso,
+          windowEndIso: searchEndIso,
           expiresAtMs: linkExpiresAtMs,
           tokenParamName,
           token: effectiveToken,
           weekOffset,
           windowLabel,
           clientDisplayName: linkClientDisplayName,
-          clientReference: linkClientReference
+          clientReference: linkClientReference,
+          browserGoogleClientId,
+          compareUiEnabled: availabilityCompareUiEnabled
         })
       );
     }

@@ -1754,6 +1754,7 @@ test("availability page renders open slots for valid short token", async () => {
     ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
     AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
     CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
+    GOOGLE_OAUTH_APP_SECRET_ARN: process.env.GOOGLE_OAUTH_APP_SECRET_ARN,
     CALENDAR_MODE: process.env.CALENDAR_MODE,
     HOST_TIMEZONE: process.env.HOST_TIMEZONE,
     ADVISING_DAYS: process.env.ADVISING_DAYS,
@@ -1762,6 +1763,8 @@ test("availability page renders open slots for valid short token", async () => {
     WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR,
     DEFAULT_DURATION_MINUTES: process.env.DEFAULT_DURATION_MINUTES,
     MAX_DURATION_MINUTES: process.env.MAX_DURATION_MINUTES,
+    AVAILABILITY_COMPARE_UI_ENABLED: process.env.AVAILABILITY_COMPARE_UI_ENABLED,
+    AVAILABILITY_VIEW_SLOT_MINUTES: process.env.AVAILABILITY_VIEW_SLOT_MINUTES,
     AVAILABILITY_VIEW_MAX_SLOTS: process.env.AVAILABILITY_VIEW_MAX_SLOTS
   };
 
@@ -1769,6 +1772,7 @@ test("availability page renders open slots for valid short token", async () => {
   process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
   process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
   process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  delete process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
   process.env.CALENDAR_MODE = "connection";
   process.env.HOST_TIMEZONE = "America/Los_Angeles";
   process.env.ADVISING_DAYS = "Tue,Wed";
@@ -1777,6 +1781,8 @@ test("availability page renders open slots for valid short token", async () => {
   process.env.WORKDAY_END_HOUR = "11";
   process.env.DEFAULT_DURATION_MINUTES = "30";
   process.env.MAX_DURATION_MINUTES = "120";
+  process.env.AVAILABILITY_COMPARE_UI_ENABLED = "true";
+  process.env.AVAILABILITY_VIEW_SLOT_MINUTES = "30";
   process.env.AVAILABILITY_VIEW_MAX_SLOTS = "96";
 
   try {
@@ -1888,18 +1894,21 @@ test("availability page enforces a one-week window even when SEARCH_DAYS is larg
     ADVISOR_ID: process.env.ADVISOR_ID,
     ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
     AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    GOOGLE_OAUTH_APP_SECRET_ARN: process.env.GOOGLE_OAUTH_APP_SECRET_ARN,
     CALENDAR_MODE: process.env.CALENDAR_MODE,
     GOOGLE_OAUTH_SECRET_ARN: process.env.GOOGLE_OAUTH_SECRET_ARN,
     HOST_TIMEZONE: process.env.HOST_TIMEZONE,
     ADVISING_DAYS: process.env.ADVISING_DAYS,
     SEARCH_DAYS: process.env.SEARCH_DAYS,
     WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
-    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR,
+    AVAILABILITY_VIEW_SLOT_MINUTES: process.env.AVAILABILITY_VIEW_SLOT_MINUTES
   };
 
   process.env.ADVISOR_ID = "manoj";
   process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
   process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  delete process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
   process.env.CALENDAR_MODE = "google";
   process.env.GOOGLE_OAUTH_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:google";
   process.env.HOST_TIMEZONE = "UTC";
@@ -1907,6 +1916,7 @@ test("availability page enforces a one-week window even when SEARCH_DAYS is larg
   process.env.SEARCH_DAYS = "31";
   process.env.WORKDAY_START_HOUR = "9";
   process.env.WORKDAY_END_HOUR = "11";
+  process.env.AVAILABILITY_VIEW_SLOT_MINUTES = "30";
 
   try {
     const response = await handler({
@@ -1926,6 +1936,284 @@ test("availability page enforces a one-week window even when SEARCH_DAYS is larg
     const startLocal = DateTime.fromISO(observedWindow.windowStartIso, { zone: "utc" }).setZone("UTC");
     const endLocal = DateTime.fromISO(observedWindow.windowEndIso, { zone: "utc" }).setZone("UTC");
     assert.equal(endLocal.diff(startLocal, "days").days, 7);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("availability page includes browser-only client calendar compare controls when Google app client is configured", async () => {
+  const tokenId = "comparecalendar123";
+  const nowMs = Date.now();
+  const handler = createPortalHandler({
+    async getAvailabilityLink(tableName, suppliedTokenId) {
+      assert.equal(tableName, "AvailabilityLinkTable");
+      assert.equal(suppliedTokenId, tokenId);
+      return {
+        tokenId,
+        advisorId: "manoj",
+        clientDisplayName: "Tito Needa",
+        clientReference: "tito-needa",
+        durationMinutes: 30,
+        expiresAtMs: nowMs + 60 * 60 * 1000
+      };
+    },
+    async getPrimaryConnection(tableName, suppliedAdvisorId) {
+      assert.equal(tableName, "ConnectionsTable");
+      assert.equal(suppliedAdvisorId, "manoj");
+      return {
+        provider: "mock",
+        status: "connected",
+        isPrimary: true
+      };
+    },
+    async getSecretString(secretArn) {
+      assert.equal(secretArn, "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-app");
+      return JSON.stringify({
+        client_id: "google-browser-client-id.apps.googleusercontent.com",
+        client_secret: "server-only-secret"
+      });
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
+    GOOGLE_OAUTH_APP_SECRET_ARN: process.env.GOOGLE_OAUTH_APP_SECRET_ARN,
+    CALENDAR_MODE: process.env.CALENDAR_MODE,
+    HOST_TIMEZONE: process.env.HOST_TIMEZONE,
+    ADVISING_DAYS: process.env.ADVISING_DAYS,
+    SEARCH_DAYS: process.env.SEARCH_DAYS,
+    WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR,
+    DEFAULT_DURATION_MINUTES: process.env.DEFAULT_DURATION_MINUTES,
+    MAX_DURATION_MINUTES: process.env.MAX_DURATION_MINUTES,
+    AVAILABILITY_COMPARE_UI_ENABLED: process.env.AVAILABILITY_COMPARE_UI_ENABLED,
+    AVAILABILITY_VIEW_SLOT_MINUTES: process.env.AVAILABILITY_VIEW_SLOT_MINUTES,
+    AVAILABILITY_VIEW_MAX_SLOTS: process.env.AVAILABILITY_VIEW_MAX_SLOTS
+  };
+
+  process.env.ADVISOR_ID = "manoj";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.GOOGLE_OAUTH_APP_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-app";
+  process.env.CALENDAR_MODE = "connection";
+  process.env.HOST_TIMEZONE = "America/Los_Angeles";
+  process.env.ADVISING_DAYS = "Tue,Wed";
+  process.env.SEARCH_DAYS = "7";
+  process.env.WORKDAY_START_HOUR = "9";
+  process.env.WORKDAY_END_HOUR = "11";
+  process.env.DEFAULT_DURATION_MINUTES = "30";
+  process.env.MAX_DURATION_MINUTES = "120";
+  process.env.AVAILABILITY_COMPARE_UI_ENABLED = "true";
+  process.env.AVAILABILITY_VIEW_SLOT_MINUTES = "30";
+  process.env.AVAILABILITY_VIEW_MAX_SLOTS = "96";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        t: tokenId,
+        weekOffset: "0"
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/availability"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.body, /Optional: compare with your Google Calendar/);
+    assert.match(response.body, /id="compare-connect"/);
+    assert.match(response.body, /id="compare-clear"/);
+    assert.match(response.body, /id="legend-both-open"/);
+    assert.match(response.body, /https:\/\/accounts\.google\.com\/gsi\/client/);
+    assert.match(response.body, /google-browser-client-id\.apps\.googleusercontent\.com/);
+    assert.equal(response.body.includes("server-only-secret"), false);
+    assert.match(response.body, /timeMinIso/);
+    assert.match(response.body, /timeMaxIso/);
+    assert.match(response.body, /function runBrowserCalendarCompare\(\)/);
+    assert.match(response.body, /calendar\.readonly/);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("availability page hides browser calendar compare controls by default", async () => {
+  const tokenId = "comparedisabled123";
+  const nowMs = Date.now();
+  const handler = createPortalHandler({
+    async getAvailabilityLink() {
+      return {
+        tokenId,
+        advisorId: "manoj",
+        clientDisplayName: "Tito Needa",
+        durationMinutes: 30,
+        expiresAtMs: nowMs + 60 * 60 * 1000
+      };
+    },
+    async getPrimaryConnection() {
+      return {
+        provider: "mock",
+        status: "connected",
+        isPrimary: true
+      };
+    },
+    async getSecretString() {
+      return JSON.stringify({
+        client_id: "google-browser-client-id.apps.googleusercontent.com",
+        client_secret: "server-only-secret"
+      });
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
+    GOOGLE_OAUTH_APP_SECRET_ARN: process.env.GOOGLE_OAUTH_APP_SECRET_ARN,
+    AVAILABILITY_COMPARE_UI_ENABLED: process.env.AVAILABILITY_COMPARE_UI_ENABLED,
+    CALENDAR_MODE: process.env.CALENDAR_MODE,
+    HOST_TIMEZONE: process.env.HOST_TIMEZONE,
+    ADVISING_DAYS: process.env.ADVISING_DAYS,
+    SEARCH_DAYS: process.env.SEARCH_DAYS,
+    WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR
+  };
+
+  process.env.ADVISOR_ID = "manoj";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.GOOGLE_OAUTH_APP_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-app";
+  delete process.env.AVAILABILITY_COMPARE_UI_ENABLED;
+  process.env.CALENDAR_MODE = "connection";
+  process.env.HOST_TIMEZONE = "America/Los_Angeles";
+  process.env.ADVISING_DAYS = "Tue,Wed";
+  process.env.SEARCH_DAYS = "7";
+  process.env.WORKDAY_START_HOUR = "9";
+  process.env.WORKDAY_END_HOUR = "11";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        t: tokenId
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/availability"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.includes("Optional: compare with your Google Calendar"), false);
+    assert.equal(response.body.includes('id="compare-connect"'), false);
+    assert.equal(response.body.includes("https://accounts.google.com/gsi/client"), false);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("availability page keeps 30-minute slots while highlighting starts that fit a longer requested duration", async () => {
+  const tokenId = "longdurationview15";
+  const nowMs = Date.now();
+  const handler = createPortalHandler({
+    async getAvailabilityLink(tableName, suppliedTokenId) {
+      assert.equal(tableName, "AvailabilityLinkTable");
+      assert.equal(suppliedTokenId, tokenId);
+      return {
+        tokenId,
+        advisorId: "manoj",
+        clientDisplayName: "Tito Needa",
+        clientReference: "tito-needa",
+        durationMinutes: 120,
+        expiresAtMs: nowMs + 60 * 60 * 1000
+      };
+    },
+    async getPrimaryConnection(tableName, suppliedAdvisorId) {
+      assert.equal(tableName, "ConnectionsTable");
+      assert.equal(suppliedAdvisorId, "manoj");
+      return {
+        provider: "mock",
+        status: "connected",
+        isPrimary: true
+      };
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
+    GOOGLE_OAUTH_APP_SECRET_ARN: process.env.GOOGLE_OAUTH_APP_SECRET_ARN,
+    CALENDAR_MODE: process.env.CALENDAR_MODE,
+    HOST_TIMEZONE: process.env.HOST_TIMEZONE,
+    ADVISING_DAYS: process.env.ADVISING_DAYS,
+    SEARCH_DAYS: process.env.SEARCH_DAYS,
+    WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR,
+    DEFAULT_DURATION_MINUTES: process.env.DEFAULT_DURATION_MINUTES,
+    MAX_DURATION_MINUTES: process.env.MAX_DURATION_MINUTES,
+    AVAILABILITY_VIEW_SLOT_MINUTES: process.env.AVAILABILITY_VIEW_SLOT_MINUTES,
+    AVAILABILITY_VIEW_MAX_SLOTS: process.env.AVAILABILITY_VIEW_MAX_SLOTS
+  };
+
+  process.env.ADVISOR_ID = "manoj";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  delete process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
+  process.env.CALENDAR_MODE = "connection";
+  process.env.HOST_TIMEZONE = "America/Los_Angeles";
+  process.env.ADVISING_DAYS = "Tue,Wed";
+  process.env.SEARCH_DAYS = "7";
+  process.env.WORKDAY_START_HOUR = "9";
+  process.env.WORKDAY_END_HOUR = "12";
+  process.env.DEFAULT_DURATION_MINUTES = "30";
+  process.env.MAX_DURATION_MINUTES = "180";
+  process.env.AVAILABILITY_VIEW_SLOT_MINUTES = "30";
+  process.env.AVAILABILITY_VIEW_MAX_SLOTS = "200";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        t: tokenId
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/availability"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.body, /9:30 AM/);
+    assert.match(response.body, /10:30 AM/);
+    assert.match(response.body, /Fits requested 2h meeting/);
+    assert.match(response.body, /Highlighted start times can fit your requested meeting length of <code>2h<\/code>/);
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {
@@ -2024,18 +2312,21 @@ test("availability page shows busy blocks without exposing meeting details", asy
     ADVISOR_ID: process.env.ADVISOR_ID,
     ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
     AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    GOOGLE_OAUTH_APP_SECRET_ARN: process.env.GOOGLE_OAUTH_APP_SECRET_ARN,
     CALENDAR_MODE: process.env.CALENDAR_MODE,
     GOOGLE_OAUTH_SECRET_ARN: process.env.GOOGLE_OAUTH_SECRET_ARN,
     HOST_TIMEZONE: process.env.HOST_TIMEZONE,
     ADVISING_DAYS: process.env.ADVISING_DAYS,
     SEARCH_DAYS: process.env.SEARCH_DAYS,
     WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
-    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR,
+    AVAILABILITY_VIEW_SLOT_MINUTES: process.env.AVAILABILITY_VIEW_SLOT_MINUTES
   };
 
   process.env.ADVISOR_ID = "manoj";
   process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
   process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  delete process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
   process.env.CALENDAR_MODE = "google";
   process.env.GOOGLE_OAUTH_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:google";
   process.env.HOST_TIMEZONE = "America/Los_Angeles";
@@ -2043,6 +2334,7 @@ test("availability page shows busy blocks without exposing meeting details", asy
   process.env.SEARCH_DAYS = "7";
   process.env.WORKDAY_START_HOUR = "9";
   process.env.WORKDAY_END_HOUR = "11";
+  process.env.AVAILABILITY_VIEW_SLOT_MINUTES = "30";
 
   try {
     const response = await handler({
@@ -2150,18 +2442,21 @@ test("availability page shows client meeting details with accepted/pending and o
     ADVISOR_ID: process.env.ADVISOR_ID,
     ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
     AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    GOOGLE_OAUTH_APP_SECRET_ARN: process.env.GOOGLE_OAUTH_APP_SECRET_ARN,
     CALENDAR_MODE: process.env.CALENDAR_MODE,
     GOOGLE_OAUTH_SECRET_ARN: process.env.GOOGLE_OAUTH_SECRET_ARN,
     HOST_TIMEZONE: process.env.HOST_TIMEZONE,
     ADVISING_DAYS: process.env.ADVISING_DAYS,
     SEARCH_DAYS: process.env.SEARCH_DAYS,
     WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
-    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR,
+    AVAILABILITY_VIEW_SLOT_MINUTES: process.env.AVAILABILITY_VIEW_SLOT_MINUTES
   };
 
   process.env.ADVISOR_ID = "manoj";
   process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
   process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  delete process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
   process.env.CALENDAR_MODE = "google";
   process.env.GOOGLE_OAUTH_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:google";
   process.env.HOST_TIMEZONE = "America/Los_Angeles";
@@ -2169,6 +2464,7 @@ test("availability page shows client meeting details with accepted/pending and o
   process.env.SEARCH_DAYS = "7";
   process.env.WORKDAY_START_HOUR = "9";
   process.env.WORKDAY_END_HOUR = "11";
+  process.env.AVAILABILITY_VIEW_SLOT_MINUTES = "30";
 
   try {
     const response = await handler({
@@ -2258,18 +2554,21 @@ test("availability page merges long single client meeting into one advisor block
     ADVISOR_ID: process.env.ADVISOR_ID,
     ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
     AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    GOOGLE_OAUTH_APP_SECRET_ARN: process.env.GOOGLE_OAUTH_APP_SECRET_ARN,
     CALENDAR_MODE: process.env.CALENDAR_MODE,
     GOOGLE_OAUTH_SECRET_ARN: process.env.GOOGLE_OAUTH_SECRET_ARN,
     HOST_TIMEZONE: process.env.HOST_TIMEZONE,
     ADVISING_DAYS: process.env.ADVISING_DAYS,
     SEARCH_DAYS: process.env.SEARCH_DAYS,
     WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
-    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR,
+    AVAILABILITY_VIEW_SLOT_MINUTES: process.env.AVAILABILITY_VIEW_SLOT_MINUTES
   };
 
   process.env.ADVISOR_ID = "manoj";
   process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
   process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  delete process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
   process.env.CALENDAR_MODE = "google";
   process.env.GOOGLE_OAUTH_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:google";
   process.env.HOST_TIMEZONE = "America/Los_Angeles";
@@ -2277,6 +2576,7 @@ test("availability page merges long single client meeting into one advisor block
   process.env.SEARCH_DAYS = "7";
   process.env.WORKDAY_START_HOUR = "9";
   process.env.WORKDAY_END_HOUR = "11";
+  process.env.AVAILABILITY_VIEW_SLOT_MINUTES = "30";
 
   try {
     const response = await handler({
@@ -2337,11 +2637,13 @@ test("availability page rejects client profile marked deleted", async () => {
     ADVISOR_ID: process.env.ADVISOR_ID,
     ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
     AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    GOOGLE_OAUTH_APP_SECRET_ARN: process.env.GOOGLE_OAUTH_APP_SECRET_ARN,
     CLIENT_PROFILES_TABLE_NAME: process.env.CLIENT_PROFILES_TABLE_NAME
   };
   process.env.ADVISOR_ID = "manoj";
   process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
   process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  delete process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
   process.env.CLIENT_PROFILES_TABLE_NAME = "ClientProfilesTable";
 
   try {
