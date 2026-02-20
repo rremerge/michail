@@ -25,11 +25,14 @@ test("template defines isolated serverless resources", () => {
   assert.match(template, /Path:\s*\/advisor\/api\/traces\/\{requestId\}\/feedback/);
   assert.match(template, /Path:\s*\/advisor\/api\/clients/);
   assert.match(template, /Path:\s*\/advisor\/api\/clients\/\{clientId\}/);
+  assert.match(template, /Path:\s*\/advisor\/api\/settings/);
   assert.match(template, /TRACE_TABLE_NAME/);
   assert.match(template, /AvailabilityLinkTable/);
   assert.match(template, /AVAILABILITY_LINK_TABLE_NAME/);
   assert.match(template, /ClientProfilesTable/);
   assert.match(template, /CLIENT_PROFILES_TABLE_NAME/);
+  assert.match(template, /AdvisorSettingsTable/);
+  assert.match(template, /ADVISOR_SETTINGS_TABLE_NAME/);
   assert.match(template, /CLIENT_POLICY_PRESETS_JSON/);
   assert.match(template, /INTENT_EXTRACTION_MODE/);
   assert.match(template, /InboundRawEmailBucket/);

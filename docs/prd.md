@@ -165,6 +165,30 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 5. Branding assets and behavior shall be designed so the advisor logo can be replaced without code changes.
 6. If no advisor logo is configured, the system shall automatically fall back to the default `letsconnect.ai` logo.
 
+### FR-19 Optional Client Calendar Compare in Browser (Deferred / Experimental)
+1. Availability view may offer an optional client action to compare advisor availability against the client's own calendar in the browser.
+2. The client must explicitly grant read-only calendar access for a single browser session using provider OAuth consent (for example Google) before any client-calendar fetch occurs.
+3. OAuth tokens for this feature shall be handled client-side only, with session-scoped lifetime and automatic discard on logout/session end/page close; backend storage of client OAuth refresh/access tokens for this compare feature is not allowed.
+4. Client-calendar busy windows fetched via this mode shall be compared in browser JavaScript with advisor busy/free windows to compute intersection slots open for both parties.
+5. UI shall clearly indicate that dual-availability results are computed from temporary client consent and may be disabled at any time by the client.
+6. If client consent is denied, revoked, expired, or provider API fails, the page shall gracefully fall back to advisor-only availability rendering.
+
+### FR-20 Advisor Profile Defaults and Editable Scheduling Identity
+1. System shall initialize advisor profile defaults at first successful advisor-portal Google login:
+   - `advisorInviteEmail` default = advisor Google login email.
+   - `preferredName` default = advisor Google profile display name (or email-local-part fallback).
+   - `timezone` default = `America/Los_Angeles`.
+2. Advisor portal shall provide UI/API for advisor to view and update `advisorInviteEmail`, `preferredName`, and `timezone` without redeploying infrastructure.
+3. Email-agent booking and response generation shall use advisor profile settings as effective defaults:
+   - invite recipient for advisor copy = `advisorInviteEmail`
+   - signature/display name = `preferredName`
+   - advisor scheduling/rendering timezone = `timezone`
+4. If advisor profile settings are missing or partially configured, system shall apply deterministic fallback order:
+   - `advisorInviteEmail`: advisor profile setting -> configured environment default -> connection/account fallback
+   - `preferredName`: advisor profile setting -> configured environment display name -> advisor id derived label
+   - `timezone`: advisor profile setting -> configured environment timezone -> `America/Los_Angeles`
+5. Advisor profile updates shall be validated (`inviteEmail` RFC-like email format, `timezone` valid IANA zone, non-empty `preferredName`) before persistence.
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -182,6 +206,8 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 11. Access revocation SLA: deleted/blocked clients must lose availability-page access within 5 minutes.
 12. Prompt-injection resilience: high-risk injection attempts shall be blocked from changing system/tool behavior and shall trigger fallback handling in <= 5 seconds p95.
 13. Branding consistency: all web pages must render required legal footer text and deterministic default branding when no custom advisor branding is configured.
+14. Client-browser OAuth safety: optional client-calendar compare shall use least-privilege read-only scopes, session-limited token handling, and no server-side persistence of client OAuth tokens for that feature.
+15. Advisor profile consistency: advisor profile defaults and updates shall propagate to email response behavior within one request cycle (no manual restart required).
 
 ## 8. Data and Policy Requirements
 1. Persist only non-content metadata required for operations (for example: request ids, workflow status, provider event ids, policy decision outcomes).
@@ -195,6 +221,8 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 9. On client deletion, revoke active availability tokens/links and keep only minimal suppression metadata required to enforce blocked/deleted state.
 10. For security analysis, store only metadata-level injection indicators and guardrail outcomes; never persist raw adversarial prompt content after task completion.
 11. Branding configuration shall store only the minimum data needed for rendering (for example: advisor branding preference and logo reference/content), with validation for image type and size.
+12. For optional browser-side client-calendar compare, do not persist client calendar OAuth tokens or raw client event content on backend services; only minimal derived metadata (for example: feature-used flag and timestamp) may be recorded if needed.
+13. Persist advisor profile metadata only (`advisorId`, `inviteEmail`, `preferredName`, `timezone`, timestamps); do not store additional identity/profile content beyond scheduling needs.
 
 ## 9. Success Metrics
 1. Reduce manual scheduling time by >= 70% within first 60 days.
@@ -229,6 +257,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 2. SMS/text integration.
 3. Advanced multi-stop route optimization.
 4. Deep organization directory integrations.
+5. Optional client browser-session calendar compare (FR-19).
 
 ## 12. Risks and Dependencies
 1. External API quotas and rate limits (Google, Microsoft, email provider).
@@ -261,6 +290,9 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 18. Given a client is included in meetings on the advisor calendar, when the client opens the availability view, then client-included meetings are shown with detail and acceptance-state color indicators while non-client meetings remain detail-hidden.
 19. Given a client-included meeting overlaps other busy time, when rendering that slot, then the slot indicates both client-included meeting presence and overlapping busy state.
 20. Given advisor and client web pages are rendered, when page loads, then required legal footer notice is visible, default letsconnect.ai logo is shown unless advisor branding is configured, and `Powered by LetsConnect.ai` appears when advisor custom logo is active.
+21. Given a client explicitly grants one-session read-only calendar consent in the availability page, when provider fetch succeeds, then the page shows slots open on both advisor and client calendars without persisting client OAuth tokens or raw client event content on backend services.
+22. Given advisor logs into advisor portal with Google for the first time, when profile defaults are initialized, then `advisorInviteEmail` equals login email, `preferredName` is derived from Google profile, and timezone defaults to `America/Los_Angeles`.
+23. Given advisor edits invite email, preferred name, or timezone in advisor portal, when update is saved, then subsequent email responses/invite flows use updated values without code changes.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
@@ -268,6 +300,8 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 3. Add configurable meeting templates and intake forms.
 4. Add analytics dashboard for conversion and scheduling efficiency.
 5. Add granular policy-based advising windows (day + time ranges) in advisor portal policy management.
+6. Add optional one-session browser-side client calendar compare (dual-open slot highlighting) with provider OAuth consent.
+7. Add richer advisor-profile controls (for example locale, signature templates, per-channel identity overrides) while preserving metadata-only persistence.
 
 ## 15. Reference User Story (Verbatim)
 User story: 
@@ -286,3 +320,11 @@ The Advisor would also like future support for more granular availability config
 When a client is included in a meeting on the advisor calendar, the availability view should show meeting detail for that client-included meeting instead of only showing the slot as busy. If the advisor has accepted the meeting, show it in green; if not accepted, show it in yellow. If the client-included meeting overlaps with other busy events, the slot should clearly indicate both the busy overlap and the client-included scheduled meeting. For display classification, inclusion defaults to attendee/organizer domain matching, except for common free-email domains (`live.com`, `gmail.com`, `mail.google.com`, `hotmail.com`, `mail.ru`, `yahoo.com`) where exact email-address matching is required. A client does not need to be the creator/owner of the meeting; attendee inclusion is sufficient.
 
 For branding, every webpage should always show a legal copyright notice (`Copyright (C) 2026. RR Emerge LLC`). The advisor portal and client availability page should show a default letsconnect.ai logo at the top, and the advisor should be able to upload and use their own logo for white-labeling. When advisor logo branding is active, the footer should also include `Powered by LetsConnect.ai`.
+
+When a client is viewing the advisors calendar, maybe there is a way for the client to grant temporary, one session only read privilidge to the clients browser for pulling their google calendar events. If that is possible, we could then compare the clients own calendar and the advisors calendar we pulled to the browser, and the browser's javascript would compare and suggests slots that are open for both.
+
+The advisor_invite_email should by default be the Google login used for advisor portal login. The advisor should be able to modify advisor_invite_email in the advisor portal, and also set preferred advisor name and advisor timezone there. Preferred name should default from Google login/profile, and timezone should default to America/Los_Angeles.
+
+It is desirable that when the agent is deployed it does not have any pre-knowledge of the identity of the advisor. In fact the same agent should have the ability to service multiple advisors and must keep their data separate. Each advisor will have their own clients, and settings as created in the advisor portal. Toward that each advisor must be able to pick their own agent name for like the current default agent@agent.letsconnect.ai. For instance lets say it would be manoj.agent@agent.letsconnect.ai for manoj and lalita.agent@agent.letsconnect.ai for lalita by default. The advisor can then change the name of the agent if they desire to do so by modifying the name in their portal.
+
+The agent must repond only to emails from the advisor or existing clients. Anyone listed in the advisor email get added as clients. Or the advisor may bulk import clients into the advisor portal. There should be no other way to add clients. This way we ensure that unknown persons do not get a response from the agent at all. Any email from an unknown source should be blackholed with no response.

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import {
   CreateSecretCommand,
   DeleteSecretCommand,
@@ -35,6 +36,12 @@ async function streamBodyToString(body) {
   }
 
   return Buffer.concat(chunks).toString("utf8");
+}
+
+function sanitizeHeaderValue(value) {
+  return String(value ?? "")
+    .replace(/[\r\n]+/g, " ")
+    .trim();
 }
 
 export function createRuntimeDeps() {
@@ -269,6 +276,28 @@ export function createRuntimeDeps() {
       return response.Item ?? null;
     },
 
+    async getAdvisorSettings(advisorSettingsTableName, advisorId) {
+      const response = await ddbClient.send(
+        new GetCommand({
+          TableName: advisorSettingsTableName,
+          Key: {
+            advisorId
+          }
+        })
+      );
+
+      return response.Item ?? null;
+    },
+
+    async putAdvisorSettings(advisorSettingsTableName, item) {
+      await ddbClient.send(
+        new PutCommand({
+          TableName: advisorSettingsTableName,
+          Item: item
+        })
+      );
+    },
+
     async listClientProfiles(clientProfilesTableName, advisorId) {
       const response = await ddbClient.send(
         new QueryCommand({
@@ -450,6 +479,72 @@ export function createRuntimeDeps() {
               Body: {
                 Text: { Data: bodyText }
               }
+            }
+          }
+        })
+      );
+    },
+
+    async sendCalendarInviteEmail({ senderEmail, toEmails, subject, bodyText, icsContent }) {
+      const recipients = Array.isArray(toEmails)
+        ? toEmails
+            .map((item) => String(item ?? "").trim().toLowerCase())
+            .filter((item) => item.includes("@"))
+        : [];
+      if (recipients.length === 0) {
+        throw new Error("sendCalendarInviteEmail requires at least one recipient");
+      }
+
+      const safeSubject = sanitizeHeaderValue(subject || "Calendar invite");
+      const safeBody = String(bodyText ?? "").replace(/\r?\n/g, "\r\n");
+      const safeIcs = String(icsContent ?? "").replace(/\r?\n/g, "\r\n");
+      const mixedBoundary = `mixed-${crypto.randomUUID()}`;
+      const alternativeBoundary = `alt-${crypto.randomUUID()}`;
+
+      const rawMessage = [
+        `From: ${sanitizeHeaderValue(senderEmail)}`,
+        `To: ${sanitizeHeaderValue(recipients.join(", "))}`,
+        `Subject: ${safeSubject}`,
+        "MIME-Version: 1.0",
+        `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
+        "",
+        `--${mixedBoundary}`,
+        `Content-Type: multipart/alternative; boundary="${alternativeBoundary}"`,
+        "",
+        `--${alternativeBoundary}`,
+        "Content-Type: text/plain; charset=UTF-8",
+        "Content-Transfer-Encoding: 7bit",
+        "",
+        safeBody,
+        "",
+        `--${alternativeBoundary}`,
+        "Content-Type: text/calendar; method=REQUEST; charset=UTF-8",
+        "Content-Transfer-Encoding: 7bit",
+        "",
+        safeIcs,
+        "",
+        `--${alternativeBoundary}--`,
+        "",
+        `--${mixedBoundary}`,
+        'Content-Type: text/calendar; name="invite.ics"; method=REQUEST; charset=UTF-8',
+        "Content-Transfer-Encoding: 7bit",
+        'Content-Disposition: attachment; filename="invite.ics"',
+        "",
+        safeIcs,
+        "",
+        `--${mixedBoundary}--`,
+        ""
+      ].join("\r\n");
+
+      await sesClient.send(
+        new SendEmailCommand({
+          FromEmailAddress: senderEmail,
+          Destination: {
+            ToAddresses: recipients
+          },
+          Content: {
+            Raw: {
+              Data: Buffer.from(rawMessage)
             }
           }
         })

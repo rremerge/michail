@@ -26,9 +26,11 @@ import { simpleParser } from "mailparser";
 
 const DEFAULT_INTENT_CONFIDENCE_THRESHOLD = 0.65;
 const DEFAULT_AVAILABILITY_LINK_TTL_MINUTES = 7 * 24 * 60;
+const DEFAULT_ADVISOR_TIMEZONE = "America/Los_Angeles";
 const DEFAULT_PROMPT_GUARD_MODE = "heuristic_llm";
 const DEFAULT_PROMPT_GUARD_BLOCK_LEVEL = "high";
 const DEFAULT_PROMPT_GUARD_LLM_TIMEOUT_MS = 3000;
+const DEFAULT_CALENDAR_INVITE_TITLE = "Advisory Meeting";
 const DAYPART_PATTERN = /\b(early morning|late morning|late afternoon|morning|afternoon|evening|night|noon|lunch)\b/gi;
 const DAYPART_WINDOWS = {
   "early morning": { startMinute: 8 * 60, endMinute: 10 * 60 },
@@ -46,6 +48,8 @@ const PROMPT_GUARD_LEVEL_RANK = {
   medium: 1,
   high: 2
 };
+const BOOKING_INTENT_KEYWORDS =
+  /\b(book|confirm|lock|reserve|schedule|send (?:me )?(?:the )?invite|calendar invite|works for me|that works|go ahead)\b/i;
 const PROMPT_GUARD_ALLOWED_MODES = new Set(["off", "heuristic", "llm", "heuristic_llm"]);
 
 function parseIntEnv(value, fallback) {
@@ -56,6 +60,20 @@ function parseIntEnv(value, fallback) {
 function parseClampedIntEnv(value, fallback, minimum, maximum) {
   const parsed = parseIntEnv(value, fallback);
   return Math.min(Math.max(parsed, minimum), maximum);
+}
+
+function normalizeTimezone(value, fallbackTimezone) {
+  const candidate = String(value ?? "").trim();
+  if (!candidate) {
+    return fallbackTimezone;
+  }
+
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: candidate }).format(new Date("2026-01-01T00:00:00Z"));
+    return candidate;
+  } catch {
+    return fallbackTimezone;
+  }
 }
 
 function normalizePromptGuardMode(value) {
@@ -116,6 +134,171 @@ function normalizeRequestedWindowsToUtc(requestedWindows) {
       };
     })
     .filter(Boolean);
+}
+
+function hasBookingIntent({ subject, body, normalizedRequestedWindows }) {
+  if (!Array.isArray(normalizedRequestedWindows) || normalizedRequestedWindows.length === 0) {
+    return false;
+  }
+
+  const merged = `${String(subject ?? "")}\n${String(body ?? "")}`;
+  return BOOKING_INTENT_KEYWORDS.test(merged);
+}
+
+function uniqueEmails(items) {
+  const deduped = new Set();
+  for (const item of items) {
+    const normalized = normalizeEmailAddress(item);
+    if (!normalized) {
+      continue;
+    }
+    deduped.add(normalized);
+  }
+
+  return [...deduped];
+}
+
+function formatDateUtcForIcs(isoUtc) {
+  const parsed = DateTime.fromISO(String(isoUtc ?? ""), { zone: "utc" });
+  if (!parsed.isValid) {
+    return "";
+  }
+
+  return parsed.toFormat("yyyyLLdd'T'HHmmss'Z'");
+}
+
+function escapeIcsText(value) {
+  return String(value ?? "")
+    .replace(/\\/g, "\\\\")
+    .replace(/;/g, "\\;")
+    .replace(/,/g, "\\,")
+    .replace(/\r?\n/g, "\\n");
+}
+
+function foldIcsLine(line) {
+  const maxLength = 73;
+  if (line.length <= maxLength) {
+    return line;
+  }
+
+  let remaining = line;
+  const folded = [];
+  while (remaining.length > maxLength) {
+    folded.push(remaining.slice(0, maxLength));
+    remaining = remaining.slice(maxLength);
+  }
+  folded.push(remaining);
+  return folded.join("\r\n ");
+}
+
+function buildIcsInvite({
+  uid,
+  nowIso,
+  startIsoUtc,
+  endIsoUtc,
+  summary,
+  description,
+  organizerEmail,
+  organizerName,
+  attendeeEmails
+}) {
+  const dtStamp = formatDateUtcForIcs(nowIso);
+  const dtStart = formatDateUtcForIcs(startIsoUtc);
+  const dtEnd = formatDateUtcForIcs(endIsoUtc);
+  const normalizedSummary = escapeIcsText(summary);
+  const normalizedDescription = escapeIcsText(description);
+  const normalizedOrganizerName = escapeIcsText(organizerName);
+  const normalizedOrganizerEmail = normalizeEmailAddress(organizerEmail);
+
+  const lines = [
+    "BEGIN:VCALENDAR",
+    "PRODID:-//LetsConnect.ai//Calendar Agent//EN",
+    "VERSION:2.0",
+    "CALSCALE:GREGORIAN",
+    "METHOD:REQUEST",
+    "BEGIN:VEVENT",
+    `UID:${uid}`,
+    `DTSTAMP:${dtStamp}`,
+    `DTSTART:${dtStart}`,
+    `DTEND:${dtEnd}`,
+    `SUMMARY:${normalizedSummary}`,
+    `DESCRIPTION:${normalizedDescription}`,
+    `ORGANIZER;CN=${normalizedOrganizerName}:mailto:${normalizedOrganizerEmail}`,
+    "SEQUENCE:0",
+    "STATUS:CONFIRMED"
+  ];
+
+  for (const attendeeEmail of attendeeEmails) {
+    const normalizedAttendeeEmail = normalizeEmailAddress(attendeeEmail);
+    if (!normalizedAttendeeEmail) {
+      continue;
+    }
+
+    lines.push(`ATTENDEE;CN=${escapeIcsText(normalizedAttendeeEmail)};RSVP=TRUE:mailto:${normalizedAttendeeEmail}`);
+  }
+
+  lines.push("END:VEVENT", "END:VCALENDAR");
+  return `${lines.map(foldIcsLine).join("\r\n")}\r\n`;
+}
+
+function formatInviteLabel(isoUtc, timezone) {
+  const date = new Date(isoUtc);
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    weekday: "short",
+    month: "short",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
+    timeZoneName: "short"
+  }).format(date);
+}
+
+function buildCalendarInviteMessage({
+  subject,
+  selectedSlot,
+  hostTimezone,
+  clientTimezone,
+  advisorDisplayName,
+  senderEmail,
+  attendeeEmails,
+  requestId,
+  nowIso,
+  inviteTitle,
+  inviteDescription
+}) {
+  const hostLabel = formatInviteLabel(selectedSlot.startIsoUtc, hostTimezone);
+  const clientLabel = clientTimezone ? formatInviteLabel(selectedSlot.startIsoUtc, clientTimezone) : null;
+  const safeTitle = String(inviteTitle ?? DEFAULT_CALENDAR_INVITE_TITLE).trim() || DEFAULT_CALENDAR_INVITE_TITLE;
+  const safeDescription =
+    String(inviteDescription ?? "").trim() ||
+    `Scheduled via LetsConnect.ai. Advisor timezone: ${hostTimezone}.`;
+  const meetingUid = `${requestId}@letsconnect.ai`;
+
+  const bodyLines = [
+    `I have prepared a calendar invite for ${hostLabel}.`,
+    clientLabel ? `Your local time: ${clientLabel}.` : null,
+    "Please accept the invite in your calendar app."
+  ].filter(Boolean);
+
+  const icsContent = buildIcsInvite({
+    uid: meetingUid,
+    nowIso,
+    startIsoUtc: selectedSlot.startIsoUtc,
+    endIsoUtc: selectedSlot.endIsoUtc,
+    summary: safeTitle,
+    description: safeDescription,
+    organizerEmail: senderEmail,
+    organizerName: advisorDisplayName,
+    attendeeEmails
+  });
+
+  return {
+    subject: `Calendar invite: ${subject || "Meeting request"}`,
+    bodyText: bodyLines.join("\n"),
+    icsContent
+  };
 }
 
 function detectRequestedDaypart(subject, body) {
@@ -756,7 +939,18 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const fromDomain = extractDomainFromEmail(fromEmail);
   const { bodyText, bodySource } = await resolveInboundEmailBody({ payload, env, deps });
 
-  const hostTimezone = env.HOST_TIMEZONE ?? "America/Los_Angeles";
+  const advisorId = env.ADVISOR_ID ?? "manoj";
+  const advisorSettingsTableName = String(env.ADVISOR_SETTINGS_TABLE_NAME ?? "").trim();
+  let advisorSettings = null;
+  if (advisorSettingsTableName && typeof deps.getAdvisorSettings === "function") {
+    try {
+      advisorSettings = await deps.getAdvisorSettings(advisorSettingsTableName, advisorId);
+    } catch {
+      advisorSettings = null;
+    }
+  }
+
+  const hostTimezone = normalizeTimezone(advisorSettings?.timezone, normalizeTimezone(env.HOST_TIMEZONE, DEFAULT_ADVISOR_TIMEZONE));
   const defaultAdvisingDays = parseAdvisingDaysList(env.ADVISING_DAYS ?? "Tue,Wed", ["Tue", "Wed"]);
 
   const durationDefault = parseIntEnv(env.DEFAULT_DURATION_MINUTES, 30);
@@ -767,8 +961,13 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const workdayEndHour = parseIntEnv(env.WORKDAY_END_HOUR, 17);
   const responseMode = (env.RESPONSE_MODE ?? "log").toLowerCase();
   const calendarMode = (env.CALENDAR_MODE ?? "mock").toLowerCase();
-  const advisorId = env.ADVISOR_ID ?? "manoj";
-  const advisorDisplayName = deriveAdvisorDisplayName(env.ADVISOR_DISPLAY_NAME, advisorId);
+  const advisorDisplayName = deriveAdvisorDisplayName(
+    String(advisorSettings?.preferredName ?? "").trim() || env.ADVISOR_DISPLAY_NAME,
+    advisorId
+  );
+  const advisorInviteEmailOverride = normalizeEmailAddress(advisorSettings?.inviteEmail || env.ADVISOR_INVITE_EMAIL);
+  const calendarInviteTitle = String(env.CALENDAR_INVITE_TITLE ?? DEFAULT_CALENDAR_INVITE_TITLE).trim();
+  const calendarInviteDescription = String(env.CALENDAR_INVITE_DESCRIPTION ?? "").trim();
   const llmMode = (env.LLM_MODE ?? "disabled").toLowerCase();
   const llmTimeoutMs = parseIntEnv(env.LLM_TIMEOUT_MS, 4000);
   const llmProviderSecretArn = env.LLM_PROVIDER_SECRET_ARN ?? "";
@@ -1106,6 +1305,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
 
   let busyIntervals = [];
   let providerStatus = "ok";
+  let activeConnection = null;
 
   try {
     if (calendarMode === "mock") {
@@ -1134,6 +1334,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       if (!connection) {
         throw new Error("No connected calendars found. Add a calendar in Advisor Portal.");
       }
+      activeConnection = connection;
 
       if (connection.provider === "mock") {
         busyIntervals = [];
@@ -1186,9 +1387,10 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     };
   }
 
+  const normalizedRequestedWindows = normalizeRequestedWindowsToUtc(parsed.requestedWindows);
   const suggestions = generateCandidateSlots({
     busyIntervalsUtc: busyIntervals,
-    requestedWindowsUtc: normalizeRequestedWindowsToUtc(parsed.requestedWindows),
+    requestedWindowsUtc: normalizedRequestedWindows,
     hostTimezone,
     advisingWeekdays: advisingDays,
     searchStartUtc: searchStartIso,
@@ -1208,52 +1410,115 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   let responseMessage = templateResponseMessage;
   let llmStatus = "disabled";
   let availabilityLinkStatus = "pending";
+  let bookingStatus = "not_requested";
+  let inviteRecipients = [];
 
-  if (llmMode === "openai") {
-    try {
-      if (!llmProviderSecretArn) {
-        throw new Error("LLM_PROVIDER_SECRET_ARN is required for LLM_MODE=openai");
-      }
+  const bookingRequested = hasBookingIntent({
+    subject: payload.subject,
+    body: bodyText,
+    normalizedRequestedWindows
+  });
 
-      const llmSecretString = await deps.getSecretString(llmProviderSecretArn);
-      const openAiConfig = parseOpenAiConfigSecret(llmSecretString);
-      responseMessage = await deps.draftResponseWithLlm({
-        openAiConfig,
-        suggestions,
+  if (bookingRequested) {
+    if (suggestions.length > 0) {
+      const advisorInviteEmail = normalizeEmailAddress(
+        advisorInviteEmailOverride || activeConnection?.accountEmail || env.ADVISOR_EMAIL || env.SENDER_EMAIL
+      );
+      inviteRecipients = uniqueEmails([fromEmail, advisorInviteEmail]);
+      responseMessage = buildCalendarInviteMessage({
+        subject: payload.subject,
+        selectedSlot: suggestions[0],
         hostTimezone,
         clientTimezone: parsed.clientTimezone,
-        originalSubject: payload.subject,
-        fetchImpl: deps.fetchImpl,
-        timeoutMs: llmTimeoutMs
+        advisorDisplayName,
+        senderEmail: env.SENDER_EMAIL || "agent@letsconnect.ai",
+        attendeeEmails: inviteRecipients,
+        requestId,
+        nowIso: startedAtIso,
+        inviteTitle: calendarInviteTitle,
+        inviteDescription: calendarInviteDescription
       });
-      llmStatus = "ok";
-    } catch {
-      llmStatus = "fallback";
-      responseMessage = templateResponseMessage;
+      llmStatus = "skipped_booking";
+      availabilityLinkStatus = "not_applicable";
+      bookingStatus = "invite_ready";
+    } else {
+      bookingStatus = "slot_unavailable";
+      llmStatus = "skipped_booking";
+      responseMessage = {
+        subject: `Re: ${payload.subject || "Meeting request"}`,
+        bodyText:
+          "I could not lock the requested slot because it appears unavailable.\nPlease share another time window and I will send alternatives."
+      };
+      try {
+        const availabilityLinkResult = await buildAvailabilityLink({
+          env,
+          deps,
+          advisorId,
+          clientTimezone: parsed.clientTimezone,
+          durationMinutes: parsed.durationMinutes,
+          issuedAtMs: startedAtMs,
+          normalizedClientEmail: fromEmail,
+          clientDisplayName,
+          clientId
+        });
+        availabilityLinkStatus = availabilityLinkResult.status;
+        responseMessage = appendAvailabilityLinkSection({
+          responseMessage,
+          availabilityLink: availabilityLinkResult.availabilityLink
+        });
+      } catch {
+        availabilityLinkStatus = "error";
+      }
     }
-  } else if (llmMode !== "disabled") {
-    llmStatus = "unsupported";
   }
 
-  try {
-    const availabilityLinkResult = await buildAvailabilityLink({
-      env,
-      deps,
-      advisorId,
-      clientTimezone: parsed.clientTimezone,
-      durationMinutes: parsed.durationMinutes,
-      issuedAtMs: startedAtMs,
-      normalizedClientEmail: fromEmail,
-      clientDisplayName,
-      clientId
-    });
-    availabilityLinkStatus = availabilityLinkResult.status;
-    responseMessage = appendAvailabilityLinkSection({
-      responseMessage,
-      availabilityLink: availabilityLinkResult.availabilityLink
-    });
-  } catch {
-    availabilityLinkStatus = "error";
+  if (bookingStatus === "not_requested") {
+    if (llmMode === "openai") {
+      try {
+        if (!llmProviderSecretArn) {
+          throw new Error("LLM_PROVIDER_SECRET_ARN is required for LLM_MODE=openai");
+        }
+
+        const llmSecretString = await deps.getSecretString(llmProviderSecretArn);
+        const openAiConfig = parseOpenAiConfigSecret(llmSecretString);
+        responseMessage = await deps.draftResponseWithLlm({
+          openAiConfig,
+          suggestions,
+          hostTimezone,
+          clientTimezone: parsed.clientTimezone,
+          originalSubject: payload.subject,
+          fetchImpl: deps.fetchImpl,
+          timeoutMs: llmTimeoutMs
+        });
+        llmStatus = "ok";
+      } catch {
+        llmStatus = "fallback";
+        responseMessage = templateResponseMessage;
+      }
+    } else if (llmMode !== "disabled") {
+      llmStatus = "unsupported";
+    }
+
+    try {
+      const availabilityLinkResult = await buildAvailabilityLink({
+        env,
+        deps,
+        advisorId,
+        clientTimezone: parsed.clientTimezone,
+        durationMinutes: parsed.durationMinutes,
+        issuedAtMs: startedAtMs,
+        normalizedClientEmail: fromEmail,
+        clientDisplayName,
+        clientId
+      });
+      availabilityLinkStatus = availabilityLinkResult.status;
+      responseMessage = appendAvailabilityLinkSection({
+        responseMessage,
+        availabilityLink: availabilityLinkResult.availabilityLink
+      });
+    } catch {
+      availabilityLinkStatus = "error";
+    }
   }
 
   responseMessage = ensurePersonalizedGreetingAndSignature({
@@ -1269,14 +1534,39 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       return { http: badRequest("SENDER_EMAIL is required when RESPONSE_MODE=send") };
     }
 
-    await deps.sendResponseEmail({
-      senderEmail: env.SENDER_EMAIL,
-      recipientEmail: fromEmail,
-      subject: responseMessage.subject,
-      bodyText: responseMessage.bodyText
-    });
+    if (bookingStatus === "invite_ready") {
+      if (typeof deps.sendCalendarInviteEmail === "function") {
+        await deps.sendCalendarInviteEmail({
+          senderEmail: env.SENDER_EMAIL,
+          toEmails: inviteRecipients.length > 0 ? inviteRecipients : [fromEmail],
+          subject: responseMessage.subject,
+          bodyText: responseMessage.bodyText,
+          icsContent: responseMessage.icsContent
+        });
+      } else {
+        const fallbackRecipients = inviteRecipients.length > 0 ? inviteRecipients : [fromEmail];
+        for (const recipientEmail of fallbackRecipients) {
+          await deps.sendResponseEmail({
+            senderEmail: env.SENDER_EMAIL,
+            recipientEmail,
+            subject: responseMessage.subject,
+            bodyText: responseMessage.bodyText
+          });
+        }
+      }
+      bookingStatus = "invite_sent";
+    } else {
+      await deps.sendResponseEmail({
+        senderEmail: env.SENDER_EMAIL,
+        recipientEmail: fromEmail,
+        subject: responseMessage.subject,
+        bodyText: responseMessage.bodyText
+      });
+    }
 
     deliveryStatus = "sent";
+  } else if (bookingStatus === "invite_ready") {
+    bookingStatus = "invite_logged";
   }
 
   const completedAtMs = now();
@@ -1304,6 +1594,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     promptGuardLlmStatus,
     promptInjectionRiskLevel,
     promptInjectionSignalCount: promptInjectionSignals.length,
+    bookingStatus,
+    inviteRecipientCount: inviteRecipients.length,
     availabilityLinkStatus,
     requestedWindowCount: parsed.requestedWindows.length,
     createdAt: startedAtIso,
@@ -1334,6 +1626,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       responseId,
       deliveryStatus,
       llmStatus,
+      bookingStatus,
       suggestionCount: suggestions.length,
       suggestions
     })

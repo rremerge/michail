@@ -29,6 +29,7 @@ function parseClampedIntEnv(value, fallback, minimum, maximum) {
 }
 
 const AVAILABILITY_VIEW_DAYS = 7;
+const DEFAULT_ADVISOR_TIMEZONE = "America/Los_Angeles";
 const BRAND_STORAGE_KEY = "letsconnect.whitelabel.logo.dataurl";
 const BRAND_COPYRIGHT_NOTICE = "Copyright (C) 2026. RR Emerge LLC";
 const BRAND_POWERED_BY_NOTICE = "Powered by LetsConnect.ai";
@@ -65,6 +66,90 @@ function normalizeTimezone(value, fallbackTimezone) {
   } catch {
     return fallbackTimezone;
   }
+}
+
+function normalizeAdvisorEmail(value) {
+  const candidate = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (!candidate) {
+    return "";
+  }
+
+  const emailMatch = candidate.match(/[a-z0-9._%+-]+@[a-z0-9.-]+/);
+  if (emailMatch) {
+    return emailMatch[0];
+  }
+
+  return candidate.replace(/[<>]/g, "").trim();
+}
+
+function titleCaseWords(value) {
+  return String(value ?? "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => {
+      if (!word) {
+        return "";
+      }
+
+      return word[0].toUpperCase() + word.slice(1);
+    })
+    .join(" ");
+}
+
+function normalizeAdvisorPreferredName(value) {
+  const normalized = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 64);
+  return normalized;
+}
+
+function deriveAdvisorPreferredNameFromEmail(email, advisorId = "advisor") {
+  const localPart = String(email ?? "")
+    .split("@")[0]
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (localPart) {
+    return titleCaseWords(localPart).slice(0, 64);
+  }
+
+  const fallback = String(advisorId ?? "")
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (fallback) {
+    return titleCaseWords(fallback).slice(0, 64);
+  }
+
+  return "Advisor";
+}
+
+function deriveAdvisorPreferredNameFromGoogleProfile(profile, advisorId) {
+  const explicitName = normalizeAdvisorPreferredName(profile?.name ?? profile?.given_name ?? "");
+  if (explicitName) {
+    return explicitName;
+  }
+
+  return deriveAdvisorPreferredNameFromEmail(profile?.email, advisorId);
+}
+
+function normalizeAdvisorSettingsRecord({ advisorId, settings, fallbackInviteEmail, fallbackPreferredName, fallbackTimezone }) {
+  const inviteEmail = normalizeAdvisorEmail(settings?.inviteEmail ?? fallbackInviteEmail);
+  const preferredName = normalizeAdvisorPreferredName(settings?.preferredName ?? fallbackPreferredName);
+  const timezone = normalizeTimezone(settings?.timezone, fallbackTimezone);
+  const nowIso = new Date().toISOString();
+
+  return {
+    advisorId,
+    inviteEmail,
+    preferredName: preferredName || deriveAdvisorPreferredNameFromEmail(inviteEmail, advisorId),
+    timezone,
+    createdAt: settings?.createdAt ?? nowIso,
+    updatedAt: nowIso
+  };
 }
 
 function parseAdvisingDays(value) {
@@ -1943,6 +2028,11 @@ function buildAdvisorPage() {
       .inline-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
       .small-button { padding: 4px 8px; font-size: 12px; }
       .small-select { padding: 4px 8px; font-size: 12px; }
+      .profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
+      .profile-grid label { display: block; font-size: 12px; color: #475569; font-weight: 600; margin-bottom: 4px; }
+      .profile-grid input { width: 100%; margin-right: 0; box-sizing: border-box; }
+      .profile-actions { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+      .profile-status { margin-top: 8px; }
       .brand-preview { display: block; height: 34px; width: auto; max-width: 260px; border: 1px solid #d0d7e2; border-radius: 8px; background: #fff; padding: 4px 8px; }
       .brand-status { margin-top: 10px; }
       .site-footer { margin-top: 16px; padding-top: 10px; border-top: 1px solid #d0d7e2; text-align: center; }
@@ -1971,6 +2061,29 @@ function buildAdvisorPage() {
       <button id="googleConnect">Connect Google (Sign In)</button>
       <button id="logout">Logout</button>
       <span class="muted">Google flow requires app credentials configured in backend secret.</span>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0;">Advisor Profile</h2>
+      <p class="muted">Defaults are initialized from advisor Google login and can be edited here.</p>
+      <div class="profile-grid">
+        <div>
+          <label for="advisorInviteEmail">Advisor Invite Email</label>
+          <input id="advisorInviteEmail" type="email" placeholder="advisor@example.com" />
+        </div>
+        <div>
+          <label for="advisorPreferredName">Preferred Name</label>
+          <input id="advisorPreferredName" type="text" placeholder="Advisor name" maxlength="64" />
+        </div>
+        <div>
+          <label for="advisorTimezone">Advisor Timezone</label>
+          <input id="advisorTimezone" type="text" placeholder="America/Los_Angeles" />
+        </div>
+      </div>
+      <div class="profile-actions">
+        <button id="saveAdvisorSettings">Save Profile</button>
+      </div>
+      <p id="advisorSettingsStatus" class="muted profile-status">Loading advisor profile settings...</p>
     </div>
 
     <div class="card">
@@ -2146,6 +2259,80 @@ function buildAdvisorPage() {
         } else {
           setBrandStatus('Current branding: LetsConnect.ai default.');
         }
+      }
+
+      function setAdvisorSettingsStatus(text, cssClass) {
+        const node = document.getElementById('advisorSettingsStatus');
+        if (!node) {
+          return;
+        }
+        node.className = 'muted profile-status' + (cssClass ? ' ' + cssClass : '');
+        node.textContent = text;
+      }
+
+      function readAdvisorSettingsInputs() {
+        return {
+          inviteEmail: String(document.getElementById('advisorInviteEmail')?.value || '').trim(),
+          preferredName: String(document.getElementById('advisorPreferredName')?.value || '').trim(),
+          timezone: String(document.getElementById('advisorTimezone')?.value || '').trim()
+        };
+      }
+
+      async function loadAdvisorSettings() {
+        setAdvisorSettingsStatus('Loading advisor profile settings...');
+        const response = await fetch('./advisor/api/settings');
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || 'Unable to load advisor settings.');
+        }
+
+        const settings = payload.settings || {};
+        const inviteEmailInput = document.getElementById('advisorInviteEmail');
+        const preferredNameInput = document.getElementById('advisorPreferredName');
+        const timezoneInput = document.getElementById('advisorTimezone');
+
+        if (inviteEmailInput) {
+          inviteEmailInput.value = settings.inviteEmail || '';
+        }
+        if (preferredNameInput) {
+          preferredNameInput.value = settings.preferredName || '';
+        }
+        if (timezoneInput) {
+          timezoneInput.value = settings.timezone || 'America/Los_Angeles';
+        }
+
+        setAdvisorSettingsStatus('Advisor profile loaded.', 'ok');
+      }
+
+      async function saveAdvisorSettings() {
+        const payload = readAdvisorSettingsInputs();
+        setAdvisorSettingsStatus('Saving advisor profile settings...');
+        const response = await fetch('./advisor/api/settings', {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const responsePayload = await response.json();
+        if (!response.ok) {
+          throw new Error(responsePayload.error || 'Unable to save advisor settings.');
+        }
+
+        const updated = responsePayload.settings || {};
+        const inviteEmailInput = document.getElementById('advisorInviteEmail');
+        const preferredNameInput = document.getElementById('advisorPreferredName');
+        const timezoneInput = document.getElementById('advisorTimezone');
+
+        if (inviteEmailInput) {
+          inviteEmailInput.value = updated.inviteEmail || '';
+        }
+        if (preferredNameInput) {
+          preferredNameInput.value = updated.preferredName || '';
+        }
+        if (timezoneInput) {
+          timezoneInput.value = updated.timezone || 'America/Los_Angeles';
+        }
+
+        setAdvisorSettingsStatus('Advisor profile saved.', 'ok');
       }
 
       function readFileAsDataUrl(file) {
@@ -2487,6 +2674,14 @@ function buildAdvisorPage() {
         await loadConnections();
       });
 
+      document.getElementById('saveAdvisorSettings').addEventListener('click', async () => {
+        try {
+          await saveAdvisorSettings();
+        } catch (error) {
+          setAdvisorSettingsStatus(error.message || 'Advisor profile save failed.', 'error');
+        }
+      });
+
       document.getElementById('saveBrandLogo').addEventListener('click', async () => {
         try {
           await saveUploadedBrandLogo();
@@ -2593,6 +2788,9 @@ function buildAdvisorPage() {
 
       applyPortalBranding();
       showStatusFromQuery();
+      loadAdvisorSettings().catch((error) => {
+        setAdvisorSettingsStatus(error.message || 'Unable to load advisor profile settings.', 'error');
+      });
       loadConnections().catch((error) => {
         console.error(error);
       });
@@ -2680,8 +2878,9 @@ export function createPortalHandler(overrides = {}) {
     const availabilityLinkTableName = process.env.AVAILABILITY_LINK_TABLE_NAME;
     const googleOauthSecretArn = process.env.GOOGLE_OAUTH_SECRET_ARN;
     const policyPresetsTableName = process.env.POLICY_PRESETS_TABLE_NAME;
+    const advisorSettingsTableName = process.env.ADVISOR_SETTINGS_TABLE_NAME;
     const calendarMode = (process.env.CALENDAR_MODE ?? "connection").toLowerCase();
-    const hostTimezone = normalizeTimezone(process.env.HOST_TIMEZONE, "America/Los_Angeles");
+    const hostTimezone = normalizeTimezone(process.env.HOST_TIMEZONE, DEFAULT_ADVISOR_TIMEZONE);
     const advisingDays = parseAdvisingDays(process.env.ADVISING_DAYS ?? "Tue,Wed");
     const basePolicyPresets = parseClientPolicyPresets(process.env.CLIENT_POLICY_PRESETS_JSON, advisingDays);
     const workdayStartHour = parseClampedIntEnv(process.env.WORKDAY_START_HOUR, 9, 0, 23);
@@ -2968,6 +3167,37 @@ export function createPortalHandler(overrides = {}) {
       if (!isAuthorizedAdvisorEmail(profile.email)) {
         return advisorAuthErrorPage("The signed-in Google account is not authorized for this advisor portal.");
       }
+      const loginEmail = normalizeAdvisorEmail(profile.email);
+      const derivedPreferredName = deriveAdvisorPreferredNameFromGoogleProfile(profile, advisorId);
+
+      if (advisorSettingsTableName && typeof deps.getAdvisorSettings === "function" && typeof deps.putAdvisorSettings === "function") {
+        try {
+          const existingSettings = await deps.getAdvisorSettings(advisorSettingsTableName, advisorId);
+          const nextSettings = normalizeAdvisorSettingsRecord({
+            advisorId,
+            settings: {
+              ...existingSettings,
+              inviteEmail: existingSettings?.inviteEmail || loginEmail,
+              preferredName: existingSettings?.preferredName || derivedPreferredName,
+              timezone: existingSettings?.timezone || DEFAULT_ADVISOR_TIMEZONE
+            },
+            fallbackInviteEmail: loginEmail,
+            fallbackPreferredName: derivedPreferredName,
+            fallbackTimezone: DEFAULT_ADVISOR_TIMEZONE
+          });
+
+          const hasChanged =
+            !existingSettings ||
+            String(existingSettings.inviteEmail ?? "") !== nextSettings.inviteEmail ||
+            String(existingSettings.preferredName ?? "") !== nextSettings.preferredName ||
+            String(existingSettings.timezone ?? "") !== nextSettings.timezone;
+          if (hasChanged) {
+            await deps.putAdvisorSettings(advisorSettingsTableName, nextSettings);
+          }
+        } catch {
+          // Best-effort default advisor profile hydration after Google login.
+        }
+      }
 
       let sessionSecret;
       try {
@@ -2979,7 +3209,7 @@ export function createPortalHandler(overrides = {}) {
       const nowMs = Date.now();
       const sessionToken = createPortalSessionToken(
         {
-          email: String(profile.email).trim().toLowerCase(),
+          email: loginEmail,
           expiresAtMs: nowMs + 12 * 60 * 60 * 1000
         },
         sessionSecret.signingKey
@@ -3012,6 +3242,122 @@ export function createPortalHandler(overrides = {}) {
 
     if (method === "GET" && rawPath === "/advisor") {
       return htmlResponse(200, buildAdvisorPage());
+    }
+
+    if (method === "GET" && rawPath === "/advisor/api/settings") {
+      if (!advisorSettingsTableName) {
+        return serverError("ADVISOR_SETTINGS_TABLE_NAME is required");
+      }
+
+      const fallbackInviteEmail = normalizeAdvisorEmail(
+        process.env.ADVISOR_INVITE_EMAIL ?? process.env.ADVISOR_ALLOWED_EMAIL ?? ""
+      );
+      const fallbackPreferredName =
+        normalizeAdvisorPreferredName(process.env.ADVISOR_DISPLAY_NAME ?? "") ||
+        deriveAdvisorPreferredNameFromEmail(fallbackInviteEmail, advisorId);
+      const fallbackTimezone = normalizeTimezone(process.env.HOST_TIMEZONE, DEFAULT_ADVISOR_TIMEZONE);
+
+      const existingSettings = await deps.getAdvisorSettings(advisorSettingsTableName, advisorId);
+      const normalizedSettings = normalizeAdvisorSettingsRecord({
+        advisorId,
+        settings: existingSettings ?? {},
+        fallbackInviteEmail,
+        fallbackPreferredName,
+        fallbackTimezone
+      });
+
+      if (!existingSettings && typeof deps.putAdvisorSettings === "function") {
+        await deps.putAdvisorSettings(advisorSettingsTableName, normalizedSettings);
+      }
+
+      return jsonResponse(200, {
+        advisorId,
+        settings: {
+          inviteEmail: normalizedSettings.inviteEmail,
+          preferredName: normalizedSettings.preferredName,
+          timezone: normalizedSettings.timezone,
+          createdAt: normalizedSettings.createdAt,
+          updatedAt: normalizedSettings.updatedAt
+        }
+      });
+    }
+
+    if (method === "PATCH" && rawPath === "/advisor/api/settings") {
+      if (!advisorSettingsTableName) {
+        return serverError("ADVISOR_SETTINGS_TABLE_NAME is required");
+      }
+
+      let body;
+      try {
+        body = parseBody(event);
+      } catch {
+        return badRequest("Request body must be valid JSON");
+      }
+
+      const hasInviteEmail = Object.prototype.hasOwnProperty.call(body, "inviteEmail");
+      const hasPreferredName = Object.prototype.hasOwnProperty.call(body, "preferredName");
+      const hasTimezone = Object.prototype.hasOwnProperty.call(body, "timezone");
+      if (!hasInviteEmail && !hasPreferredName && !hasTimezone) {
+        return badRequest("At least one setting field is required: inviteEmail, preferredName, timezone");
+      }
+
+      const fallbackInviteEmail = normalizeAdvisorEmail(
+        process.env.ADVISOR_INVITE_EMAIL ?? process.env.ADVISOR_ALLOWED_EMAIL ?? ""
+      );
+      const fallbackPreferredName =
+        normalizeAdvisorPreferredName(process.env.ADVISOR_DISPLAY_NAME ?? "") ||
+        deriveAdvisorPreferredNameFromEmail(fallbackInviteEmail, advisorId);
+      const fallbackTimezone = normalizeTimezone(process.env.HOST_TIMEZONE, DEFAULT_ADVISOR_TIMEZONE);
+
+      const existingSettings = await deps.getAdvisorSettings(advisorSettingsTableName, advisorId);
+      const mergedSettings = {
+        ...(existingSettings ?? {})
+      };
+
+      if (hasInviteEmail) {
+        const inviteEmail = normalizeAdvisorEmail(body.inviteEmail);
+        if (!inviteEmail || !inviteEmail.includes("@")) {
+          return badRequest("inviteEmail must be a valid email address");
+        }
+        mergedSettings.inviteEmail = inviteEmail;
+      }
+
+      if (hasPreferredName) {
+        const preferredName = normalizeAdvisorPreferredName(body.preferredName);
+        if (!preferredName) {
+          return badRequest("preferredName must not be empty");
+        }
+        mergedSettings.preferredName = preferredName;
+      }
+
+      if (hasTimezone) {
+        const requestedTimezone = String(body.timezone ?? "").trim();
+        const timezone = normalizeTimezone(requestedTimezone, "");
+        if (!requestedTimezone || !timezone) {
+          return badRequest("timezone must be a valid IANA timezone (for example America/Los_Angeles)");
+        }
+        mergedSettings.timezone = timezone;
+      }
+
+      const normalizedSettings = normalizeAdvisorSettingsRecord({
+        advisorId,
+        settings: mergedSettings,
+        fallbackInviteEmail,
+        fallbackPreferredName,
+        fallbackTimezone
+      });
+      await deps.putAdvisorSettings(advisorSettingsTableName, normalizedSettings);
+
+      return jsonResponse(200, {
+        advisorId,
+        settings: {
+          inviteEmail: normalizedSettings.inviteEmail,
+          preferredName: normalizedSettings.preferredName,
+          timezone: normalizedSettings.timezone,
+          createdAt: normalizedSettings.createdAt,
+          updatedAt: normalizedSettings.updatedAt
+        }
+      });
     }
 
     if (method === "GET" && rawPath === "/advisor/api/connections") {

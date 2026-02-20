@@ -314,6 +314,117 @@ test("advisor auth callback creates session cookie for allowed advisor email", a
   }
 });
 
+test("advisor auth callback seeds advisor settings defaults from google login", async () => {
+  const settingsWrites = [];
+  const handler = createPortalHandler({
+    async getSecretString(secretArn) {
+      if (secretArn.endsWith(":secret:portal-app")) {
+        return JSON.stringify({
+          client_id: "google-client-id",
+          client_secret: "google-client-secret"
+        });
+      }
+
+      if (secretArn.endsWith(":secret:portal-session")) {
+        return JSON.stringify({
+          signing_key: "test-signing-key"
+        });
+      }
+
+      throw new Error(`unexpected secret arn: ${secretArn}`);
+    },
+    async getOauthState() {
+      return {
+        advisorId: "manoj",
+        purpose: "portal_login",
+        returnTo: "/advisor"
+      };
+    },
+    async deleteOauthState() {},
+    async getAdvisorSettings(tableName, advisorId) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(advisorId, "manoj");
+      return null;
+    },
+    async putAdvisorSettings(tableName, item) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      settingsWrites.push(item);
+    },
+    fetchImpl: async (url) => {
+      if (url === "https://oauth2.googleapis.com/token") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              access_token: "test-access-token"
+            };
+          }
+        };
+      }
+
+      if (url === "https://openidconnect.googleapis.com/v1/userinfo") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              email: "manoj@rremerge.com",
+              name: "Manoj Apte"
+            };
+          }
+        };
+      }
+
+      throw new Error(`unexpected fetch url: ${url}`);
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    OAUTH_STATE_TABLE_NAME: process.env.OAUTH_STATE_TABLE_NAME,
+    GOOGLE_OAUTH_APP_SECRET_ARN: process.env.GOOGLE_OAUTH_APP_SECRET_ARN,
+    ADVISOR_PORTAL_SESSION_SECRET_ARN: process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN,
+    ADVISOR_ALLOWED_EMAIL: process.env.ADVISOR_ALLOWED_EMAIL,
+    ADVISOR_SETTINGS_TABLE_NAME: process.env.ADVISOR_SETTINGS_TABLE_NAME
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "google_oauth";
+  process.env.OAUTH_STATE_TABLE_NAME = "OAuthStateTable";
+  process.env.GOOGLE_OAUTH_APP_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-app";
+  process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-session";
+  process.env.ADVISOR_ALLOWED_EMAIL = "manoj@rremerge.com";
+  process.env.ADVISOR_SETTINGS_TABLE_NAME = "AdvisorSettingsTable";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        code: "google-code",
+        state: "oauth-state"
+      },
+      requestContext: {
+        domainName: "xytaxmumc3.execute-api.us-east-1.amazonaws.com",
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/auth/google/callback"
+    });
+
+    assert.equal(response.statusCode, 302);
+    assert.equal(settingsWrites.length, 1);
+    assert.equal(settingsWrites[0].advisorId, "manoj");
+    assert.equal(settingsWrites[0].inviteEmail, "manoj@rremerge.com");
+    assert.equal(settingsWrites[0].preferredName, "Manoj Apte");
+    assert.equal(settingsWrites[0].timezone, "America/Los_Angeles");
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
 test("advisor portal accepts session token from API Gateway cookies array", async () => {
   const signingKey = "test-signing-key";
   const handler = createPortalHandler({
@@ -808,6 +919,134 @@ test("advisor portal updates client policy using advisor-defined custom policy",
     assert.equal(response.statusCode, 200);
     assert.equal(writes.length, 1);
     assert.equal(writes[0].policyId, "founders");
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("advisor portal settings api returns and updates advisor profile settings", async () => {
+  const writes = [];
+  let stored = {
+    advisorId: "manoj",
+    inviteEmail: "manoj@rremerge.com",
+    preferredName: "Manoj",
+    timezone: "America/Los_Angeles",
+    createdAt: "2026-02-01T00:00:00.000Z",
+    updatedAt: "2026-02-01T00:00:00.000Z"
+  };
+  const handler = createPortalHandler({
+    async getAdvisorSettings(tableName, advisorId) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(advisorId, "manoj");
+      return stored ? { ...stored } : null;
+    },
+    async putAdvisorSettings(tableName, item) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      writes.push(item);
+      stored = { ...item };
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_SETTINGS_TABLE_NAME: process.env.ADVISOR_SETTINGS_TABLE_NAME,
+    ADVISOR_ID: process.env.ADVISOR_ID
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_SETTINGS_TABLE_NAME = "AdvisorSettingsTable";
+  process.env.ADVISOR_ID = "manoj";
+
+  try {
+    const getResponse = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/api/settings"
+    });
+
+    assert.equal(getResponse.statusCode, 200);
+    const getPayload = JSON.parse(getResponse.body);
+    assert.equal(getPayload.settings.inviteEmail, "manoj@rremerge.com");
+    assert.equal(getPayload.settings.preferredName, "Manoj");
+    assert.equal(getPayload.settings.timezone, "America/Los_Angeles");
+
+    const patchResponse = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "PATCH" }
+      },
+      rawPath: "/dev/advisor/api/settings",
+      body: JSON.stringify({
+        inviteEmail: "advisor@newdomain.com",
+        preferredName: "Manoj Apte",
+        timezone: "America/New_York"
+      })
+    });
+
+    assert.equal(patchResponse.statusCode, 200);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].inviteEmail, "advisor@newdomain.com");
+    assert.equal(writes[0].preferredName, "Manoj Apte");
+    assert.equal(writes[0].timezone, "America/New_York");
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("advisor portal settings api validates timezone values", async () => {
+  const handler = createPortalHandler({
+    async getAdvisorSettings() {
+      return {
+        advisorId: "manoj",
+        inviteEmail: "manoj@rremerge.com",
+        preferredName: "Manoj",
+        timezone: "America/Los_Angeles"
+      };
+    },
+    async putAdvisorSettings() {
+      throw new Error("putAdvisorSettings should not be called for invalid timezone");
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_SETTINGS_TABLE_NAME: process.env.ADVISOR_SETTINGS_TABLE_NAME,
+    ADVISOR_ID: process.env.ADVISOR_ID
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_SETTINGS_TABLE_NAME = "AdvisorSettingsTable";
+  process.env.ADVISOR_ID = "manoj";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "PATCH" }
+      },
+      rawPath: "/dev/advisor/api/settings",
+      body: JSON.stringify({
+        timezone: "Mars/Olympus_Mons"
+      })
+    });
+
+    assert.equal(response.statusCode, 400);
+    const payload = JSON.parse(response.body);
+    assert.match(payload.error, /valid IANA timezone/);
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {

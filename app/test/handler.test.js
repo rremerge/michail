@@ -422,6 +422,199 @@ test("processSchedulingEmail sends email when RESPONSE_MODE=send", async () => {
   assert.match(sentMessages[0].bodyText, /Best regards,\nManoj$/);
 });
 
+test("processSchedulingEmail sends calendar invite when booking intent is detected", async () => {
+  const sentInviteMessages = [];
+  const sentResponseMessages = [];
+  const traceItems = [];
+
+  const deps = {
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendCalendarInviteEmail(message) {
+      sentInviteMessages.push(message);
+    },
+    async sendResponseEmail(message) {
+      sentResponseMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    ADVISOR_INVITE_EMAIL: "manoj@example.com"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Meeting confirmation",
+      body: "Please book Wednesday between 2pm and 3pm. Timezone: America/Los_Angeles"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-02T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "invite_sent");
+  assert.equal(sentInviteMessages.length, 1);
+  assert.equal(sentResponseMessages.length, 0);
+
+  const invite = sentInviteMessages[0];
+  assert.equal(invite.senderEmail, "agent@agent.letsconnect.ai");
+  assert.deepEqual(invite.toEmails.sort(), ["client@example.com", "manoj@example.com"]);
+  assert.match(invite.subject, /^Calendar invite:/);
+  assert.match(invite.bodyText, /^Hi Client,/);
+  assert.match(invite.bodyText, /I have prepared a calendar invite/);
+  assert.match(invite.icsContent, /BEGIN:VCALENDAR/);
+  assert.match(invite.icsContent, /METHOD:REQUEST/);
+  assert.match(invite.icsContent, /ATTENDEE;CN=client@example.com;RSVP=TRUE:mailto:client@example.com/);
+  assert.match(invite.icsContent, /ATTENDEE;CN=manoj@example.com;RSVP=TRUE:mailto:manoj@example.com/);
+
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].bookingStatus, "invite_sent");
+  assert.equal(traceItems[0].availabilityLinkStatus, "not_applicable");
+});
+
+test("processSchedulingEmail uses advisor settings for invite recipient and signature defaults", async () => {
+  const sentInviteMessages = [];
+  const traceItems = [];
+
+  const deps = {
+    async getAdvisorSettings(tableName, advisorId) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(advisorId, "manoj");
+      return {
+        advisorId,
+        inviteEmail: "advisor-login@example.com",
+        preferredName: "Manoj Apte",
+        timezone: "America/New_York"
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendCalendarInviteEmail(message) {
+      sentInviteMessages.push(message);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    ADVISOR_ID: "manoj",
+    ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Meeting confirmation",
+      body: "Please book Wednesday between 2pm and 3pm. Timezone: America/New_York"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-02T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "invite_sent");
+  assert.equal(sentInviteMessages.length, 1);
+  assert.deepEqual(sentInviteMessages[0].toEmails.sort(), ["advisor-login@example.com", "client@example.com"]);
+  assert.match(sentInviteMessages[0].bodyText, /Best regards,\nManoj Apte/);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].bookingStatus, "invite_sent");
+});
+
+test("processSchedulingEmail falls back when requested booking slot is unavailable", async () => {
+  const sentInviteMessages = [];
+  const sentResponseMessages = [];
+
+  const deps = {
+    async writeTrace() {},
+    async sendCalendarInviteEmail(message) {
+      sentInviteMessages.push(message);
+    },
+    async sendResponseEmail(message) {
+      sentResponseMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Meeting confirmation",
+      body: "Please book Wednesday between 2pm and 3pm. Timezone: America/Los_Angeles",
+      mockBusyIntervals: [
+        {
+          startIso: "2026-03-04T22:00:00.000Z",
+          endIso: "2026-03-04T23:00:00.000Z"
+        }
+      ]
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-02T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "slot_unavailable");
+  assert.equal(sentInviteMessages.length, 0);
+  assert.equal(sentResponseMessages.length, 1);
+  assert.match(sentResponseMessages[0].bodyText, /could not lock the requested slot/i);
+});
+
+test("processSchedulingEmail does not auto-book when no explicit time window is provided", async () => {
+  const sentInviteMessages = [];
+  const sentResponseMessages = [];
+
+  const deps = {
+    async writeTrace() {},
+    async sendCalendarInviteEmail(message) {
+      sentInviteMessages.push(message);
+    },
+    async sendResponseEmail(message) {
+      sentResponseMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Re: options",
+      body: "Option 2 works for me, please send invite."
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-02T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "not_requested");
+  assert.equal(sentInviteMessages.length, 0);
+  assert.equal(sentResponseMessages.length, 1);
+});
+
 test("processSchedulingEmail appends short availability link when configured", async () => {
   const sentMessages = [];
   const traceItems = [];
