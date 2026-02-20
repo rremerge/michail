@@ -189,6 +189,19 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
    - `timezone`: advisor profile setting -> configured environment timezone -> `America/Los_Angeles`
 5. Advisor profile updates shall be validated (`inviteEmail` RFC-like email format, `timezone` valid IANA zone, non-empty `preferredName`) before persistence.
 
+### FR-21 Multi-Advisor Tenancy and Agent Alias Routing
+1. The deployed agent service shall support concurrent use by multiple advisors from the same cloud deployment.
+2. Advisor portal shall allow any authorized advisor to sign in with Google; on first login the system shall create advisor-scoped metadata/profile records without manual provisioning.
+3. All mutable and queryable advisor resources (client directory, policy presets, calendar connections, advisor settings, availability links, traces) shall be strictly scoped by `advisorId` so advisor data remains isolated.
+4. Inbound scheduling requests shall resolve advisor context using the destination agent email alias (for example `manoj.agent@agent.letsconnect.ai`) when available.
+5. Advisor settings shall include a unique `agentEmail` value used for routing inbound email and as default outbound sender identity.
+6. Advisor portal shall allow advisor to edit `agentEmail` with validation:
+   - valid email format
+   - domain must match configured agent email domain
+   - value must be unique across all advisors
+7. Default `agentEmail` shall be derived at advisor onboarding from advisor identity using `{advisor-local-part}.agent@{configured-agent-domain}` and may be changed later by advisor.
+8. If inbound destination alias does not map to a known advisor, system shall fall back to configured default advisor context for backward compatibility until strict multi-tenant routing mode is enabled.
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -208,6 +221,8 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 13. Branding consistency: all web pages must render required legal footer text and deterministic default branding when no custom advisor branding is configured.
 14. Client-browser OAuth safety: optional client-calendar compare shall use least-privilege read-only scopes, session-limited token handling, and no server-side persistence of client OAuth tokens for that feature.
 15. Advisor profile consistency: advisor profile defaults and updates shall propagate to email response behavior within one request cycle (no manual restart required).
+16. Multi-tenant isolation: no request may read or mutate another advisor's tenant-scoped data; all tenant resolution paths must be deterministic (session advisor identity for portal, destination agent alias for inbound email).
+17. Multi-advisor concurrency: architecture shall support at least 1,000 active advisors and 10,000+ total clients while preserving tenant isolation and response SLAs.
 
 ## 8. Data and Policy Requirements
 1. Persist only non-content metadata required for operations (for example: request ids, workflow status, provider event ids, policy decision outcomes).
@@ -223,6 +238,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 11. Branding configuration shall store only the minimum data needed for rendering (for example: advisor branding preference and logo reference/content), with validation for image type and size.
 12. For optional browser-side client-calendar compare, do not persist client calendar OAuth tokens or raw client event content on backend services; only minimal derived metadata (for example: feature-used flag and timestamp) may be recorded if needed.
 13. Persist advisor profile metadata only (`advisorId`, `inviteEmail`, `preferredName`, `timezone`, timestamps); do not store additional identity/profile content beyond scheduling needs.
+14. Persist advisor routing metadata `agentEmail` as tenant metadata and enforce uniqueness across advisors using indexed lookup; do not store additional email content.
 
 ## 9. Success Metrics
 1. Reduce manual scheduling time by >= 70% within first 60 days.
@@ -251,6 +267,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 10. Prompt-injection guardrails for inbound client email content.
 11. Client-owned meeting overlay in availability view (detail + accepted/pending + overlap indicators).
 12. Branded web experience with default letsconnect.ai logo, legal footer notice, and advisor white-label logo override.
+13. Multi-advisor tenancy with destination-alias routing and advisor-configurable `agentEmail`.
 
 ## 11. Out of Scope for MVP
 1. LinkedIn integration.
@@ -293,6 +310,10 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 21. Given a client explicitly grants one-session read-only calendar consent in the availability page, when provider fetch succeeds, then the page shows slots open on both advisor and client calendars without persisting client OAuth tokens or raw client event content on backend services.
 22. Given advisor logs into advisor portal with Google for the first time, when profile defaults are initialized, then `advisorInviteEmail` equals login email, `preferredName` is derived from Google profile, and timezone defaults to `America/Los_Angeles`.
 23. Given advisor edits invite email, preferred name, or timezone in advisor portal, when update is saved, then subsequent email responses/invite flows use updated values without code changes.
+24. Given two advisors are onboarded in the same deployment, when each advisor views/edits clients, policies, and connections, then no advisor can view or mutate the other's data.
+25. Given inbound email is sent to `lalita.agent@agent.letsconnect.ai`, when processed, then advisor context resolves to Lalita and does not use Manoj's calendars/settings.
+26. Given advisor updates `agentEmail` in advisor portal, when value is valid and unique, then future inbound alias routing and outbound sender identity use the new value.
+27. Given advisor attempts to set `agentEmail` already assigned to another advisor, when saving settings, then system rejects update with validation error and no persistence.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
@@ -328,3 +349,7 @@ The advisor_invite_email should by default be the Google login used for advisor 
 It is desirable that when the agent is deployed it does not have any pre-knowledge of the identity of the advisor. In fact the same agent should have the ability to service multiple advisors and must keep their data separate. Each advisor will have their own clients, and settings as created in the advisor portal. Toward that each advisor must be able to pick their own agent name for like the current default agent@agent.letsconnect.ai. For instance lets say it would be manoj.agent@agent.letsconnect.ai for manoj and lalita.agent@agent.letsconnect.ai for lalita by default. The advisor can then change the name of the agent if they desire to do so by modifying the name in their portal.
 
 The agent must repond only to emails from the advisor or existing clients. Anyone listed in the advisor email get added as clients. Or the advisor may bulk import clients into the advisor portal. There should be no other way to add clients. This way we ensure that unknown persons do not get a response from the agent at all. Any email from an unknown source should be blackholed with no response.
+
+The agent currently is built assuming a single advisor. It turns out multiple advisors want to use the same agent. So once the agent is deployed on the cloud, the advisor portal should allow any advisor to login with their google credentials. Once an advisor logs in, the agent creates their advisor account. They will have their own set of clients, policy profiles, calendars they connect to etc. These are already existing in the advisor profile correctly as required. We only need to make sure that we can do this for multiple different advisors concurrently from the same agent. Each advisors data must be kept separate from the others (for instance oauth keys to their calendars, client lists etc). Each advisor must be able to pick their own agent name for like the current default agent@agent.letsconnect.ai. For instance lets say it would be manoj.agent@agent.letsconnect.ai for manoj and lalita.agent@agent.letsconnect.ai for lalita by default. The advisor can then change the name of the agent if they desire to do so by modifying the name in their portal.
+
+The advisor would like to know how many tokens are being consumed for their account so they have an idea of what their billing would look like. Any other stats that indicate costs should be included there so the advisor can track if they can afford the service. 

@@ -532,6 +532,113 @@ test("processSchedulingEmail uses advisor settings for invite recipient and sign
   assert.equal(traceItems[0].bookingStatus, "invite_sent");
 });
 
+test("processSchedulingEmail routes advisor context by destination agent email", async () => {
+  const sentMessages = [];
+  const traceItems = [];
+  let byAgentLookupCount = 0;
+  const deps = {
+    async getAdvisorSettingsByAgentEmail(tableName, agentEmail) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(agentEmail, "lalita.agent@agent.letsconnect.ai");
+      byAgentLookupCount += 1;
+      return {
+        advisorId: "lalita",
+        advisorEmail: "lalita@rremerge.com",
+        agentEmail: "lalita.agent@agent.letsconnect.ai",
+        inviteEmail: "lalita@rremerge.com",
+        preferredName: "Lalita",
+        timezone: "America/New_York"
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    ADVISOR_ID: "manoj",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      toEmail: "lalita.agent@agent.letsconnect.ai",
+      subject: "Chat"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(byAgentLookupCount, 1);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].senderEmail, "lalita.agent@agent.letsconnect.ai");
+  assert.match(sentMessages[0].bodyText, /Best regards,\nLalita$/);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].advisorId, "lalita");
+});
+
+test("processSchedulingEmail falls back to configured advisor when destination agent email is unknown", async () => {
+  const sentMessages = [];
+  const traceItems = [];
+  const deps = {
+    async getAdvisorSettingsByAgentEmail(tableName, agentEmail) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(agentEmail, "unknown.agent@agent.letsconnect.ai");
+      return null;
+    },
+    async getAdvisorSettings(tableName, advisorId) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(advisorId, "manoj");
+      return {
+        advisorId,
+        preferredName: "Manoj"
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    ADVISOR_ID: "manoj",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      ses: {
+        destination: ["unknown.agent@agent.letsconnect.ai"]
+      },
+      subject: "Chat"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].senderEmail, "agent@agent.letsconnect.ai");
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].advisorId, "manoj");
+});
+
 test("processSchedulingEmail falls back when requested booking slot is unavailable", async () => {
   const sentInviteMessages = [];
   const sentResponseMessages = [];
@@ -1103,6 +1210,82 @@ test("processSchedulingEmail uses primary connection in CALENDAR_MODE=connection
   assert.equal(result.http.statusCode, 200);
   assert.equal(traceItems.length, 1);
   assert.equal(traceItems[0].calendarMode, "connection");
+});
+
+test("processSchedulingEmail forwards to advisor and sends client hold when no calendar is connected", async () => {
+  const sentMessages = [];
+  const traceItems = [];
+  const interactionUpdates = [];
+  const deps = {
+    async getPrimaryConnection(tableName, advisorId) {
+      assert.equal(tableName, "ConnectionsTable");
+      assert.equal(advisorId, "manoj");
+      return null;
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async recordClientEmailInteraction(_tableName, item) {
+      interactionUpdates.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    CALENDAR_MODE: "connection",
+    CONNECTIONS_TABLE_NAME: "ConnectionsTable",
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    ADVISOR_ID: "manoj",
+    ADVISOR_INVITE_EMAIL: "advisor@example.com",
+    CLIENT_PROFILES_TABLE_NAME: "ClientProfilesTable"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "\"Client Name\" <client@example.com>",
+      subject: "Can we meet next week?",
+      body: "Would like 30 minutes on Tuesday."
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const body = JSON.parse(result.http.body);
+  assert.equal(body.calendarConnectionRequired, true);
+  assert.equal(body.bookingStatus, "calendar_connection_required");
+  assert.equal(body.deliveryStatus, "sent");
+  assert.equal(body.suggestionCount, 0);
+  assert.equal(body.advisorNotificationStatus, "sent");
+  assert.equal(body.clientHoldStatus, "sent");
+
+  assert.equal(sentMessages.length, 2);
+  const advisorMessage = sentMessages.find((item) => item.recipientEmail === "advisor@example.com");
+  const clientMessage = sentMessages.find((item) => item.recipientEmail === "client@example.com");
+  assert.ok(advisorMessage);
+  assert.ok(clientMessage);
+  assert.match(advisorMessage.subject, /connect your calendar/i);
+  assert.match(advisorMessage.bodyText, /Client: client@example.com/);
+  assert.match(clientMessage.bodyText, /temporarily unable to access the advisor calendar/i);
+  assert.match(clientMessage.bodyText, /^Hi Client Name,/);
+
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].status, "deferred");
+  assert.equal(traceItems[0].stage, "calendar_connection_required");
+  assert.equal(traceItems[0].errorCode, "CALENDAR_CONNECTION_REQUIRED");
+  assert.equal(traceItems[0].providerStatus, "unavailable");
+  assert.equal(traceItems[0].bookingStatus, "calendar_connection_required");
+  assert.equal(traceItems[0].advisorNotificationStatus, "sent");
+  assert.equal(traceItems[0].clientHoldStatus, "sent");
+
+  assert.equal(interactionUpdates.length, 1);
+  assert.equal(interactionUpdates[0].advisorId, "manoj");
+  assert.equal(interactionUpdates[0].clientId, "client@example.com");
 });
 
 test("processSchedulingEmail uses LLM draft when LLM_MODE=openai", async () => {

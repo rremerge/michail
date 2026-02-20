@@ -289,6 +289,29 @@ export function createRuntimeDeps() {
       return response.Item ?? null;
     },
 
+    async getAdvisorSettingsByAgentEmail(advisorSettingsTableName, agentEmail) {
+      const normalizedAgentEmail = String(agentEmail ?? "")
+        .trim()
+        .toLowerCase();
+      if (!normalizedAgentEmail) {
+        return null;
+      }
+
+      const response = await ddbClient.send(
+        new QueryCommand({
+          TableName: advisorSettingsTableName,
+          IndexName: "AgentEmailIndex",
+          KeyConditionExpression: "agentEmail = :agentEmail",
+          ExpressionAttributeValues: {
+            ":agentEmail": normalizedAgentEmail
+          },
+          Limit: 1
+        })
+      );
+
+      return response.Items?.[0] ?? null;
+    },
+
     async putAdvisorSettings(advisorSettingsTableName, item) {
       await ddbClient.send(
         new PutCommand({

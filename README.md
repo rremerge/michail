@@ -17,7 +17,7 @@ This repository contains the first executable spike for the calendar agent:
 ## Isolation and Safety Guarantees
 - The stack creates isolated resources under its own CloudFormation stack.
 - The primary SAM stack does not create account-level SES inbound receipt rule sets.
-- Inbound routing is configured in `us-east-1` for `agent@agent.letsconnect.ai`.
+- Inbound routing is configured in `us-east-1` for the `agent.letsconnect.ai` domain so advisor aliases route automatically.
 - Default mode is `CalendarMode=mock` and `ResponseMode=log` for safe dry-run testing.
 - OAuth tokens are stored only in AWS Secrets Manager (KMS encrypted).
 - Advisor portal runs as a separate serverless Lambda and stores only connection metadata plus token secrets.
@@ -176,7 +176,7 @@ Use this once per environment to fully wire inbound mail with transient MIME sto
 The script:
 1. Deploys `infrastructure/us-east-1-inbound/template.yaml` (S3 transient raw MIME bucket + lifecycle).
 2. Ensures/activates SES rule set (default: `calendar-agent-spike-dev-inbound`).
-3. Upserts receipt rule (default: `agent-inbound`) for `agent@agent.letsconnect.ai` with actions:
+3. Upserts receipt rule (default: `agent-inbound`) for `agent.letsconnect.ai` (domain-level recipient match) with actions:
    - `S3Action` -> transient raw MIME bucket
    - `LambdaAction` -> `EmailSpikeFunction`
    - `StopAction` -> stop further rule processing
@@ -189,7 +189,7 @@ Useful overrides:
 - `INBOUND_STACK_NAME=calendar-agent-spike-dev-inbound`
 - `RULE_SET_NAME=calendar-agent-spike-dev-inbound`
 - `RULE_NAME=agent-inbound`
-- `RECIPIENT_EMAIL=agent@agent.letsconnect.ai`
+- `RECIPIENT_MATCH=agent.letsconnect.ai`
 - `SENDER_EMAIL=agent@agent.letsconnect.ai`
 - `INTENT_EXTRACTION_MODE=llm_hybrid`
 - `INTENT_LLM_TIMEOUT_MS=10000`

@@ -632,6 +632,54 @@ function buildAccessDeniedResponseMessage() {
   };
 }
 
+function summarizeForAdvisorPreview(rawValue, maxChars = 600) {
+  const normalized = String(rawValue ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    return "(empty)";
+  }
+
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, maxChars - 1)}…`;
+}
+
+function buildCalendarConnectionRequiredAdvisorMessage({
+  originalSubject,
+  clientEmail,
+  bodyText,
+  startedAtIso
+}) {
+  const safeSubject = String(originalSubject ?? "").trim() || "Meeting request";
+  const bodyPreview = summarizeForAdvisorPreview(bodyText, 800);
+  return {
+    subject: "Action required: connect your calendar to continue scheduling",
+    bodyText: [
+      "A client scheduling request was received, but the advisor calendar is not connected.",
+      "",
+      "Please connect a calendar in Advisor Portal, then reply to this client.",
+      "",
+      `Client: ${clientEmail}`,
+      `Subject: ${safeSubject}`,
+      `Received (UTC): ${startedAtIso}`,
+      `Request preview: ${bodyPreview}`
+    ].join("\n")
+  };
+}
+
+function buildCalendarConnectionRequiredClientHoldMessage(subject) {
+  return {
+    subject: `Re: ${String(subject ?? "").trim() || "Meeting request"}`,
+    bodyText:
+      "Thanks for reaching out. I am temporarily unable to access the advisor calendar right now.\n" +
+      "I have notified the advisor to reconnect their calendar and will follow up with availability shortly."
+  };
+}
+
 function buildPromptGuardFallbackResponseMessage() {
   return {
     subject: "Re: Scheduling request",
@@ -647,6 +695,95 @@ function extractDomainFromEmail(normalizedEmail) {
   }
 
   return normalizedEmail.slice(atIndex + 1);
+}
+
+function extractDestinationEmails(payload) {
+  const candidates = [];
+  const pushEmail = (value) => {
+    const normalized = normalizeEmailAddress(value);
+    if (normalized) {
+      candidates.push(normalized);
+    }
+  };
+
+  pushEmail(payload?.toEmail);
+
+  if (Array.isArray(payload?.toEmails)) {
+    for (const value of payload.toEmails) {
+      pushEmail(value);
+    }
+  }
+
+  if (Array.isArray(payload?.ses?.destination)) {
+    for (const value of payload.ses.destination) {
+      pushEmail(value);
+    }
+  }
+
+  if (Array.isArray(payload?.ses?.receipt?.recipients)) {
+    for (const value of payload.ses.receipt.recipients) {
+      pushEmail(value);
+    }
+  }
+
+  return [...new Set(candidates)];
+}
+
+function normalizeAdvisorId(rawValue, fallback = "advisor") {
+  const normalized = String(rawValue ?? "")
+    .trim()
+    .toLowerCase()
+    .slice(0, 254);
+  if (normalized) {
+    return normalized;
+  }
+
+  return String(fallback ?? "advisor")
+    .trim()
+    .toLowerCase()
+    .slice(0, 254);
+}
+
+async function resolveAdvisorContext({ payload, env, deps }) {
+  const fallbackAdvisorId = normalizeAdvisorId(env.ADVISOR_ID ?? "manoj", "manoj");
+  const advisorSettingsTableName = String(env.ADVISOR_SETTINGS_TABLE_NAME ?? "").trim();
+  const destinationEmails = extractDestinationEmails(payload);
+  const inboundAgentEmail = destinationEmails[0] ?? "";
+
+  let advisorId = fallbackAdvisorId;
+  let advisorSettings = null;
+
+  if (
+    inboundAgentEmail &&
+    advisorSettingsTableName &&
+    typeof deps.getAdvisorSettingsByAgentEmail === "function"
+  ) {
+    try {
+      advisorSettings = await deps.getAdvisorSettingsByAgentEmail(
+        advisorSettingsTableName,
+        inboundAgentEmail
+      );
+      if (advisorSettings?.advisorId) {
+        advisorId = normalizeAdvisorId(advisorSettings.advisorId, fallbackAdvisorId);
+      }
+    } catch {
+      advisorSettings = null;
+    }
+  }
+
+  if (!advisorSettings && advisorSettingsTableName && typeof deps.getAdvisorSettings === "function") {
+    try {
+      advisorSettings = await deps.getAdvisorSettings(advisorSettingsTableName, advisorId);
+    } catch {
+      advisorSettings = null;
+    }
+  }
+
+  return {
+    advisorId,
+    advisorSettings,
+    inboundAgentEmail
+  };
 }
 
 async function parsePlainTextFromMime(rawMime) {
@@ -939,16 +1076,10 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const fromDomain = extractDomainFromEmail(fromEmail);
   const { bodyText, bodySource } = await resolveInboundEmailBody({ payload, env, deps });
 
-  const advisorId = env.ADVISOR_ID ?? "manoj";
-  const advisorSettingsTableName = String(env.ADVISOR_SETTINGS_TABLE_NAME ?? "").trim();
-  let advisorSettings = null;
-  if (advisorSettingsTableName && typeof deps.getAdvisorSettings === "function") {
-    try {
-      advisorSettings = await deps.getAdvisorSettings(advisorSettingsTableName, advisorId);
-    } catch {
-      advisorSettings = null;
-    }
-  }
+  const advisorContext = await resolveAdvisorContext({ payload, env, deps });
+  const advisorId = advisorContext.advisorId;
+  const advisorSettings = advisorContext.advisorSettings;
+  const inboundAgentEmail = advisorContext.inboundAgentEmail;
 
   const hostTimezone = normalizeTimezone(advisorSettings?.timezone, normalizeTimezone(env.HOST_TIMEZONE, DEFAULT_ADVISOR_TIMEZONE));
   const defaultAdvisingDays = parseAdvisingDaysList(env.ADVISING_DAYS ?? "Tue,Wed", ["Tue", "Wed"]);
@@ -961,11 +1092,17 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const workdayEndHour = parseIntEnv(env.WORKDAY_END_HOUR, 17);
   const responseMode = (env.RESPONSE_MODE ?? "log").toLowerCase();
   const calendarMode = (env.CALENDAR_MODE ?? "mock").toLowerCase();
+  const senderEmail =
+    normalizeEmailAddress(advisorSettings?.agentEmail) || normalizeEmailAddress(env.SENDER_EMAIL);
+  const inviteSenderEmail = senderEmail || inboundAgentEmail || "agent@agent.letsconnect.ai";
   const advisorDisplayName = deriveAdvisorDisplayName(
     String(advisorSettings?.preferredName ?? "").trim() || env.ADVISOR_DISPLAY_NAME,
     advisorId
   );
   const advisorInviteEmailOverride = normalizeEmailAddress(advisorSettings?.inviteEmail || env.ADVISOR_INVITE_EMAIL);
+  const advisorNotificationEmail = normalizeEmailAddress(
+    advisorInviteEmailOverride || advisorSettings?.advisorEmail || env.ADVISOR_EMAIL || senderEmail
+  );
   const calendarInviteTitle = String(env.CALENDAR_INVITE_TITLE ?? DEFAULT_CALENDAR_INVITE_TITLE).trim();
   const calendarInviteDescription = String(env.CALENDAR_INVITE_DESCRIPTION ?? "").trim();
   const llmMode = (env.LLM_MODE ?? "disabled").toLowerCase();
@@ -1013,9 +1150,9 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       advisorDisplayName
     });
     let deliveryStatus = "logged";
-    if (responseMode === "send" && env.SENDER_EMAIL) {
+    if (responseMode === "send" && senderEmail) {
       await deps.sendResponseEmail({
-        senderEmail: env.SENDER_EMAIL,
+        senderEmail,
         recipientEmail: fromEmail,
         subject: deniedMessage.subject,
         bodyText: deniedMessage.bodyText
@@ -1143,12 +1280,12 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
 
       let deliveryStatus = "logged";
       if (responseMode === "send") {
-        if (!env.SENDER_EMAIL) {
-          return { http: badRequest("SENDER_EMAIL is required when RESPONSE_MODE=send") };
+        if (!senderEmail) {
+          return { http: badRequest("SENDER_EMAIL (or advisor agentEmail setting) is required when RESPONSE_MODE=send") };
         }
 
         await deps.sendResponseEmail({
-          senderEmail: env.SENDER_EMAIL,
+          senderEmail,
           recipientEmail: fromEmail,
           subject: responseMessage.subject,
           bodyText: responseMessage.bodyText
@@ -1358,6 +1495,119 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       throw new Error(`Unsupported CALENDAR_MODE value: ${calendarMode}`);
     }
   } catch (error) {
+    const errorMessage = String(error?.message ?? "");
+    const isConnectionRequired =
+      error?.code === "CALENDAR_CONNECTION_REQUIRED" ||
+      errorMessage.includes("No connected calendars found");
+    if (isConnectionRequired) {
+      let deliveryStatus = "logged";
+      let advisorNotificationStatus = "not_sent";
+      let clientHoldStatus = "not_sent";
+
+      if (responseMode === "send") {
+        if (!senderEmail) {
+          return { http: badRequest("SENDER_EMAIL (or advisor agentEmail setting) is required when RESPONSE_MODE=send") };
+        }
+
+        if (advisorNotificationEmail) {
+          const advisorMessage = buildCalendarConnectionRequiredAdvisorMessage({
+            originalSubject: payload.subject,
+            clientEmail: fromEmail,
+            bodyText,
+            startedAtIso
+          });
+          await deps.sendResponseEmail({
+            senderEmail,
+            recipientEmail: advisorNotificationEmail,
+            subject: advisorMessage.subject,
+            bodyText: advisorMessage.bodyText
+          });
+          advisorNotificationStatus = "sent";
+        } else {
+          advisorNotificationStatus = "missing_destination";
+        }
+
+        const clientHoldMessage = ensurePersonalizedGreetingAndSignature({
+          responseMessage: buildCalendarConnectionRequiredClientHoldMessage(payload.subject),
+          clientDisplayName,
+          advisorDisplayName
+        });
+        await deps.sendResponseEmail({
+          senderEmail,
+          recipientEmail: fromEmail,
+          subject: clientHoldMessage.subject,
+          bodyText: clientHoldMessage.bodyText
+        });
+        clientHoldStatus = "sent";
+        deliveryStatus = "sent";
+      }
+
+      const completedAtMs = now();
+      await deps.writeTrace(env.TRACE_TABLE_NAME, {
+        requestId,
+        responseId,
+        advisorId,
+        accessState,
+        status: "deferred",
+        stage: "calendar_connection_required",
+        providerStatus: "unavailable",
+        errorCode: "CALENDAR_CONNECTION_REQUIRED",
+        responseMode,
+        calendarMode,
+        llmMode,
+        llmStatus: "skipped_no_calendar",
+        bodySource,
+        intentSource,
+        intentLlmStatus,
+        promptGuardMode,
+        promptGuardDecision,
+        promptGuardLlmStatus,
+        promptInjectionRiskLevel,
+        promptInjectionSignalCount: promptInjectionSignals.length,
+        bookingStatus: "calendar_connection_required",
+        advisorNotificationStatus,
+        clientHoldStatus,
+        availabilityLinkStatus: "not_applicable",
+        requestedWindowCount: parsed.requestedWindows.length,
+        createdAt: startedAtIso,
+        updatedAt: new Date(completedAtMs).toISOString(),
+        latencyMs: completedAtMs - startedAtMs,
+        fromDomain,
+        expiresAt: Math.floor((startedAtMs + 7 * 24 * 60 * 60 * 1000) / 1000)
+      });
+
+      if (clientProfilesTableName && typeof deps.recordClientEmailInteraction === "function") {
+        try {
+          await deps.recordClientEmailInteraction(clientProfilesTableName, {
+            advisorId,
+            clientId,
+            clientEmail: fromEmail,
+            clientDisplayName,
+            accessState,
+            policyId: clientProfile?.policyId ?? "default",
+            updatedAt: new Date(completedAtMs).toISOString()
+          });
+        } catch {
+          // Best-effort client analytics tracking.
+        }
+      }
+
+      return {
+        http: ok({
+          requestId,
+          responseId,
+          deliveryStatus,
+          llmStatus: "skipped_no_calendar",
+          bookingStatus: "calendar_connection_required",
+          suggestionCount: 0,
+          suggestions: [],
+          calendarConnectionRequired: true,
+          advisorNotificationStatus,
+          clientHoldStatus
+        })
+      };
+    }
+
     providerStatus = "error";
     await deps.writeTrace(env.TRACE_TABLE_NAME, {
       requestId,
@@ -1422,7 +1672,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   if (bookingRequested) {
     if (suggestions.length > 0) {
       const advisorInviteEmail = normalizeEmailAddress(
-        advisorInviteEmailOverride || activeConnection?.accountEmail || env.ADVISOR_EMAIL || env.SENDER_EMAIL
+        advisorInviteEmailOverride || activeConnection?.accountEmail || env.ADVISOR_EMAIL || senderEmail
       );
       inviteRecipients = uniqueEmails([fromEmail, advisorInviteEmail]);
       responseMessage = buildCalendarInviteMessage({
@@ -1431,7 +1681,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         hostTimezone,
         clientTimezone: parsed.clientTimezone,
         advisorDisplayName,
-        senderEmail: env.SENDER_EMAIL || "agent@letsconnect.ai",
+        senderEmail: inviteSenderEmail,
         attendeeEmails: inviteRecipients,
         requestId,
         nowIso: startedAtIso,
@@ -1530,14 +1780,14 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   let deliveryStatus = "logged";
 
   if (responseMode === "send") {
-    if (!env.SENDER_EMAIL) {
-      return { http: badRequest("SENDER_EMAIL is required when RESPONSE_MODE=send") };
+    if (!senderEmail) {
+      return { http: badRequest("SENDER_EMAIL (or advisor agentEmail setting) is required when RESPONSE_MODE=send") };
     }
 
     if (bookingStatus === "invite_ready") {
       if (typeof deps.sendCalendarInviteEmail === "function") {
         await deps.sendCalendarInviteEmail({
-          senderEmail: env.SENDER_EMAIL,
+          senderEmail,
           toEmails: inviteRecipients.length > 0 ? inviteRecipients : [fromEmail],
           subject: responseMessage.subject,
           bodyText: responseMessage.bodyText,
@@ -1547,7 +1797,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         const fallbackRecipients = inviteRecipients.length > 0 ? inviteRecipients : [fromEmail];
         for (const recipientEmail of fallbackRecipients) {
           await deps.sendResponseEmail({
-            senderEmail: env.SENDER_EMAIL,
+            senderEmail,
             recipientEmail,
             subject: responseMessage.subject,
             bodyText: responseMessage.bodyText
@@ -1557,7 +1807,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       bookingStatus = "invite_sent";
     } else {
       await deps.sendResponseEmail({
-        senderEmail: env.SENDER_EMAIL,
+        senderEmail,
         recipientEmail: fromEmail,
         subject: responseMessage.subject,
         bodyText: responseMessage.bodyText

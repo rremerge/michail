@@ -11,7 +11,9 @@ SAM_STACK_NAME="${SAM_STACK_NAME:-${APP_NAME}-${STAGE}}"
 INBOUND_STACK_NAME="${INBOUND_STACK_NAME:-${APP_NAME}-${STAGE}-inbound}"
 RULE_SET_NAME="${RULE_SET_NAME:-${SAM_STACK_NAME}-inbound}"
 RULE_NAME="${RULE_NAME:-agent-inbound}"
-RECIPIENT_EMAIL="${RECIPIENT_EMAIL:-agent@agent.letsconnect.ai}"
+# Domain-level recipient match ensures any advisor alias under this domain routes
+# without needing receipt-rule edits when agentEmail changes in portal.
+RECIPIENT_MATCH="${RECIPIENT_MATCH:-${RECIPIENT_EMAIL:-agent.letsconnect.ai}}"
 SENDER_EMAIL="${SENDER_EMAIL:-agent@agent.letsconnect.ai}"
 INTENT_EXTRACTION_MODE="${INTENT_EXTRACTION_MODE:-llm_hybrid}"
 INTENT_LLM_TIMEOUT_MS="${INTENT_LLM_TIMEOUT_MS:-10000}"
@@ -106,7 +108,7 @@ cat > "${RULE_JSON_FILE}" <<JSON
   "Name": "${RULE_NAME}",
   "Enabled": true,
   "TlsPolicy": "Optional",
-  "Recipients": ["${RECIPIENT_EMAIL}"],
+  "Recipients": ["${RECIPIENT_MATCH}"],
   "Actions": [
     {
       "S3Action": {
@@ -164,7 +166,7 @@ sam deploy \
 
 cat <<EOF
 Inbound configuration complete.
-- Recipient: ${RECIPIENT_EMAIL}
+- Recipient match: ${RECIPIENT_MATCH}
 - Rule set: ${RULE_SET_NAME}
 - Rule name: ${RULE_NAME}
 - Sender email: ${SENDER_EMAIL}

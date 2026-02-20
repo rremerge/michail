@@ -343,7 +343,7 @@ test("advisor auth callback seeds advisor settings defaults from google login", 
     async deleteOauthState() {},
     async getAdvisorSettings(tableName, advisorId) {
       assert.equal(tableName, "AdvisorSettingsTable");
-      assert.equal(advisorId, "manoj");
+      assert.equal(advisorId, "manoj@rremerge.com");
       return null;
     },
     async putAdvisorSettings(tableName, item) {
@@ -410,10 +410,128 @@ test("advisor auth callback seeds advisor settings defaults from google login", 
 
     assert.equal(response.statusCode, 302);
     assert.equal(settingsWrites.length, 1);
-    assert.equal(settingsWrites[0].advisorId, "manoj");
+    assert.equal(settingsWrites[0].advisorId, "manoj@rremerge.com");
+    assert.equal(settingsWrites[0].agentEmail, "manoj.agent@agent.letsconnect.ai");
     assert.equal(settingsWrites[0].inviteEmail, "manoj@rremerge.com");
     assert.equal(settingsWrites[0].preferredName, "Manoj Apte");
     assert.equal(settingsWrites[0].timezone, "America/Los_Angeles");
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("advisor auth callback resolves default agent email collisions", async () => {
+  const settingsWrites = [];
+  const checkedAgentEmails = [];
+  const handler = createPortalHandler({
+    async getSecretString(secretArn) {
+      if (secretArn.endsWith(":secret:portal-app")) {
+        return JSON.stringify({
+          client_id: "google-client-id",
+          client_secret: "google-client-secret"
+        });
+      }
+
+      if (secretArn.endsWith(":secret:portal-session")) {
+        return JSON.stringify({
+          signing_key: "test-signing-key"
+        });
+      }
+
+      throw new Error(`unexpected secret arn: ${secretArn}`);
+    },
+    async getOauthState() {
+      return {
+        advisorId: "manoj",
+        purpose: "portal_login",
+        returnTo: "/advisor"
+      };
+    },
+    async deleteOauthState() {},
+    async getAdvisorSettings() {
+      return null;
+    },
+    async getAdvisorSettingsByAgentEmail(_tableName, agentEmail) {
+      checkedAgentEmails.push(agentEmail);
+      if (agentEmail === "manoj.agent@agent.letsconnect.ai") {
+        return {
+          advisorId: "already-used"
+        };
+      }
+
+      return null;
+    },
+    async putAdvisorSettings(_tableName, item) {
+      settingsWrites.push(item);
+    },
+    fetchImpl: async (url) => {
+      if (url === "https://oauth2.googleapis.com/token") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              access_token: "test-access-token"
+            };
+          }
+        };
+      }
+
+      if (url === "https://openidconnect.googleapis.com/v1/userinfo") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              email: "manoj@rremerge.com",
+              name: "Manoj Apte"
+            };
+          }
+        };
+      }
+
+      throw new Error(`unexpected fetch url: ${url}`);
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    OAUTH_STATE_TABLE_NAME: process.env.OAUTH_STATE_TABLE_NAME,
+    GOOGLE_OAUTH_APP_SECRET_ARN: process.env.GOOGLE_OAUTH_APP_SECRET_ARN,
+    ADVISOR_PORTAL_SESSION_SECRET_ARN: process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN,
+    ADVISOR_ALLOWED_EMAIL: process.env.ADVISOR_ALLOWED_EMAIL,
+    ADVISOR_SETTINGS_TABLE_NAME: process.env.ADVISOR_SETTINGS_TABLE_NAME
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "google_oauth";
+  process.env.OAUTH_STATE_TABLE_NAME = "OAuthStateTable";
+  process.env.GOOGLE_OAUTH_APP_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-app";
+  process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-session";
+  process.env.ADVISOR_ALLOWED_EMAIL = "manoj@rremerge.com";
+  process.env.ADVISOR_SETTINGS_TABLE_NAME = "AdvisorSettingsTable";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        code: "google-code",
+        state: "oauth-state"
+      },
+      requestContext: {
+        domainName: "xytaxmumc3.execute-api.us-east-1.amazonaws.com",
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/auth/google/callback"
+    });
+
+    assert.equal(response.statusCode, 302);
+    assert.deepEqual(checkedAgentEmails, ["manoj.agent@agent.letsconnect.ai", "manoj.agent.1@agent.letsconnect.ai"]);
+    assert.equal(settingsWrites.length, 1);
+    assert.equal(settingsWrites[0].agentEmail, "manoj.agent.1@agent.letsconnect.ai");
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {
@@ -1058,6 +1176,68 @@ test("advisor portal settings api validates timezone values", async () => {
   }
 });
 
+test("advisor portal settings api rejects agent email already used by another advisor", async () => {
+  const handler = createPortalHandler({
+    async getAdvisorSettings() {
+      return {
+        advisorId: "manoj",
+        advisorEmail: "manoj@rremerge.com",
+        agentEmail: "manoj.agent@agent.letsconnect.ai",
+        inviteEmail: "manoj@rremerge.com",
+        preferredName: "Manoj",
+        timezone: "America/Los_Angeles"
+      };
+    },
+    async getAdvisorSettingsByAgentEmail(_tableName, agentEmail) {
+      assert.equal(agentEmail, "shared.agent@agent.letsconnect.ai");
+      return {
+        advisorId: "lalita",
+        agentEmail
+      };
+    },
+    async putAdvisorSettings() {
+      throw new Error("putAdvisorSettings should not be called for duplicate agent email");
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_SETTINGS_TABLE_NAME: process.env.ADVISOR_SETTINGS_TABLE_NAME,
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    DEFAULT_AGENT_EMAIL_DOMAIN: process.env.DEFAULT_AGENT_EMAIL_DOMAIN
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_SETTINGS_TABLE_NAME = "AdvisorSettingsTable";
+  process.env.ADVISOR_ID = "manoj";
+  process.env.DEFAULT_AGENT_EMAIL_DOMAIN = "agent.letsconnect.ai";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "PATCH" }
+      },
+      rawPath: "/dev/advisor/api/settings",
+      body: JSON.stringify({
+        agentEmail: "shared.agent@agent.letsconnect.ai"
+      })
+    });
+
+    assert.equal(response.statusCode, 400);
+    const payload = JSON.parse(response.body);
+    assert.match(payload.error, /already in use/i);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
 test("advisor portal google start returns 400 when app credentials are missing", async () => {
   const handler = createPortalHandler({
     async getSecretString() {
@@ -1175,6 +1355,110 @@ test("advisor portal google start redirects browser to Google login", async () =
       delete process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
     } else {
       process.env.GOOGLE_OAUTH_APP_SECRET_ARN = previousAppSecretArn;
+    }
+  }
+});
+
+test("advisor portal google callback persists calendar connection for advisor from oauth state", async () => {
+  let capturedSecretName = null;
+  let savedConnection = null;
+  const handler = createPortalHandler({
+    async getOauthState() {
+      return {
+        advisorId: "lalita@rremerge.com",
+        purpose: "calendar_connection"
+      };
+    },
+    async deleteOauthState() {},
+    async getSecretString(secretArn) {
+      assert.equal(secretArn, "arn:aws:secretsmanager:us-east-1:111111111111:secret:test");
+      return JSON.stringify({
+        client_id: "google-client-id",
+        client_secret: "google-client-secret"
+      });
+    },
+    async createSecret(secretName, secretValue) {
+      capturedSecretName = secretName;
+      assert.match(secretValue, /refresh_token/);
+      return `arn:aws:secretsmanager:us-east-1:111111111111:secret:${encodeURIComponent(secretName)}`;
+    },
+    async putConnection(_tableName, item) {
+      savedConnection = item;
+    },
+    fetchImpl: async (url) => {
+      if (url === "https://oauth2.googleapis.com/token") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              access_token: "access-token",
+              refresh_token: "refresh-token"
+            };
+          }
+        };
+      }
+
+      if (url === "https://openidconnect.googleapis.com/v1/userinfo") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              email: "lalita@gmail.com"
+            };
+          }
+        };
+      }
+
+      throw new Error(`unexpected fetch url: ${url}`);
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    OAUTH_STATE_TABLE_NAME: process.env.OAUTH_STATE_TABLE_NAME,
+    CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
+    GOOGLE_OAUTH_APP_SECRET_ARN: process.env.GOOGLE_OAUTH_APP_SECRET_ARN,
+    ADVISOR_ID: process.env.ADVISOR_ID
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.OAUTH_STATE_TABLE_NAME = "OAuthStateTable";
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.GOOGLE_OAUTH_APP_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:test";
+  process.env.ADVISOR_ID = "manoj";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        code: "oauth-code",
+        state: "oauth-state"
+      },
+      requestContext: {
+        domainName: "xytaxmumc3.execute-api.us-east-1.amazonaws.com",
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/api/connections/google/callback"
+    });
+
+    assert.equal(response.statusCode, 302);
+    assert.equal(
+      response.headers.location,
+      "https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev/advisor?connected=google"
+    );
+    assert.ok(capturedSecretName);
+    assert.match(capturedSecretName, /\/lalita@rremerge\.com\/connections\//);
+    assert.ok(savedConnection);
+    assert.equal(savedConnection.advisorId, "lalita@rremerge.com");
+    assert.equal(savedConnection.provider, "google");
+    assert.equal(savedConnection.accountEmail, "lalita@gmail.com");
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
     }
   }
 });

@@ -63,6 +63,10 @@ Parameters:
   AdvisorId:
     Type: String
     Default: manoj
+  AgentEmailDomain:
+    Type: String
+    Default: agent.letsconnect.ai
+    Description: Domain used for per-advisor agent email defaults (for example advisor.agent@agent.letsconnect.ai).
   LlmMode:
     Type: String
     AllowedValues:
@@ -263,9 +267,18 @@ Resources:
       AttributeDefinitions:
         - AttributeName: advisorId
           AttributeType: S
+        - AttributeName: agentEmail
+          AttributeType: S
       KeySchema:
         - AttributeName: advisorId
           KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: AgentEmailIndex
+          KeySchema:
+            - AttributeName: agentEmail
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
       SSESpecification:
         SSEEnabled: true
       Tags:
@@ -427,6 +440,7 @@ Resources:
           GOOGLE_OAUTH_SECRET_ARN: !Ref GoogleOAuthSecret
           CONNECTIONS_TABLE_NAME: !Ref ConnectionsTable
           ADVISOR_ID: !Ref AdvisorId
+          DEFAULT_AGENT_EMAIL_DOMAIN: !Ref AgentEmailDomain
           CALENDAR_MODE: !Ref CalendarMode
           RESPONSE_MODE: !Ref ResponseMode
           SENDER_EMAIL: !Ref SenderEmail
@@ -510,7 +524,10 @@ Resources:
               Effect: Allow
               Action:
                 - dynamodb:GetItem
-              Resource: !GetAtt AdvisorSettingsTable.Arn
+                - dynamodb:Query
+              Resource:
+                - !GetAtt AdvisorSettingsTable.Arn
+                - !Sub ${AdvisorSettingsTable.Arn}/index/*
             - Sid: ReadConnectionOAuthSecrets
               Effect: Allow
               Action:
@@ -551,6 +568,7 @@ Resources:
           APP_NAME: !Ref AppName
           STAGE: !Ref Stage
           ADVISOR_ID: !Ref AdvisorId
+          DEFAULT_AGENT_EMAIL_DOMAIN: !Ref AgentEmailDomain
           CALENDAR_MODE: !Ref CalendarMode
           HOST_TIMEZONE: !Ref HostTimezone
           ADVISING_DAYS: !Ref AdvisingDays
@@ -781,7 +799,10 @@ Resources:
               Action:
                 - dynamodb:GetItem
                 - dynamodb:PutItem
-              Resource: !GetAtt AdvisorSettingsTable.Arn
+                - dynamodb:Query
+              Resource:
+                - !GetAtt AdvisorSettingsTable.Arn
+                - !Sub ${AdvisorSettingsTable.Arn}/index/*
             - Sid: ManageConnectionSecrets
               Effect: Allow
               Action:

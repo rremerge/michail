@@ -30,6 +30,7 @@ function parseClampedIntEnv(value, fallback, minimum, maximum) {
 
 const AVAILABILITY_VIEW_DAYS = 7;
 const DEFAULT_ADVISOR_TIMEZONE = "America/Los_Angeles";
+const DEFAULT_AGENT_EMAIL_DOMAIN = "agent.letsconnect.ai";
 const BRAND_STORAGE_KEY = "letsconnect.whitelabel.logo.dataurl";
 const BRAND_COPYRIGHT_NOTICE = "Copyright (C) 2026. RR Emerge LLC";
 const BRAND_POWERED_BY_NOTICE = "Powered by LetsConnect.ai";
@@ -84,6 +85,98 @@ function normalizeAdvisorEmail(value) {
   return candidate.replace(/[<>]/g, "").trim();
 }
 
+function normalizeAdvisorId(value, fallbackAdvisorId = "advisor") {
+  const candidate = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .slice(0, 254);
+  if (candidate) {
+    return candidate;
+  }
+
+  return String(fallbackAdvisorId ?? "advisor")
+    .trim()
+    .toLowerCase()
+    .slice(0, 254);
+}
+
+function deriveAdvisorIdFromEmail(email, fallbackAdvisorId = "advisor") {
+  const normalizedEmail = normalizeAdvisorEmail(email);
+  if (normalizedEmail) {
+    return normalizeAdvisorId(normalizedEmail, fallbackAdvisorId);
+  }
+
+  return normalizeAdvisorId(fallbackAdvisorId, "advisor");
+}
+
+function normalizeAgentEmailDomain(value) {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "")
+    .replace(/[^a-z0-9.-]+/g, "");
+  return normalized || DEFAULT_AGENT_EMAIL_DOMAIN;
+}
+
+function sanitizeAgentMailboxPrefix(value) {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, ".")
+    .replace(/[._-]{2,}/g, ".")
+    .replace(/^[._-]+|[._-]+$/g, "")
+    .slice(0, 48);
+  return normalized || "advisor";
+}
+
+function deriveDefaultAgentEmail({ advisorId, advisorEmail, domain }) {
+  const normalizedDomain = normalizeAgentEmailDomain(domain);
+  const normalizedAdvisorEmail = normalizeAdvisorEmail(advisorEmail);
+  const advisorIdValue = String(advisorId ?? "").trim().toLowerCase();
+  const emailLocalPart = normalizedAdvisorEmail.includes("@") ? normalizedAdvisorEmail.split("@")[0] : "";
+  const advisorLocalPart = advisorIdValue.includes("@") ? advisorIdValue.split("@")[0] : advisorIdValue;
+  const mailboxPrefix = sanitizeAgentMailboxPrefix(emailLocalPart || advisorLocalPart || "advisor");
+  return `${mailboxPrefix}.agent@${normalizedDomain}`;
+}
+
+async function ensureUniqueAgentEmail({
+  deps,
+  advisorSettingsTableName,
+  advisorId,
+  requestedAgentEmail
+}) {
+  const normalizedRequested = normalizeAdvisorEmail(requestedAgentEmail);
+  if (!normalizedRequested) {
+    return "";
+  }
+
+  if (!advisorSettingsTableName || typeof deps.getAdvisorSettingsByAgentEmail !== "function") {
+    return normalizedRequested;
+  }
+
+  const [requestedLocalPart, requestedDomainPart] = normalizedRequested.split("@");
+  if (!requestedLocalPart || !requestedDomainPart) {
+    return normalizedRequested;
+  }
+
+  const normalizedAdvisorId = normalizeAdvisorId(advisorId, "advisor");
+  const baseLocalPart = sanitizeAgentMailboxPrefix(requestedLocalPart);
+  for (let suffix = 0; suffix < 25; suffix += 1) {
+    const candidateLocalPart = suffix === 0 ? baseLocalPart : `${baseLocalPart}.${suffix}`;
+    const candidateEmail = `${candidateLocalPart}@${requestedDomainPart}`;
+    try {
+      const existing = await deps.getAdvisorSettingsByAgentEmail(advisorSettingsTableName, candidateEmail);
+      if (!existing || normalizeAdvisorId(existing.advisorId, normalizedAdvisorId) === normalizedAdvisorId) {
+        return candidateEmail;
+      }
+    } catch {
+      return normalizedRequested;
+    }
+  }
+
+  return normalizedRequested;
+}
+
 function titleCaseWords(value) {
   return String(value ?? "")
     .split(/\s+/)
@@ -136,16 +229,36 @@ function deriveAdvisorPreferredNameFromGoogleProfile(profile, advisorId) {
   return deriveAdvisorPreferredNameFromEmail(profile?.email, advisorId);
 }
 
-function normalizeAdvisorSettingsRecord({ advisorId, settings, fallbackInviteEmail, fallbackPreferredName, fallbackTimezone }) {
-  const inviteEmail = normalizeAdvisorEmail(settings?.inviteEmail ?? fallbackInviteEmail);
+function normalizeAdvisorSettingsRecord({
+  advisorId,
+  settings,
+  fallbackAdvisorEmail,
+  fallbackInviteEmail,
+  fallbackPreferredName,
+  fallbackTimezone,
+  fallbackAgentEmailDomain
+}) {
+  const normalizedAdvisorId = normalizeAdvisorId(advisorId, "advisor");
+  const advisorEmail = normalizeAdvisorEmail(settings?.advisorEmail ?? fallbackAdvisorEmail);
+  const inviteEmail = normalizeAdvisorEmail(settings?.inviteEmail ?? fallbackInviteEmail ?? advisorEmail);
   const preferredName = normalizeAdvisorPreferredName(settings?.preferredName ?? fallbackPreferredName);
   const timezone = normalizeTimezone(settings?.timezone, fallbackTimezone);
+  const agentEmail = normalizeAdvisorEmail(
+    settings?.agentEmail ??
+      deriveDefaultAgentEmail({
+        advisorId: normalizedAdvisorId,
+        advisorEmail,
+        domain: fallbackAgentEmailDomain
+      })
+  );
   const nowIso = new Date().toISOString();
 
   return {
-    advisorId,
+    advisorId: normalizedAdvisorId,
+    advisorEmail,
+    agentEmail,
     inviteEmail,
-    preferredName: preferredName || deriveAdvisorPreferredNameFromEmail(inviteEmail, advisorId),
+    preferredName: preferredName || deriveAdvisorPreferredNameFromEmail(inviteEmail || advisorEmail, normalizedAdvisorId),
     timezone,
     createdAt: settings?.createdAt ?? nowIso,
     updatedAt: nowIso
@@ -499,6 +612,29 @@ function parseCookies(event) {
       accumulator[key] = value;
       return accumulator;
     }, {});
+}
+
+async function readPortalSessionPayload(event, deps) {
+  const authMode = (process.env.ADVISOR_PORTAL_AUTH_MODE ?? "none").toLowerCase();
+  if (authMode !== "google_oauth") {
+    return null;
+  }
+
+  const sessionSecretArn = process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
+  if (!sessionSecretArn) {
+    return null;
+  }
+
+  let sessionSecret;
+  try {
+    sessionSecret = await getPortalSessionSecret(deps, sessionSecretArn);
+  } catch {
+    return null;
+  }
+
+  const cookies = parseCookies(event);
+  const sessionToken = cookies.advisor_portal_session;
+  return validatePortalSessionToken(sessionToken, sessionSecret.signingKey);
 }
 
 function isApiRoute(rawPath) {
@@ -2068,6 +2204,10 @@ function buildAdvisorPage() {
       <p class="muted">Defaults are initialized from advisor Google login and can be edited here.</p>
       <div class="profile-grid">
         <div>
+          <label for="advisorAgentEmail">Agent Email</label>
+          <input id="advisorAgentEmail" type="email" placeholder="advisor.agent@agent.letsconnect.ai" />
+        </div>
+        <div>
           <label for="advisorInviteEmail">Advisor Invite Email</label>
           <input id="advisorInviteEmail" type="email" placeholder="advisor@example.com" />
         </div>
@@ -2272,6 +2412,7 @@ function buildAdvisorPage() {
 
       function readAdvisorSettingsInputs() {
         return {
+          agentEmail: String(document.getElementById('advisorAgentEmail')?.value || '').trim(),
           inviteEmail: String(document.getElementById('advisorInviteEmail')?.value || '').trim(),
           preferredName: String(document.getElementById('advisorPreferredName')?.value || '').trim(),
           timezone: String(document.getElementById('advisorTimezone')?.value || '').trim()
@@ -2287,10 +2428,14 @@ function buildAdvisorPage() {
         }
 
         const settings = payload.settings || {};
+        const agentEmailInput = document.getElementById('advisorAgentEmail');
         const inviteEmailInput = document.getElementById('advisorInviteEmail');
         const preferredNameInput = document.getElementById('advisorPreferredName');
         const timezoneInput = document.getElementById('advisorTimezone');
 
+        if (agentEmailInput) {
+          agentEmailInput.value = settings.agentEmail || '';
+        }
         if (inviteEmailInput) {
           inviteEmailInput.value = settings.inviteEmail || '';
         }
@@ -2318,10 +2463,14 @@ function buildAdvisorPage() {
         }
 
         const updated = responsePayload.settings || {};
+        const agentEmailInput = document.getElementById('advisorAgentEmail');
         const inviteEmailInput = document.getElementById('advisorInviteEmail');
         const preferredNameInput = document.getElementById('advisorPreferredName');
         const timezoneInput = document.getElementById('advisorTimezone');
 
+        if (agentEmailInput) {
+          agentEmailInput.value = updated.agentEmail || '';
+        }
         if (inviteEmailInput) {
           inviteEmailInput.value = updated.inviteEmail || '';
         }
@@ -2865,7 +3014,7 @@ export function createPortalHandler(overrides = {}) {
     const method = event.requestContext?.http?.method ?? "GET";
     const rawPath = normalizeRawPath(event.rawPath ?? "/", event.requestContext?.stage);
 
-    const advisorId = process.env.ADVISOR_ID ?? "manoj";
+    const configuredAdvisorId = process.env.ADVISOR_ID ?? "manoj";
     const appName = process.env.APP_NAME ?? "calendar-agent-spike";
     const stage = process.env.STAGE ?? "dev";
     const connectionsTableName = process.env.CONNECTIONS_TABLE_NAME;
@@ -2879,6 +3028,7 @@ export function createPortalHandler(overrides = {}) {
     const googleOauthSecretArn = process.env.GOOGLE_OAUTH_SECRET_ARN;
     const policyPresetsTableName = process.env.POLICY_PRESETS_TABLE_NAME;
     const advisorSettingsTableName = process.env.ADVISOR_SETTINGS_TABLE_NAME;
+    const defaultAgentEmailDomain = normalizeAgentEmailDomain(process.env.DEFAULT_AGENT_EMAIL_DOMAIN);
     const calendarMode = (process.env.CALENDAR_MODE ?? "connection").toLowerCase();
     const hostTimezone = normalizeTimezone(process.env.HOST_TIMEZONE, DEFAULT_ADVISOR_TIMEZONE);
     const advisingDays = parseAdvisingDays(process.env.ADVISING_DAYS ?? "Tue,Wed");
@@ -2894,6 +3044,13 @@ export function createPortalHandler(overrides = {}) {
     if (authFailure) {
       return authFailure;
     }
+
+    const sessionPayload = await readPortalSessionPayload(event, deps);
+    const sessionAdvisorEmail = normalizeAdvisorEmail(sessionPayload?.email);
+    const advisorId = sessionPayload?.advisorId
+      ? normalizeAdvisorId(sessionPayload.advisorId, configuredAdvisorId)
+      : deriveAdvisorIdFromEmail(sessionAdvisorEmail, configuredAdvisorId);
+    const advisorEmail = sessionAdvisorEmail;
 
     let customPolicyRecords = [];
     if (policyPresetsTableName && typeof deps.listPolicyPresets === "function") {
@@ -2928,6 +3085,8 @@ export function createPortalHandler(overrides = {}) {
       let requestedDuration = null;
       let linkExpiresAtMs = Date.now();
       let effectiveToken = legacyToken;
+      let effectiveAvailabilityAdvisorId = advisorId;
+      let availabilityHostTimezone = hostTimezone;
 
       if (shortToken) {
         tokenParamName = "t";
@@ -2947,9 +3106,7 @@ export function createPortalHandler(overrides = {}) {
           return availabilityErrorPage("Invalid or expired availability link.");
         }
 
-        if (String(linkRecord.advisorId ?? "") !== advisorId) {
-          return availabilityErrorPage("This availability link is not valid for this advisor.");
-        }
+        effectiveAvailabilityAdvisorId = normalizeAdvisorId(linkRecord.advisorId, advisorId);
 
         linkClientDisplayName = sanitizeClientDisplayName(linkRecord.clientDisplayName) ?? clientHint;
         linkClientReference = normalizeClientReference(linkRecord.clientReference) ?? clientHintReference;
@@ -2974,17 +3131,40 @@ export function createPortalHandler(overrides = {}) {
           return availabilityErrorPage("Invalid or expired availability link.");
         }
 
-        if (tokenPayload.advisorId !== advisorId) {
-          return availabilityErrorPage("This availability link is not valid for this advisor.");
-        }
+        effectiveAvailabilityAdvisorId = normalizeAdvisorId(tokenPayload.advisorId, advisorId);
 
         requestedDuration = Number(tokenPayload.durationMinutes);
         linkExpiresAtMs = Number(tokenPayload.expiresAtMs);
       }
 
+      if (advisorSettingsTableName && typeof deps.getAdvisorSettings === "function") {
+        const availabilityAdvisorSettings = await deps.getAdvisorSettings(
+          advisorSettingsTableName,
+          effectiveAvailabilityAdvisorId
+        );
+        availabilityHostTimezone = normalizeTimezone(availabilityAdvisorSettings?.timezone, hostTimezone);
+      }
+
+      let availabilityPolicyPresets = basePolicyPresets;
+      if (policyPresetsTableName && typeof deps.listPolicyPresets === "function") {
+        try {
+          const availabilityCustomPolicies = await deps.listPolicyPresets(
+            policyPresetsTableName,
+            effectiveAvailabilityAdvisorId
+          );
+          availabilityPolicyPresets = mergeClientPolicyPresets(basePolicyPresets, availabilityCustomPolicies);
+        } catch {
+          availabilityPolicyPresets = basePolicyPresets;
+        }
+      }
+
       let effectiveAdvisingDays = advisingDays;
       if (clientProfilesTableName && linkClientId && typeof deps.getClientProfile === "function") {
-        const clientProfile = await deps.getClientProfile(clientProfilesTableName, advisorId, linkClientId);
+        const clientProfile = await deps.getClientProfile(
+          clientProfilesTableName,
+          effectiveAvailabilityAdvisorId,
+          linkClientId
+        );
         if (isClientAccessRestricted(clientProfile)) {
           return availabilityErrorPage("This client no longer has access to advisor availability.");
         }
@@ -2992,7 +3172,7 @@ export function createPortalHandler(overrides = {}) {
         effectiveAdvisingDays = resolveClientAdvisingDays({
           clientProfile,
           defaultAdvisingDays: advisingDays,
-          policyPresets
+          policyPresets: availabilityPolicyPresets
         });
       }
 
@@ -3000,7 +3180,7 @@ export function createPortalHandler(overrides = {}) {
         ? Math.min(Math.max(requestedDuration, 15), maxDurationMinutes)
         : defaultDurationMinutes;
       const nowMs = Date.now();
-      const baseWeekStartLocal = DateTime.fromMillis(nowMs, { zone: hostTimezone }).startOf("week");
+      const baseWeekStartLocal = DateTime.fromMillis(nowMs, { zone: availabilityHostTimezone }).startOf("week");
       const searchStartLocal = baseWeekStartLocal.plus({ weeks: weekOffset });
       const searchEndLocal = searchStartLocal.plus({ days: AVAILABILITY_VIEW_DAYS });
       const searchStartIso = searchStartLocal.toUTC().toISO();
@@ -3017,7 +3197,7 @@ export function createPortalHandler(overrides = {}) {
           deps,
           calendarMode,
           connectionsTableName,
-          advisorId,
+          advisorId: effectiveAvailabilityAdvisorId,
           googleOauthSecretArn,
           searchStartIso,
           searchEndIso,
@@ -3031,7 +3211,7 @@ export function createPortalHandler(overrides = {}) {
         busyIntervalsUtc: availabilityContext.busyIntervals,
         clientMeetingsUtc: availabilityContext.clientMeetings,
         nonClientBusyIntervalsUtc: availabilityContext.nonClientBusyIntervals,
-        hostTimezone,
+        hostTimezone: availabilityHostTimezone,
         advisingDays: effectiveAdvisingDays,
         searchStartIso,
         searchEndIso,
@@ -3048,7 +3228,7 @@ export function createPortalHandler(overrides = {}) {
       ) {
         try {
           await deps.recordClientAvailabilityViewInteraction(clientProfilesTableName, {
-            advisorId,
+            advisorId: effectiveAvailabilityAdvisorId,
             clientId: linkClientId,
             clientEmail: linkClientEmail,
             clientDisplayName: linkClientDisplayName,
@@ -3065,7 +3245,7 @@ export function createPortalHandler(overrides = {}) {
         200,
         buildAvailabilityPage({
           calendarModel,
-          hostTimezone,
+          hostTimezone: availabilityHostTimezone,
           expiresAtMs: linkExpiresAtMs,
           tokenParamName,
           token: effectiveToken,
@@ -3097,7 +3277,7 @@ export function createPortalHandler(overrides = {}) {
       const state = crypto.randomUUID();
       const nowMs = Date.now();
       await deps.putOauthState(oauthStateTableName, state, {
-        advisorId,
+        advisorId: configuredAdvisorId,
         purpose: "portal_login",
         returnTo,
         createdAt: new Date(nowMs).toISOString(),
@@ -3137,7 +3317,7 @@ export function createPortalHandler(overrides = {}) {
       }
 
       const stateItem = await deps.getOauthState(oauthStateTableName, state);
-      if (!stateItem || stateItem.advisorId !== advisorId || stateItem.purpose !== "portal_login") {
+      if (!stateItem || stateItem.purpose !== "portal_login") {
         return badRequest("Invalid or expired OAuth state");
       }
 
@@ -3168,26 +3348,46 @@ export function createPortalHandler(overrides = {}) {
         return advisorAuthErrorPage("The signed-in Google account is not authorized for this advisor portal.");
       }
       const loginEmail = normalizeAdvisorEmail(profile.email);
-      const derivedPreferredName = deriveAdvisorPreferredNameFromGoogleProfile(profile, advisorId);
+      const loginAdvisorId = deriveAdvisorIdFromEmail(loginEmail, configuredAdvisorId);
+      const derivedPreferredName = deriveAdvisorPreferredNameFromGoogleProfile(profile, loginAdvisorId);
+      const defaultAgentEmail = deriveDefaultAgentEmail({
+        advisorId: loginAdvisorId,
+        advisorEmail: loginEmail,
+        domain: defaultAgentEmailDomain
+      });
 
       if (advisorSettingsTableName && typeof deps.getAdvisorSettings === "function" && typeof deps.putAdvisorSettings === "function") {
         try {
-          const existingSettings = await deps.getAdvisorSettings(advisorSettingsTableName, advisorId);
+          const existingSettings = await deps.getAdvisorSettings(advisorSettingsTableName, loginAdvisorId);
+          const seededAgentEmail =
+            existingSettings?.agentEmail ||
+            (await ensureUniqueAgentEmail({
+              deps,
+              advisorSettingsTableName,
+              advisorId: loginAdvisorId,
+              requestedAgentEmail: defaultAgentEmail
+            }));
           const nextSettings = normalizeAdvisorSettingsRecord({
-            advisorId,
+            advisorId: loginAdvisorId,
             settings: {
               ...existingSettings,
+              advisorEmail: existingSettings?.advisorEmail || loginEmail,
+              agentEmail: seededAgentEmail || defaultAgentEmail,
               inviteEmail: existingSettings?.inviteEmail || loginEmail,
               preferredName: existingSettings?.preferredName || derivedPreferredName,
               timezone: existingSettings?.timezone || DEFAULT_ADVISOR_TIMEZONE
             },
+            fallbackAdvisorEmail: loginEmail,
             fallbackInviteEmail: loginEmail,
             fallbackPreferredName: derivedPreferredName,
-            fallbackTimezone: DEFAULT_ADVISOR_TIMEZONE
+            fallbackTimezone: DEFAULT_ADVISOR_TIMEZONE,
+            fallbackAgentEmailDomain: defaultAgentEmailDomain
           });
 
           const hasChanged =
             !existingSettings ||
+            String(existingSettings.advisorEmail ?? "") !== nextSettings.advisorEmail ||
+            String(existingSettings.agentEmail ?? "") !== nextSettings.agentEmail ||
             String(existingSettings.inviteEmail ?? "") !== nextSettings.inviteEmail ||
             String(existingSettings.preferredName ?? "") !== nextSettings.preferredName ||
             String(existingSettings.timezone ?? "") !== nextSettings.timezone;
@@ -3210,6 +3410,7 @@ export function createPortalHandler(overrides = {}) {
       const sessionToken = createPortalSessionToken(
         {
           email: loginEmail,
+          advisorId: loginAdvisorId,
           expiresAtMs: nowMs + 12 * 60 * 60 * 1000
         },
         sessionSecret.signingKey
@@ -3249,30 +3450,49 @@ export function createPortalHandler(overrides = {}) {
         return serverError("ADVISOR_SETTINGS_TABLE_NAME is required");
       }
 
+      const fallbackAdvisorEmail = normalizeAdvisorEmail(
+        advisorEmail ?? process.env.ADVISOR_ALLOWED_EMAIL ?? ""
+      );
       const fallbackInviteEmail = normalizeAdvisorEmail(
-        process.env.ADVISOR_INVITE_EMAIL ?? process.env.ADVISOR_ALLOWED_EMAIL ?? ""
+        process.env.ADVISOR_INVITE_EMAIL ?? fallbackAdvisorEmail
       );
       const fallbackPreferredName =
         normalizeAdvisorPreferredName(process.env.ADVISOR_DISPLAY_NAME ?? "") ||
-        deriveAdvisorPreferredNameFromEmail(fallbackInviteEmail, advisorId);
+        deriveAdvisorPreferredNameFromEmail(fallbackAdvisorEmail || fallbackInviteEmail, advisorId);
       const fallbackTimezone = normalizeTimezone(process.env.HOST_TIMEZONE, DEFAULT_ADVISOR_TIMEZONE);
 
       const existingSettings = await deps.getAdvisorSettings(advisorSettingsTableName, advisorId);
-      const normalizedSettings = normalizeAdvisorSettingsRecord({
+      let normalizedSettings = normalizeAdvisorSettingsRecord({
         advisorId,
         settings: existingSettings ?? {},
+        fallbackAdvisorEmail,
         fallbackInviteEmail,
         fallbackPreferredName,
-        fallbackTimezone
+        fallbackTimezone,
+        fallbackAgentEmailDomain: defaultAgentEmailDomain
       });
 
       if (!existingSettings && typeof deps.putAdvisorSettings === "function") {
+        const uniqueAgentEmail = await ensureUniqueAgentEmail({
+          deps,
+          advisorSettingsTableName,
+          advisorId,
+          requestedAgentEmail: normalizedSettings.agentEmail
+        });
+        if (uniqueAgentEmail && uniqueAgentEmail !== normalizedSettings.agentEmail) {
+          normalizedSettings = {
+            ...normalizedSettings,
+            agentEmail: uniqueAgentEmail
+          };
+        }
         await deps.putAdvisorSettings(advisorSettingsTableName, normalizedSettings);
       }
 
       return jsonResponse(200, {
         advisorId,
         settings: {
+          advisorEmail: normalizedSettings.advisorEmail,
+          agentEmail: normalizedSettings.agentEmail,
           inviteEmail: normalizedSettings.inviteEmail,
           preferredName: normalizedSettings.preferredName,
           timezone: normalizedSettings.timezone,
@@ -3294,25 +3514,53 @@ export function createPortalHandler(overrides = {}) {
         return badRequest("Request body must be valid JSON");
       }
 
+      const hasAgentEmail = Object.prototype.hasOwnProperty.call(body, "agentEmail");
       const hasInviteEmail = Object.prototype.hasOwnProperty.call(body, "inviteEmail");
       const hasPreferredName = Object.prototype.hasOwnProperty.call(body, "preferredName");
       const hasTimezone = Object.prototype.hasOwnProperty.call(body, "timezone");
-      if (!hasInviteEmail && !hasPreferredName && !hasTimezone) {
-        return badRequest("At least one setting field is required: inviteEmail, preferredName, timezone");
+      if (!hasAgentEmail && !hasInviteEmail && !hasPreferredName && !hasTimezone) {
+        return badRequest("At least one setting field is required: agentEmail, inviteEmail, preferredName, timezone");
       }
 
+      const fallbackAdvisorEmail = normalizeAdvisorEmail(
+        advisorEmail ?? process.env.ADVISOR_ALLOWED_EMAIL ?? ""
+      );
       const fallbackInviteEmail = normalizeAdvisorEmail(
-        process.env.ADVISOR_INVITE_EMAIL ?? process.env.ADVISOR_ALLOWED_EMAIL ?? ""
+        process.env.ADVISOR_INVITE_EMAIL ?? fallbackAdvisorEmail
       );
       const fallbackPreferredName =
         normalizeAdvisorPreferredName(process.env.ADVISOR_DISPLAY_NAME ?? "") ||
-        deriveAdvisorPreferredNameFromEmail(fallbackInviteEmail, advisorId);
+        deriveAdvisorPreferredNameFromEmail(fallbackAdvisorEmail || fallbackInviteEmail, advisorId);
       const fallbackTimezone = normalizeTimezone(process.env.HOST_TIMEZONE, DEFAULT_ADVISOR_TIMEZONE);
 
       const existingSettings = await deps.getAdvisorSettings(advisorSettingsTableName, advisorId);
       const mergedSettings = {
         ...(existingSettings ?? {})
       };
+
+      if (hasAgentEmail) {
+        const normalizedAgentEmail = normalizeAdvisorEmail(body.agentEmail);
+        if (!normalizedAgentEmail || !normalizedAgentEmail.includes("@")) {
+          return badRequest("agentEmail must be a valid email address");
+        }
+
+        const agentDomain = normalizedAgentEmail.split("@")[1];
+        if (agentDomain !== defaultAgentEmailDomain) {
+          return badRequest(`agentEmail domain must be ${defaultAgentEmailDomain}`);
+        }
+
+        if (typeof deps.getAdvisorSettingsByAgentEmail === "function") {
+          const existingByAgentEmail = await deps.getAdvisorSettingsByAgentEmail(
+            advisorSettingsTableName,
+            normalizedAgentEmail
+          );
+          if (existingByAgentEmail && normalizeAdvisorId(existingByAgentEmail.advisorId) !== normalizeAdvisorId(advisorId)) {
+            return badRequest("agentEmail is already in use by another advisor");
+          }
+        }
+
+        mergedSettings.agentEmail = normalizedAgentEmail;
+      }
 
       if (hasInviteEmail) {
         const inviteEmail = normalizeAdvisorEmail(body.inviteEmail);
@@ -3342,15 +3590,19 @@ export function createPortalHandler(overrides = {}) {
       const normalizedSettings = normalizeAdvisorSettingsRecord({
         advisorId,
         settings: mergedSettings,
+        fallbackAdvisorEmail,
         fallbackInviteEmail,
         fallbackPreferredName,
-        fallbackTimezone
+        fallbackTimezone,
+        fallbackAgentEmailDomain: defaultAgentEmailDomain
       });
       await deps.putAdvisorSettings(advisorSettingsTableName, normalizedSettings);
 
       return jsonResponse(200, {
         advisorId,
         settings: {
+          advisorEmail: normalizedSettings.advisorEmail,
+          agentEmail: normalizedSettings.agentEmail,
           inviteEmail: normalizedSettings.inviteEmail,
           preferredName: normalizedSettings.preferredName,
           timezone: normalizedSettings.timezone,
@@ -3786,9 +4038,10 @@ export function createPortalHandler(overrides = {}) {
       }
 
       const stateItem = await deps.getOauthState(oauthStateTableName, state);
-      if (!stateItem || stateItem.advisorId !== advisorId || stateItem.purpose !== "calendar_connection") {
+      if (!stateItem || stateItem.purpose !== "calendar_connection") {
         return badRequest("Invalid or expired OAuth state");
       }
+      const oauthAdvisorId = normalizeAdvisorId(stateItem.advisorId, advisorId);
 
       await deps.deleteOauthState(oauthStateTableName, state);
 
@@ -3824,7 +4077,7 @@ export function createPortalHandler(overrides = {}) {
 
       const nowIso = new Date().toISOString();
       const connectionId = `google-${crypto.randomUUID()}`;
-      const secretName = `/${appName}/${stage}/${advisorId}/connections/${connectionId}`;
+      const secretName = `/${appName}/${stage}/${oauthAdvisorId}/connections/${connectionId}`;
       const secretArn = await deps.createSecret(
         secretName,
         JSON.stringify({
@@ -3836,7 +4089,7 @@ export function createPortalHandler(overrides = {}) {
       );
 
       await deps.putConnection(connectionsTableName, {
-        advisorId,
+        advisorId: oauthAdvisorId,
         connectionId,
         provider: "google",
         accountEmail: profile.email ?? "unknown@google",
