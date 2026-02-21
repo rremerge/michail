@@ -1319,10 +1319,6 @@ function buildAvailabilityPage({
             ? `<div class="slot-pill client-${slot.clientMeetingState}">Your meeting (${slot.clientMeetingState === "accepted" ? "accepted" : "pending"})</div>`
             : "";
           const overlapPill = slot.hasOverlap ? '<div class="slot-pill overlap">Potential conflict</div>' : "";
-          const fitRequestedPill =
-            requestedDurationHighlightEnabled && slot.fitsRequestedDuration && slot.status === "open"
-              ? `<div class="slot-pill fit-request">Fits requested ${escapeHtml(requestedDurationLabel)} meeting</div>`
-              : "";
           const meetingDetails = slot.hasClientMeeting
             ? `<div class="client-meeting-list">${slot.clientMeetings
                 .map(
@@ -1359,7 +1355,6 @@ function buildAvailabilityPage({
             <div class="slot-pill ${slot.status}">${slot.status === "busy" ? "Busy" : "Open"}</div>
             ${clientPill}
             ${overlapPill}
-            ${fitRequestedPill}
             <div class="slot-host">${escapeHtml(hostTimeLabel)}</div>
             ${meetingDetails}
           </td></tr>`;
@@ -1465,7 +1460,7 @@ function buildAvailabilityPage({
       .legend-pill.client-accepted { background: #dcfce7; color: #166534; border-color: #86efac; }
       .legend-pill.client-pending { background: #fef9c3; color: #854d0e; border-color: #fde68a; }
       .legend-pill.overlap { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
-      .legend-pill.fit-request { background: #ecfeff; color: #155e75; border-color: #67e8f9; }
+      .legend-pill.fit-request { background: #82cd72; color: #065f46; border-color: #9dd7a6; }
       .legend-pill.both-open { background: #e0f2fe; color: #075985; border-color: #7dd3fc; }
       .legend-pill.hidden { display: none; }
       .compare-card { border: 1px solid #cbd5e1; border-radius: 10px; background: #ffffff; padding: 12px; margin: 10px 0 14px; }
@@ -1519,7 +1514,8 @@ function buildAvailabilityPage({
       .slot.client-accepted { background: #ecfdf5; }
       .slot.client-pending { background: #fffbeb; }
       .slot.client-overlap { box-shadow: inset 0 0 0 2px #fca5a5; }
-      .slot.fit-request { box-shadow: inset 0 0 0 2px #67e8f9; }
+      .slot.fit-request { background: #f4fbf6; }
+      .local-slot.fit-request { background: #82cd72; }
       .slot.both-open { background: #e0f2fe; box-shadow: inset 0 0 0 2px #7dd3fc; }
       .slot-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid; }
       .slot-pill.open { color: #065f46; background: #dcfce7; border-color: #86efac; }
@@ -1527,7 +1523,6 @@ function buildAvailabilityPage({
       .slot-pill.client-accepted { color: #166534; background: #dcfce7; border-color: #86efac; margin-top: 4px; }
       .slot-pill.client-pending { color: #854d0e; background: #fef3c7; border-color: #fcd34d; margin-top: 4px; }
       .slot-pill.overlap { color: #991b1b; background: #fee2e2; border-color: #fca5a5; margin-top: 4px; }
-      .slot-pill.fit-request { color: #155e75; background: #ecfeff; border-color: #67e8f9; margin-top: 4px; }
       .slot-host { margin-top: 6px; font-size: 11px; font-weight: 700; color: #0f172a; }
       .advisor-slot.merged-span .slot-host { margin-top: 8px; }
       .slot-local { margin-top: 6px; font-size: 11px; font-weight: 600; color: #475569; }

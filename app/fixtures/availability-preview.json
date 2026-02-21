@@ -14,7 +14,7 @@
     "displayName": "Preview Client",
     "reference": "preview-client"
   },
-  "durationMinutes": 30,
+  "durationMinutes": 120,
   "busyIntervals": [
     { "day": "Tue", "start": "10:00", "end": "10:30" },
     { "day": "Tue", "start": "12:00", "end": "13:00" },
