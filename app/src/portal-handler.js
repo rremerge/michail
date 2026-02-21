@@ -2801,11 +2801,36 @@ function buildAdvisorPage() {
       pre { background: #0f172a; color: #e2e8f0; border-radius: 8px; padding: 12px; overflow: auto; font-size: 12px; }
       .row { margin-top: 10px; }
       .inline-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+      .inline-controls button,
+      .inline-controls input,
+      .inline-controls select,
+      .inline-controls textarea { margin-right: 0; }
+      .connection-actions { gap: 10px; align-items: stretch; }
+      .connection-actions button { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; }
+      .connection-actions #logout { margin-left: auto; }
+      .connection-actions-note { margin: 8px 0 0; display: block; }
+      @media (max-width: 960px) {
+        .connection-actions #logout { margin-left: 0; }
+      }
       .small-button { padding: 4px 8px; font-size: 12px; }
       .small-select { padding: 4px 8px; font-size: 12px; }
+      textarea { padding: 8px 10px; border: 1px solid #c7ced9; border-radius: 6px; font-family: inherit; }
+      .table-meta { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-top: 10px; margin-bottom: 8px; }
+      .table-meta p { margin: 0; }
+      .search-input { min-width: 260px; }
+      .table-scroll { overflow: auto; border: 1px solid #e5e7eb; border-radius: 8px; }
+      .table-scroll table { min-width: 1080px; }
+      .table-scroll thead th { position: sticky; top: 0; background: #f8fafc; z-index: 1; }
+      .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-top: 10px; }
+      .settings-panel { border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; background: #f8fafc; }
+      .settings-panel .section-subtitle { margin-top: 0; }
+      .settings-intro { margin: 0 0 10px; font-size: 13px; }
       .profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
       .profile-grid label { display: block; font-size: 12px; color: #475569; font-weight: 600; margin-bottom: 4px; }
       .profile-grid input, .profile-grid select { width: 100%; margin-right: 0; box-sizing: border-box; }
+      .checkbox-field { display: flex; align-items: center; gap: 8px; min-height: 38px; }
+      .checkbox-field input[type="checkbox"] { width: auto; margin: 0; padding: 0; }
+      .checkbox-field label { margin: 0; font-size: 13px; color: #334155; font-weight: 600; }
       .profile-actions { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
       .profile-status { margin-top: 8px; }
       .section-subtitle { margin: 12px 0 8px; font-size: 15px; color: #0f172a; }
@@ -2876,13 +2901,13 @@ function buildAdvisorPage() {
       <h2 style="margin-top:0;">Connected Calendars</h2>
       <div id="statusBanner" style="display:none"></div>
       <p class="muted">Add calendars for availability checks without manually editing AWS secrets, then manage them below.</p>
-      <div class="row inline-controls">
+      <div class="row inline-controls connection-actions">
         <button id="addMock">Add Mock Calendar (Test)</button>
         <button id="googleConnect">Connect Google (Sign In)</button>
         <button id="refreshPortalData">Refresh Data</button>
         <button id="logout">Logout</button>
       </div>
-      <span class="muted">Google flow requires app credentials configured in backend secret.</span>
+      <p class="muted connection-actions-note">Google flow requires app credentials configured in backend secret.</p>
       <h3 class="section-subtitle">Current Connections</h3>
       <table>
         <thead>
@@ -2935,73 +2960,94 @@ function buildAdvisorPage() {
         <button id="bulkImportClients">Bulk Import</button>
       </div>
       <p id="clientImportStatus" class="muted">Add one client or bulk import emails to control who can receive agent responses.</p>
-      <table>
-        <thead>
-          <tr>
-            <th>Client</th>
-            <th>Access</th>
-            <th>Policy</th>
-            <th>First Contact</th>
-            <th>Last Activity</th>
-            <th>Email Uses</th>
-            <th>Web Uses</th>
-            <th>Total</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="clientsBody"></tbody>
-      </table>
+      <div class="table-meta">
+        <div class="inline-controls">
+          <input id="clientSearchInput" class="search-input" placeholder="Search clients by name or email" />
+          <button id="clearClientSearch" class="small-button" type="button">Clear</button>
+        </div>
+        <p id="clientListSummary" class="muted">Showing 0 of 0 clients.</p>
+      </div>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>Client</th>
+              <th>Access</th>
+              <th>Policy</th>
+              <th>First Contact</th>
+              <th>Last Activity</th>
+              <th>Email Uses</th>
+              <th>Web Uses</th>
+              <th>Total</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="clientsBody"></tbody>
+        </table>
+      </div>
     </div>
 
     <div class="card">
       <h2 style="margin-top:0;">Advisor Profile &amp; AI Settings</h2>
       <p class="muted">Defaults are initialized from advisor Google login and can be edited here.</p>
-      <div class="profile-grid">
-        <div>
-          <label for="advisorAgentEmail">Agent Email</label>
-          <input id="advisorAgentEmail" type="email" placeholder="advisor.agent@agent.letsconnect.ai" />
-        </div>
-        <div>
-          <label for="advisorInviteEmail">Advisor Invite Email</label>
-          <input id="advisorInviteEmail" type="email" placeholder="advisor@example.com" />
-        </div>
-        <div>
-          <label for="advisorPreferredName">Preferred Name</label>
-          <input id="advisorPreferredName" type="text" placeholder="Advisor name" maxlength="64" />
-        </div>
-        <div>
-          <label for="advisorTimezone">Advisor Timezone</label>
-          <input id="advisorTimezone" type="text" placeholder="America/Los_Angeles" />
-        </div>
-        <div>
-          <label for="advisorLlmKeyMode">LLM Key Source</label>
-          <select id="advisorLlmKeyMode">
-            <option value="platform">Platform Default Key</option>
-            <option value="advisor">Advisor Key</option>
-          </select>
-        </div>
-        <div>
-          <label for="advisorLlmProvider">LLM Provider</label>
-          <select id="advisorLlmProvider">
-            <option value="openai">OpenAI</option>
-          </select>
-        </div>
-        <div>
-          <label for="advisorLlmModel">LLM Model</label>
-          <input id="advisorLlmModel" type="text" placeholder="gpt-5.2" maxlength="80" />
-        </div>
-        <div>
-          <label for="advisorLlmEndpoint">LLM Endpoint</label>
-          <input id="advisorLlmEndpoint" type="url" placeholder="https://api.openai.com/v1/chat/completions" />
-        </div>
-        <div>
-          <label for="advisorLlmApiKey">Advisor LLM API Key (optional)</label>
-          <input id="advisorLlmApiKey" type="password" placeholder="sk-..." autocomplete="off" />
-        </div>
-        <div>
-          <label for="clearAdvisorLlmApiKey">Clear Stored Advisor Key</label>
-          <input id="clearAdvisorLlmApiKey" type="checkbox" style="width:auto; margin-right:0;" />
-        </div>
+      <div class="settings-grid">
+        <section class="settings-panel">
+          <h3 class="section-subtitle">Advisor Identity</h3>
+          <p class="muted settings-intro">Email identity and timezone used in outbound responses and calendar suggestions.</p>
+          <div class="profile-grid">
+            <div>
+              <label for="advisorAgentEmail">Agent Email</label>
+              <input id="advisorAgentEmail" type="email" placeholder="advisor.agent@agent.letsconnect.ai" />
+            </div>
+            <div>
+              <label for="advisorInviteEmail">Advisor Invite Email</label>
+              <input id="advisorInviteEmail" type="email" placeholder="advisor@example.com" />
+            </div>
+            <div>
+              <label for="advisorPreferredName">Preferred Name</label>
+              <input id="advisorPreferredName" type="text" placeholder="Advisor name" maxlength="64" />
+            </div>
+            <div>
+              <label for="advisorTimezone">Advisor Timezone</label>
+              <input id="advisorTimezone" type="text" placeholder="America/Los_Angeles" />
+            </div>
+          </div>
+        </section>
+        <section class="settings-panel">
+          <h3 class="section-subtitle">AI Settings</h3>
+          <p class="muted settings-intro">Provider/model and advisor-managed key controls for email response generation.</p>
+          <div class="profile-grid">
+            <div>
+              <label for="advisorLlmKeyMode">LLM Key Source</label>
+              <select id="advisorLlmKeyMode">
+                <option value="platform">Platform Default Key</option>
+                <option value="advisor">Advisor Key</option>
+              </select>
+            </div>
+            <div>
+              <label for="advisorLlmProvider">LLM Provider</label>
+              <select id="advisorLlmProvider">
+                <option value="openai">OpenAI</option>
+              </select>
+            </div>
+            <div>
+              <label for="advisorLlmModel">LLM Model</label>
+              <input id="advisorLlmModel" type="text" placeholder="gpt-5.2" maxlength="80" />
+            </div>
+            <div>
+              <label for="advisorLlmEndpoint">LLM Endpoint</label>
+              <input id="advisorLlmEndpoint" type="url" placeholder="https://api.openai.com/v1/chat/completions" />
+            </div>
+            <div>
+              <label for="advisorLlmApiKey">Advisor LLM API Key (optional)</label>
+              <input id="advisorLlmApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+            </div>
+            <div class="checkbox-field">
+              <input id="clearAdvisorLlmApiKey" type="checkbox" />
+              <label for="clearAdvisorLlmApiKey">Clear stored advisor key when saving</label>
+            </div>
+          </div>
+        </section>
       </div>
       <div class="profile-actions">
         <button id="saveAdvisorSettings">Save Profile</button>
@@ -3065,6 +3111,8 @@ function buildAdvisorPage() {
       let policyOptions = ['default', 'weekend', 'monday'];
       let latestConnections = [];
       let latestClients = [];
+      let latestClientPolicyOptions = ['default', 'weekend', 'monday'];
+      let clientSearchQuery = '';
       const BRAND_STORAGE_KEY = '${BRAND_STORAGE_KEY}';
       const BRAND_MAX_BYTES = 1024 * 1024;
 
@@ -3469,6 +3517,38 @@ function buildAdvisorPage() {
         return match ? match[0] : '';
       }
 
+      function normalizeClientSearchInput(value) {
+        return String(value || '').trim().toLowerCase();
+      }
+
+      function clientMatchesSearch(client, query) {
+        if (!query) {
+          return true;
+        }
+        const displayName = String(client?.clientDisplayName || '').toLowerCase();
+        const email = String(client?.clientEmail || client?.clientId || '').toLowerCase();
+        return displayName.includes(query) || email.includes(query);
+      }
+
+      function updateClientListSummary(filteredCount, totalCount) {
+        const node = document.getElementById('clientListSummary');
+        if (!node) {
+          return;
+        }
+
+        if (totalCount <= 0) {
+          node.textContent = 'No clients yet.';
+          return;
+        }
+
+        if (filteredCount === totalCount) {
+          node.textContent = 'Showing all ' + totalCount + ' clients.';
+          return;
+        }
+
+        node.textContent = 'Showing ' + filteredCount + ' of ' + totalCount + ' clients.';
+      }
+
       function renderClientPolicyOptions() {
         const selector = document.getElementById('newClientPolicy');
         if (!selector) {
@@ -3679,29 +3759,16 @@ function buildAdvisorPage() {
         return payload;
       }
 
-      async function loadClients() {
+      function renderClientsTableRows() {
         const tbody = document.getElementById('clientsBody');
         tbody.innerHTML = '';
-        const response = await fetch('./advisor/api/clients');
-        const payload = await response.json();
-        if (!response.ok) {
-          latestClients = [];
-          renderOverviewMetrics();
-          const row = document.createElement('tr');
-          row.innerHTML = '<td colspan="9" class="error">' + escapeHtml(payload.error || 'Unable to load clients.') + '</td>';
-          tbody.appendChild(row);
-          return;
-        }
-
-        const clients = Array.isArray(payload.clients) ? payload.clients : [];
-        latestClients = clients;
-        renderOverviewMetrics();
-        const availablePolicies =
-          Array.isArray(policyOptions) && policyOptions.length > 0
-            ? policyOptions
-            : Array.isArray(payload.policyOptions) && payload.policyOptions.length > 0
-              ? payload.policyOptions
-              : ['default', 'weekend', 'monday'];
+        const clients = Array.isArray(latestClients) ? latestClients : [];
+        const availablePolicies = Array.isArray(latestClientPolicyOptions) && latestClientPolicyOptions.length > 0
+          ? latestClientPolicyOptions
+          : ['default', 'weekend', 'monday'];
+        const normalizedSearchQuery = normalizeClientSearchInput(clientSearchQuery);
+        const filteredClients = clients.filter((client) => clientMatchesSearch(client, normalizedSearchQuery));
+        updateClientListSummary(filteredClients.length, clients.length);
 
         if (clients.length === 0) {
           const row = document.createElement('tr');
@@ -3710,7 +3777,14 @@ function buildAdvisorPage() {
           return;
         }
 
-        for (const client of clients) {
+        if (filteredClients.length === 0) {
+          const row = document.createElement('tr');
+          row.innerHTML = '<td colspan="9" class="muted">No clients match the current search.</td>';
+          tbody.appendChild(row);
+          return;
+        }
+
+        for (const client of filteredClients) {
           const row = document.createElement('tr');
           const accessClass = client.accessState === 'active' ? 'ok' : client.accessState === 'blocked' ? 'warn' : 'error';
           const optionsHtml = availablePolicies
@@ -3755,6 +3829,35 @@ function buildAdvisorPage() {
 
           tbody.appendChild(row);
         }
+      }
+
+      async function loadClients() {
+        const tbody = document.getElementById('clientsBody');
+        tbody.innerHTML = '';
+        const response = await fetch('./advisor/api/clients');
+        const payload = await response.json();
+        if (!response.ok) {
+          latestClients = [];
+          latestClientPolicyOptions = Array.isArray(policyOptions) && policyOptions.length > 0
+            ? policyOptions
+            : ['default', 'weekend', 'monday'];
+          renderOverviewMetrics();
+          updateClientListSummary(0, 0);
+          const row = document.createElement('tr');
+          row.innerHTML = '<td colspan="9" class="error">' + escapeHtml(payload.error || 'Unable to load clients.') + '</td>';
+          tbody.appendChild(row);
+          return;
+        }
+
+        latestClients = Array.isArray(payload.clients) ? payload.clients : [];
+        latestClientPolicyOptions =
+          Array.isArray(policyOptions) && policyOptions.length > 0
+            ? policyOptions
+            : Array.isArray(payload.policyOptions) && payload.policyOptions.length > 0
+              ? payload.policyOptions
+              : ['default', 'weekend', 'monday'];
+        renderOverviewMetrics();
+        renderClientsTableRows();
       }
 
       document.getElementById('addMock').addEventListener('click', async () => {
@@ -3823,6 +3926,21 @@ function buildAdvisorPage() {
         } catch (error) {
           setClientImportStatus(error.message || 'Bulk import failed.', 'error');
         }
+      });
+
+      document.getElementById('clientSearchInput').addEventListener('input', (event) => {
+        clientSearchQuery = normalizeClientSearchInput(event.target?.value || '');
+        renderClientsTableRows();
+      });
+
+      document.getElementById('clearClientSearch').addEventListener('click', () => {
+        const input = document.getElementById('clientSearchInput');
+        if (input) {
+          input.value = '';
+          input.focus();
+        }
+        clientSearchQuery = '';
+        renderClientsTableRows();
       });
 
       document.getElementById('googleConnect').addEventListener('click', () => {

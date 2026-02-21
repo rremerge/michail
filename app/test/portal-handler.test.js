@@ -35,6 +35,9 @@ test("advisor portal home serves html", async () => {
     assert.equal(response.statusCode, 200);
     assert.match(response.headers["content-type"], /text\/html/);
     assert.match(response.body, /Connected Calendars/);
+    assert.match(response.body, /id="clientSearchInput"/);
+    assert.match(response.body, /Advisor Identity/);
+    assert.match(response.body, /AI Settings/);
     assert.match(response.body, /id="portalBrandLogo"/);
     assert.match(response.body, /Copyright \(C\) 2026\. RR Emerge LLC/);
   } finally {
