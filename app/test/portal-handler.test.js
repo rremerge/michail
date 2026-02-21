@@ -1224,6 +1224,9 @@ test("advisor portal settings api returns and updates advisor profile settings",
     assert.equal(getPayload.settings.inviteEmail, "manoj@rremerge.com");
     assert.equal(getPayload.settings.preferredName, "Manoj");
     assert.equal(getPayload.settings.timezone, "America/Los_Angeles");
+    assert.equal(getPayload.settings.llmKeyMode, "platform");
+    assert.equal(getPayload.settings.llmProvider, "openai");
+    assert.equal(getPayload.settings.advisorLlmKeyConfigured, false);
 
     const patchResponse = await handler({
       requestContext: {
@@ -1243,6 +1246,160 @@ test("advisor portal settings api returns and updates advisor profile settings",
     assert.equal(writes[0].inviteEmail, "advisor@newdomain.com");
     assert.equal(writes[0].preferredName, "Manoj Apte");
     assert.equal(writes[0].timezone, "America/New_York");
+    assert.equal(writes[0].llmKeyMode, "platform");
+    assert.equal(writes[0].llmProvider, "openai");
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("advisor portal settings api stores advisor LLM api key in Secrets Manager", async () => {
+  let stored = {
+    advisorId: "manoj",
+    advisorEmail: "manoj@example.com",
+    inviteEmail: "manoj@example.com",
+    preferredName: "Manoj",
+    timezone: "America/Los_Angeles",
+    llmKeyMode: "platform",
+    llmProvider: "openai",
+    llmModel: "gpt-5.2",
+    llmEndpoint: "https://api.openai.com/v1/chat/completions",
+    createdAt: "2026-02-01T00:00:00.000Z",
+    updatedAt: "2026-02-01T00:00:00.000Z"
+  };
+  const writes = [];
+  let createdSecretName = null;
+  let createdSecretValue = null;
+
+  const handler = createPortalHandler({
+    async getAdvisorSettings() {
+      return { ...stored };
+    },
+    async putAdvisorSettings(_tableName, item) {
+      writes.push(item);
+      stored = { ...item };
+    },
+    async createSecret(secretName, secretString) {
+      createdSecretName = secretName;
+      createdSecretValue = secretString;
+      return "arn:aws:secretsmanager:us-east-1:111111111111:secret:/calendar-agent-spike/dev/manoj/llm/provider";
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_SETTINGS_TABLE_NAME: process.env.ADVISOR_SETTINGS_TABLE_NAME,
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    APP_NAME: process.env.APP_NAME,
+    STAGE: process.env.STAGE
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_SETTINGS_TABLE_NAME = "AdvisorSettingsTable";
+  process.env.ADVISOR_ID = "manoj";
+  process.env.APP_NAME = "calendar-agent-spike";
+  process.env.STAGE = "dev";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "PATCH" }
+      },
+      rawPath: "/dev/advisor/api/settings",
+      body: JSON.stringify({
+        llmKeyMode: "advisor",
+        llmProvider: "openai",
+        llmModel: "gpt-5.2",
+        llmEndpoint: "https://api.openai.com/v1/chat/completions",
+        llmApiKey: "sk-test-advisor-key"
+      })
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(createdSecretName, "/calendar-agent-spike/dev/manoj/llm/provider");
+    assert.match(createdSecretValue, /"api_key":"sk-test-advisor-key"/);
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].llmKeyMode, "advisor");
+    assert.equal(writes[0].llmProvider, "openai");
+    assert.equal(
+      writes[0].llmProviderSecretArn,
+      "arn:aws:secretsmanager:us-east-1:111111111111:secret:/calendar-agent-spike/dev/manoj/llm/provider"
+    );
+    const payload = JSON.parse(response.body);
+    assert.equal(payload.settings.llmKeyMode, "advisor");
+    assert.equal(payload.settings.advisorLlmKeyConfigured, true);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("advisor portal settings api updates existing advisor LLM secret", async () => {
+  let putSecretCalls = 0;
+  let putSecretArn = null;
+  let putSecretValue = null;
+
+  const handler = createPortalHandler({
+    async getAdvisorSettings() {
+      return {
+        advisorId: "manoj",
+        advisorEmail: "manoj@example.com",
+        inviteEmail: "manoj@example.com",
+        preferredName: "Manoj",
+        timezone: "America/Los_Angeles",
+        llmKeyMode: "advisor",
+        llmProvider: "openai",
+        llmModel: "gpt-5.2",
+        llmEndpoint: "https://api.openai.com/v1/chat/completions",
+        llmProviderSecretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:advisor-llm"
+      };
+    },
+    async putSecretValue(secretArn, secretString) {
+      putSecretCalls += 1;
+      putSecretArn = secretArn;
+      putSecretValue = secretString;
+    },
+    async putAdvisorSettings() {}
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_SETTINGS_TABLE_NAME: process.env.ADVISOR_SETTINGS_TABLE_NAME,
+    ADVISOR_ID: process.env.ADVISOR_ID
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_SETTINGS_TABLE_NAME = "AdvisorSettingsTable";
+  process.env.ADVISOR_ID = "manoj";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "PATCH" }
+      },
+      rawPath: "/dev/advisor/api/settings",
+      body: JSON.stringify({
+        llmApiKey: "sk-rotated-advisor-key"
+      })
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(putSecretCalls, 1);
+    assert.equal(putSecretArn, "arn:aws:secretsmanager:us-east-1:111111111111:secret:advisor-llm");
+    assert.match(putSecretValue, /"api_key":"sk-rotated-advisor-key"/);
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {

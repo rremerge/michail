@@ -44,6 +44,11 @@ function parseBooleanEnv(value, fallback = false) {
 const AVAILABILITY_VIEW_DAYS = 7;
 const DEFAULT_ADVISOR_TIMEZONE = "America/Los_Angeles";
 const DEFAULT_AGENT_EMAIL_DOMAIN = "agent.letsconnect.ai";
+const DEFAULT_LLM_PROVIDER = "openai";
+const DEFAULT_LLM_MODEL = "gpt-5.2";
+const DEFAULT_LLM_ENDPOINT = "https://api.openai.com/v1/chat/completions";
+const ALLOWED_LLM_PROVIDERS = new Set(["openai"]);
+const ALLOWED_LLM_KEY_MODES = new Set(["platform", "advisor"]);
 const BRAND_STORAGE_KEY = "letsconnect.whitelabel.logo.dataurl";
 const BRAND_COPYRIGHT_NOTICE = "Copyright (C) 2026. RR Emerge LLC";
 const BRAND_POWERED_BY_NOTICE = "Powered by LetsConnect.ai";
@@ -98,6 +103,11 @@ function normalizeAdvisorEmail(value) {
   return candidate.replace(/[<>]/g, "").trim();
 }
 
+function normalizeSecretArn(value) {
+  const candidate = String(value ?? "").trim();
+  return candidate || "";
+}
+
 function normalizeAdvisorId(value, fallbackAdvisorId = "advisor") {
   const candidate = String(value ?? "")
     .trim()
@@ -120,6 +130,57 @@ function deriveAdvisorIdFromEmail(email, fallbackAdvisorId = "advisor") {
   }
 
   return normalizeAdvisorId(fallbackAdvisorId, "advisor");
+}
+
+function normalizeLlmProvider(value, fallbackProvider = DEFAULT_LLM_PROVIDER) {
+  const candidate = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (ALLOWED_LLM_PROVIDERS.has(candidate)) {
+    return candidate;
+  }
+
+  return fallbackProvider;
+}
+
+function normalizeLlmKeyMode(value, fallbackKeyMode = "platform") {
+  const candidate = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (ALLOWED_LLM_KEY_MODES.has(candidate)) {
+    return candidate;
+  }
+
+  return fallbackKeyMode;
+}
+
+function normalizeLlmModel(value, fallbackModel = DEFAULT_LLM_MODEL) {
+  const candidate = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 80);
+  return candidate || fallbackModel;
+}
+
+function normalizeLlmEndpoint(value, fallbackEndpoint = DEFAULT_LLM_ENDPOINT) {
+  const candidate = String(value ?? "").trim();
+  if (!candidate) {
+    return fallbackEndpoint;
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    if (parsed.protocol !== "https:") {
+      return fallbackEndpoint;
+    }
+    return parsed.toString();
+  } catch {
+    return fallbackEndpoint;
+  }
+}
+
+function buildAdvisorLlmSecretName({ appName, stage, advisorId }) {
+  return `/${appName}/${stage}/${advisorId}/llm/provider`;
 }
 
 function normalizeAgentEmailDomain(value) {
@@ -249,13 +310,24 @@ function normalizeAdvisorSettingsRecord({
   fallbackInviteEmail,
   fallbackPreferredName,
   fallbackTimezone,
-  fallbackAgentEmailDomain
+  fallbackAgentEmailDomain,
+  fallbackLlmProvider = DEFAULT_LLM_PROVIDER,
+  fallbackLlmModel = DEFAULT_LLM_MODEL,
+  fallbackLlmEndpoint = DEFAULT_LLM_ENDPOINT
 }) {
   const normalizedAdvisorId = normalizeAdvisorId(advisorId, "advisor");
   const advisorEmail = normalizeAdvisorEmail(settings?.advisorEmail ?? fallbackAdvisorEmail);
   const inviteEmail = normalizeAdvisorEmail(settings?.inviteEmail ?? fallbackInviteEmail ?? advisorEmail);
   const preferredName = normalizeAdvisorPreferredName(settings?.preferredName ?? fallbackPreferredName);
   const timezone = normalizeTimezone(settings?.timezone, fallbackTimezone);
+  const llmProvider = normalizeLlmProvider(settings?.llmProvider, fallbackLlmProvider);
+  const llmModel = normalizeLlmModel(settings?.llmModel, fallbackLlmModel);
+  const llmEndpoint = normalizeLlmEndpoint(settings?.llmEndpoint, fallbackLlmEndpoint);
+  const llmProviderSecretArn = normalizeSecretArn(settings?.llmProviderSecretArn);
+  const llmKeyMode = normalizeLlmKeyMode(
+    settings?.llmKeyMode,
+    llmProviderSecretArn ? "advisor" : "platform"
+  );
   const agentEmail = normalizeAdvisorEmail(
     settings?.agentEmail ??
       deriveDefaultAgentEmail({
@@ -273,6 +345,11 @@ function normalizeAdvisorSettingsRecord({
     inviteEmail,
     preferredName: preferredName || deriveAdvisorPreferredNameFromEmail(inviteEmail || advisorEmail, normalizedAdvisorId),
     timezone,
+    llmProvider,
+    llmModel,
+    llmEndpoint,
+    llmKeyMode,
+    llmProviderSecretArn,
     createdAt: settings?.createdAt ?? nowIso,
     updatedAt: nowIso
   };
@@ -2728,7 +2805,7 @@ function buildAdvisorPage() {
       .small-select { padding: 4px 8px; font-size: 12px; }
       .profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
       .profile-grid label { display: block; font-size: 12px; color: #475569; font-weight: 600; margin-bottom: 4px; }
-      .profile-grid input { width: 100%; margin-right: 0; box-sizing: border-box; }
+      .profile-grid input, .profile-grid select { width: 100%; margin-right: 0; box-sizing: border-box; }
       .profile-actions { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
       .profile-status { margin-top: 8px; }
       .brand-preview { display: block; height: 34px; width: auto; max-width: 260px; border: 1px solid #d0d7e2; border-radius: 8px; background: #fff; padding: 4px 8px; }
@@ -2780,6 +2857,35 @@ function buildAdvisorPage() {
         <div>
           <label for="advisorTimezone">Advisor Timezone</label>
           <input id="advisorTimezone" type="text" placeholder="America/Los_Angeles" />
+        </div>
+        <div>
+          <label for="advisorLlmKeyMode">LLM Key Source</label>
+          <select id="advisorLlmKeyMode">
+            <option value="platform">Platform Default Key</option>
+            <option value="advisor">Advisor Key</option>
+          </select>
+        </div>
+        <div>
+          <label for="advisorLlmProvider">LLM Provider</label>
+          <select id="advisorLlmProvider">
+            <option value="openai">OpenAI</option>
+          </select>
+        </div>
+        <div>
+          <label for="advisorLlmModel">LLM Model</label>
+          <input id="advisorLlmModel" type="text" placeholder="gpt-5.2" maxlength="80" />
+        </div>
+        <div>
+          <label for="advisorLlmEndpoint">LLM Endpoint</label>
+          <input id="advisorLlmEndpoint" type="url" placeholder="https://api.openai.com/v1/chat/completions" />
+        </div>
+        <div>
+          <label for="advisorLlmApiKey">Advisor LLM API Key (optional)</label>
+          <input id="advisorLlmApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+        </div>
+        <div>
+          <label for="clearAdvisorLlmApiKey">Clear Stored Advisor Key</label>
+          <input id="clearAdvisorLlmApiKey" type="checkbox" style="width:auto; margin-right:0;" />
         </div>
       </div>
       <div class="profile-actions">
@@ -2984,12 +3090,28 @@ function buildAdvisorPage() {
       }
 
       function readAdvisorSettingsInputs() {
-        return {
+        const payload = {
           agentEmail: String(document.getElementById('advisorAgentEmail')?.value || '').trim(),
           inviteEmail: String(document.getElementById('advisorInviteEmail')?.value || '').trim(),
           preferredName: String(document.getElementById('advisorPreferredName')?.value || '').trim(),
-          timezone: String(document.getElementById('advisorTimezone')?.value || '').trim()
+          timezone: String(document.getElementById('advisorTimezone')?.value || '').trim(),
+          llmKeyMode: String(document.getElementById('advisorLlmKeyMode')?.value || '').trim(),
+          llmProvider: String(document.getElementById('advisorLlmProvider')?.value || '').trim(),
+          llmModel: String(document.getElementById('advisorLlmModel')?.value || '').trim(),
+          llmEndpoint: String(document.getElementById('advisorLlmEndpoint')?.value || '').trim()
         };
+
+        const llmApiKey = String(document.getElementById('advisorLlmApiKey')?.value || '').trim();
+        if (llmApiKey) {
+          payload.llmApiKey = llmApiKey;
+        }
+
+        const clearAdvisorLlmApiKey = Boolean(document.getElementById('clearAdvisorLlmApiKey')?.checked);
+        if (clearAdvisorLlmApiKey) {
+          payload.clearAdvisorLlmApiKey = true;
+        }
+
+        return payload;
       }
 
       async function loadAdvisorSettings() {
@@ -3005,6 +3127,12 @@ function buildAdvisorPage() {
         const inviteEmailInput = document.getElementById('advisorInviteEmail');
         const preferredNameInput = document.getElementById('advisorPreferredName');
         const timezoneInput = document.getElementById('advisorTimezone');
+        const llmKeyModeInput = document.getElementById('advisorLlmKeyMode');
+        const llmProviderInput = document.getElementById('advisorLlmProvider');
+        const llmModelInput = document.getElementById('advisorLlmModel');
+        const llmEndpointInput = document.getElementById('advisorLlmEndpoint');
+        const llmApiKeyInput = document.getElementById('advisorLlmApiKey');
+        const clearLlmApiKeyInput = document.getElementById('clearAdvisorLlmApiKey');
 
         if (agentEmailInput) {
           agentEmailInput.value = settings.agentEmail || '';
@@ -3018,8 +3146,29 @@ function buildAdvisorPage() {
         if (timezoneInput) {
           timezoneInput.value = settings.timezone || 'America/Los_Angeles';
         }
+        if (llmKeyModeInput) {
+          llmKeyModeInput.value = settings.llmKeyMode || 'platform';
+        }
+        if (llmProviderInput) {
+          llmProviderInput.value = settings.llmProvider || 'openai';
+        }
+        if (llmModelInput) {
+          llmModelInput.value = settings.llmModel || 'gpt-5.2';
+        }
+        if (llmEndpointInput) {
+          llmEndpointInput.value = settings.llmEndpoint || 'https://api.openai.com/v1/chat/completions';
+        }
+        if (llmApiKeyInput) {
+          llmApiKeyInput.value = '';
+        }
+        if (clearLlmApiKeyInput) {
+          clearLlmApiKeyInput.checked = false;
+        }
 
-        setAdvisorSettingsStatus('Advisor profile loaded.', 'ok');
+        const configuredMessage = settings.advisorLlmKeyConfigured
+          ? 'Advisor LLM key is configured.'
+          : 'Advisor LLM key is not configured.';
+        setAdvisorSettingsStatus('Advisor profile loaded. ' + configuredMessage, 'ok');
       }
 
       async function saveAdvisorSettings() {
@@ -3040,6 +3189,12 @@ function buildAdvisorPage() {
         const inviteEmailInput = document.getElementById('advisorInviteEmail');
         const preferredNameInput = document.getElementById('advisorPreferredName');
         const timezoneInput = document.getElementById('advisorTimezone');
+        const llmKeyModeInput = document.getElementById('advisorLlmKeyMode');
+        const llmProviderInput = document.getElementById('advisorLlmProvider');
+        const llmModelInput = document.getElementById('advisorLlmModel');
+        const llmEndpointInput = document.getElementById('advisorLlmEndpoint');
+        const llmApiKeyInput = document.getElementById('advisorLlmApiKey');
+        const clearLlmApiKeyInput = document.getElementById('clearAdvisorLlmApiKey');
 
         if (agentEmailInput) {
           agentEmailInput.value = updated.agentEmail || '';
@@ -3053,8 +3208,29 @@ function buildAdvisorPage() {
         if (timezoneInput) {
           timezoneInput.value = updated.timezone || 'America/Los_Angeles';
         }
+        if (llmKeyModeInput) {
+          llmKeyModeInput.value = updated.llmKeyMode || 'platform';
+        }
+        if (llmProviderInput) {
+          llmProviderInput.value = updated.llmProvider || 'openai';
+        }
+        if (llmModelInput) {
+          llmModelInput.value = updated.llmModel || 'gpt-5.2';
+        }
+        if (llmEndpointInput) {
+          llmEndpointInput.value = updated.llmEndpoint || 'https://api.openai.com/v1/chat/completions';
+        }
+        if (llmApiKeyInput) {
+          llmApiKeyInput.value = '';
+        }
+        if (clearLlmApiKeyInput) {
+          clearLlmApiKeyInput.checked = false;
+        }
 
-        setAdvisorSettingsStatus('Advisor profile saved.', 'ok');
+        const configuredMessage = updated.advisorLlmKeyConfigured
+          ? 'Advisor LLM key is configured.'
+          : 'Advisor LLM key is not configured.';
+        setAdvisorSettingsStatus('Advisor profile saved. ' + configuredMessage, 'ok');
       }
 
       function readFileAsDataUrl(file) {
@@ -4157,6 +4333,9 @@ export function createPortalHandler(overrides = {}) {
         normalizeAdvisorPreferredName(process.env.ADVISOR_DISPLAY_NAME ?? "") ||
         deriveAdvisorPreferredNameFromEmail(fallbackAdvisorEmail || fallbackInviteEmail, advisorId);
       const fallbackTimezone = normalizeTimezone(process.env.HOST_TIMEZONE, DEFAULT_ADVISOR_TIMEZONE);
+      const fallbackLlmProvider = normalizeLlmProvider(process.env.LLM_DEFAULT_PROVIDER, DEFAULT_LLM_PROVIDER);
+      const fallbackLlmModel = normalizeLlmModel(process.env.LLM_DEFAULT_MODEL, DEFAULT_LLM_MODEL);
+      const fallbackLlmEndpoint = normalizeLlmEndpoint(process.env.LLM_DEFAULT_ENDPOINT, DEFAULT_LLM_ENDPOINT);
 
       const existingSettings = await deps.getAdvisorSettings(advisorSettingsTableName, advisorId);
       let normalizedSettings = normalizeAdvisorSettingsRecord({
@@ -4166,7 +4345,10 @@ export function createPortalHandler(overrides = {}) {
         fallbackInviteEmail,
         fallbackPreferredName,
         fallbackTimezone,
-        fallbackAgentEmailDomain: defaultAgentEmailDomain
+        fallbackAgentEmailDomain: defaultAgentEmailDomain,
+        fallbackLlmProvider,
+        fallbackLlmModel,
+        fallbackLlmEndpoint
       });
 
       if (!existingSettings && typeof deps.putAdvisorSettings === "function") {
@@ -4193,6 +4375,11 @@ export function createPortalHandler(overrides = {}) {
           inviteEmail: normalizedSettings.inviteEmail,
           preferredName: normalizedSettings.preferredName,
           timezone: normalizedSettings.timezone,
+          llmKeyMode: normalizedSettings.llmKeyMode,
+          llmProvider: normalizedSettings.llmProvider,
+          llmModel: normalizedSettings.llmModel,
+          llmEndpoint: normalizedSettings.llmEndpoint,
+          advisorLlmKeyConfigured: Boolean(normalizedSettings.llmProviderSecretArn),
           createdAt: normalizedSettings.createdAt,
           updatedAt: normalizedSettings.updatedAt
         }
@@ -4215,8 +4402,27 @@ export function createPortalHandler(overrides = {}) {
       const hasInviteEmail = Object.prototype.hasOwnProperty.call(body, "inviteEmail");
       const hasPreferredName = Object.prototype.hasOwnProperty.call(body, "preferredName");
       const hasTimezone = Object.prototype.hasOwnProperty.call(body, "timezone");
-      if (!hasAgentEmail && !hasInviteEmail && !hasPreferredName && !hasTimezone) {
-        return badRequest("At least one setting field is required: agentEmail, inviteEmail, preferredName, timezone");
+      const hasLlmKeyMode = Object.prototype.hasOwnProperty.call(body, "llmKeyMode");
+      const hasLlmProvider = Object.prototype.hasOwnProperty.call(body, "llmProvider");
+      const hasLlmModel = Object.prototype.hasOwnProperty.call(body, "llmModel");
+      const hasLlmEndpoint = Object.prototype.hasOwnProperty.call(body, "llmEndpoint");
+      const hasLlmApiKey = Object.prototype.hasOwnProperty.call(body, "llmApiKey");
+      const hasClearAdvisorLlmApiKey = Object.prototype.hasOwnProperty.call(body, "clearAdvisorLlmApiKey");
+      if (
+        !hasAgentEmail &&
+        !hasInviteEmail &&
+        !hasPreferredName &&
+        !hasTimezone &&
+        !hasLlmKeyMode &&
+        !hasLlmProvider &&
+        !hasLlmModel &&
+        !hasLlmEndpoint &&
+        !hasLlmApiKey &&
+        !hasClearAdvisorLlmApiKey
+      ) {
+        return badRequest(
+          "At least one setting field is required: agentEmail, inviteEmail, preferredName, timezone, llmKeyMode, llmProvider, llmModel, llmEndpoint, llmApiKey, clearAdvisorLlmApiKey"
+        );
       }
 
       const fallbackAdvisorEmail = normalizeAdvisorEmail(
@@ -4229,6 +4435,9 @@ export function createPortalHandler(overrides = {}) {
         normalizeAdvisorPreferredName(process.env.ADVISOR_DISPLAY_NAME ?? "") ||
         deriveAdvisorPreferredNameFromEmail(fallbackAdvisorEmail || fallbackInviteEmail, advisorId);
       const fallbackTimezone = normalizeTimezone(process.env.HOST_TIMEZONE, DEFAULT_ADVISOR_TIMEZONE);
+      const fallbackLlmProvider = normalizeLlmProvider(process.env.LLM_DEFAULT_PROVIDER, DEFAULT_LLM_PROVIDER);
+      const fallbackLlmModel = normalizeLlmModel(process.env.LLM_DEFAULT_MODEL, DEFAULT_LLM_MODEL);
+      const fallbackLlmEndpoint = normalizeLlmEndpoint(process.env.LLM_DEFAULT_ENDPOINT, DEFAULT_LLM_ENDPOINT);
 
       const existingSettings = await deps.getAdvisorSettings(advisorSettingsTableName, advisorId);
       const mergedSettings = {
@@ -4284,6 +4493,110 @@ export function createPortalHandler(overrides = {}) {
         mergedSettings.timezone = timezone;
       }
 
+      if (hasLlmProvider) {
+        const llmProvider = normalizeLlmProvider(body.llmProvider, "");
+        if (!llmProvider) {
+          return badRequest("llmProvider must be one of: openai");
+        }
+        mergedSettings.llmProvider = llmProvider;
+      }
+
+      if (hasLlmModel) {
+        const llmModel = normalizeLlmModel(body.llmModel, "");
+        if (!llmModel) {
+          return badRequest("llmModel must not be empty");
+        }
+        mergedSettings.llmModel = llmModel;
+      }
+
+      if (hasLlmEndpoint) {
+        const requestedEndpoint = String(body.llmEndpoint ?? "").trim();
+        const llmEndpoint = normalizeLlmEndpoint(requestedEndpoint, "");
+        if (!requestedEndpoint || !llmEndpoint) {
+          return badRequest("llmEndpoint must be a valid https URL");
+        }
+        mergedSettings.llmEndpoint = llmEndpoint;
+      }
+
+      if (hasLlmKeyMode) {
+        const llmKeyMode = normalizeLlmKeyMode(body.llmKeyMode, "");
+        if (!llmKeyMode) {
+          return badRequest("llmKeyMode must be one of: platform, advisor");
+        }
+        mergedSettings.llmKeyMode = llmKeyMode;
+      }
+
+      if (hasClearAdvisorLlmApiKey) {
+        if (body.clearAdvisorLlmApiKey !== true && body.clearAdvisorLlmApiKey !== false) {
+          return badRequest("clearAdvisorLlmApiKey must be a boolean");
+        }
+
+        if (body.clearAdvisorLlmApiKey === true) {
+          const existingSecretArn = normalizeSecretArn(mergedSettings.llmProviderSecretArn);
+          if (existingSecretArn && typeof deps.deleteSecret === "function") {
+            try {
+              await deps.deleteSecret(existingSecretArn);
+            } catch {
+              // Best-effort secret cleanup.
+            }
+          }
+          mergedSettings.llmProviderSecretArn = "";
+          mergedSettings.llmKeyMode = "platform";
+        }
+      }
+
+      if (hasLlmApiKey) {
+        const llmApiKey = String(body.llmApiKey ?? "").trim();
+        if (llmApiKey) {
+          const nowIso = new Date().toISOString();
+          const llmProvider = normalizeLlmProvider(
+            mergedSettings.llmProvider,
+            fallbackLlmProvider
+          );
+          const llmModel = normalizeLlmModel(mergedSettings.llmModel, fallbackLlmModel);
+          const llmEndpoint = normalizeLlmEndpoint(mergedSettings.llmEndpoint, fallbackLlmEndpoint);
+          const secretPayload = JSON.stringify({
+            provider: llmProvider,
+            api_key: llmApiKey,
+            model: llmModel,
+            endpoint: llmEndpoint
+          });
+
+          const existingSecretArn = normalizeSecretArn(mergedSettings.llmProviderSecretArn);
+          let nextSecretArn = existingSecretArn;
+          if (existingSecretArn && typeof deps.putSecretValue === "function") {
+            await deps.putSecretValue(existingSecretArn, secretPayload);
+          } else if (existingSecretArn) {
+            return serverError("Secrets update capability is required for advisor LLM keys");
+          } else if (typeof deps.createSecret === "function") {
+            const secretName = buildAdvisorLlmSecretName({
+              appName,
+              stage,
+              advisorId
+            });
+            nextSecretArn = await deps.createSecret(secretName, secretPayload);
+          } else {
+            return serverError("Secrets management capability is required for advisor LLM keys");
+          }
+
+          mergedSettings.llmProvider = llmProvider;
+          mergedSettings.llmModel = llmModel;
+          mergedSettings.llmEndpoint = llmEndpoint;
+          mergedSettings.llmProviderSecretArn = nextSecretArn;
+          mergedSettings.llmKeyMode = "advisor";
+          mergedSettings.llmApiKeyUpdatedAt = nowIso;
+        }
+      }
+
+      const nextLlmKeyMode = normalizeLlmKeyMode(
+        mergedSettings.llmKeyMode,
+        normalizeSecretArn(mergedSettings.llmProviderSecretArn) ? "advisor" : "platform"
+      );
+      if (nextLlmKeyMode === "advisor" && !normalizeSecretArn(mergedSettings.llmProviderSecretArn)) {
+        return badRequest("llmApiKey is required before llmKeyMode can be advisor");
+      }
+      mergedSettings.llmKeyMode = nextLlmKeyMode;
+
       const normalizedSettings = normalizeAdvisorSettingsRecord({
         advisorId,
         settings: mergedSettings,
@@ -4291,7 +4604,10 @@ export function createPortalHandler(overrides = {}) {
         fallbackInviteEmail,
         fallbackPreferredName,
         fallbackTimezone,
-        fallbackAgentEmailDomain: defaultAgentEmailDomain
+        fallbackAgentEmailDomain: defaultAgentEmailDomain,
+        fallbackLlmProvider,
+        fallbackLlmModel,
+        fallbackLlmEndpoint
       });
       await deps.putAdvisorSettings(advisorSettingsTableName, normalizedSettings);
 
@@ -4303,6 +4619,11 @@ export function createPortalHandler(overrides = {}) {
           inviteEmail: normalizedSettings.inviteEmail,
           preferredName: normalizedSettings.preferredName,
           timezone: normalizedSettings.timezone,
+          llmKeyMode: normalizedSettings.llmKeyMode,
+          llmProvider: normalizedSettings.llmProvider,
+          llmModel: normalizedSettings.llmModel,
+          llmEndpoint: normalizedSettings.llmEndpoint,
+          advisorLlmKeyConfigured: Boolean(normalizedSettings.llmProviderSecretArn),
           createdAt: normalizedSettings.createdAt,
           updatedAt: normalizedSettings.updatedAt
         }

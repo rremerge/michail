@@ -1469,6 +1469,76 @@ test("processSchedulingEmail uses LLM draft when LLM_MODE=openai", async () => {
   assert.match(sentMessages[0].bodyText, /Best regards,\nManoj$/);
   assert.equal(traceItems[0].llmStatus, "ok");
   assert.equal(traceItems[0].llmMode, "openai");
+  assert.equal(traceItems[0].llmCredentialSource, "platform");
+});
+
+test("processSchedulingEmail uses advisor-specific LLM secret when configured", async () => {
+  const sentMessages = [];
+  const traceItems = [];
+  const requestedSecretArns = [];
+
+  const deps = {
+    async getAdvisorSettings(tableName, advisorId) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(advisorId, "manoj");
+      return {
+        advisorId,
+        llmKeyMode: "advisor",
+        llmProviderSecretArn: "arn:advisor-llm-secret"
+      };
+    },
+    async getSecretString(secretArn) {
+      requestedSecretArns.push(secretArn);
+      assert.equal(secretArn, "arn:advisor-llm-secret");
+      return JSON.stringify({
+        api_key: "test-advisor-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async draftResponseWithLlm() {
+      return {
+        subject: "Re: Advisor Key Test",
+        bodyText: "LLM response using advisor key"
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "manoj@example.com",
+    ADVISOR_ID: "manoj",
+    ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable",
+    LLM_MODE: "openai",
+    LLM_PROVIDER_SECRET_ARN: "arn:platform-llm-secret",
+    PROMPT_GUARD_MODE: "off",
+    INTENT_EXTRACTION_MODE: "parser"
+  };
+
+  const result = await processSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Chat"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.llmStatus, "ok");
+  assert.equal(sentMessages.length, 1);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].llmCredentialSource, "advisor");
+  assert.equal(requestedSecretArns.length, 1);
+  assert.equal(requestedSecretArns[0], "arn:advisor-llm-secret");
 });
 
 test("processSchedulingEmail falls back to template response when LLM draft fails", async () => {

@@ -113,6 +113,9 @@ After deploy, open `AdvisorPortalUrl` output:
 - Use the **Client Directory** table to view first/last interaction timestamps, email/web usage counters, and update client access policy (`active`, `blocked`, `deleted`).
 - Use **Access Policies** in the advisor portal to create custom policy groups (for example `founders`, `weekend-plus`) and set their allowed advising days.
 - Assign clients to any policy group from the Client Directory table to control which advising days a given client can view.
+- Use **Advisor Profile** to set per-advisor LLM settings (provider/model/endpoint) and optionally save an advisor-owned API key in AWS Secrets Manager.
+  - Key source can be toggled between platform default and advisor key.
+  - Advisor key is stored as a per-advisor secret and never returned in API responses.
 
 ## Client Availability Link (FR-6 Slice)
 When the agent sends slot suggestions, it now appends a signed availability URL so clients can browse a calendar-style free/busy view in the web UI.

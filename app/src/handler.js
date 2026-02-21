@@ -1258,7 +1258,14 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const calendarInviteDescription = String(env.CALENDAR_INVITE_DESCRIPTION ?? "").trim();
   const llmMode = (env.LLM_MODE ?? "disabled").toLowerCase();
   const llmTimeoutMs = parseIntEnv(env.LLM_TIMEOUT_MS, 4000);
-  const llmProviderSecretArn = env.LLM_PROVIDER_SECRET_ARN ?? "";
+  const platformLlmProviderSecretArn = String(env.LLM_PROVIDER_SECRET_ARN ?? "").trim();
+  const advisorLlmProviderSecretArn = String(advisorSettings?.llmProviderSecretArn ?? "").trim();
+  const advisorLlmKeyMode = String(advisorSettings?.llmKeyMode ?? "")
+    .trim()
+    .toLowerCase();
+  const useAdvisorLlmKey = advisorLlmKeyMode === "advisor" && Boolean(advisorLlmProviderSecretArn);
+  const llmProviderSecretArn = useAdvisorLlmKey ? advisorLlmProviderSecretArn : platformLlmProviderSecretArn;
+  const llmCredentialSource = useAdvisorLlmKey ? "advisor" : "platform";
   const promptGuardMode = normalizePromptGuardMode(env.PROMPT_GUARD_MODE);
   const promptGuardBlockLevel = normalizePromptGuardLevel(env.PROMPT_GUARD_BLOCK_LEVEL);
   const promptGuardLlmTimeoutMs = parseIntEnv(env.PROMPT_GUARD_LLM_TIMEOUT_MS, DEFAULT_PROMPT_GUARD_LLM_TIMEOUT_MS);
@@ -1326,6 +1333,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       responseMode,
       calendarMode,
       llmMode,
+      llmCredentialSource,
       llmStatus: "skipped_unknown_sender",
       bodySource,
       intentSource: "parser",
@@ -1403,7 +1411,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       fromDomain,
       responseMode,
       calendarMode: (env.CALENDAR_MODE ?? "mock").toLowerCase(),
-      llmMode: (env.LLM_MODE ?? "disabled").toLowerCase(),
+      llmMode,
+      llmCredentialSource,
       llmStatus: "disabled",
       bodySource,
       intentSource: "parser",
@@ -1539,6 +1548,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         responseMode,
         calendarMode,
         llmMode,
+        llmCredentialSource,
         llmStatus: "guarded",
         bodySource,
         intentSource: "parser",
@@ -1787,6 +1797,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         responseMode,
         calendarMode,
         llmMode,
+        llmCredentialSource,
         llmStatus: "skipped_no_calendar",
         bodySource,
         intentSource,
@@ -2067,6 +2078,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     responseMode,
     calendarMode,
     llmMode,
+    llmCredentialSource,
     llmStatus,
     bodySource,
     intentSource,

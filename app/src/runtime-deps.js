@@ -3,6 +3,7 @@ import {
   CreateSecretCommand,
   DeleteSecretCommand,
   GetSecretValueCommand,
+  PutSecretValueCommand,
   SecretsManagerClient
 } from "@aws-sdk/client-secrets-manager";
 import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
@@ -478,6 +479,15 @@ export function createRuntimeDeps() {
       }
 
       return response.ARN;
+    },
+
+    async putSecretValue(secretArn, secretString) {
+      await secretsClient.send(
+        new PutSecretValueCommand({
+          SecretId: secretArn,
+          SecretString: secretString
+        })
+      );
     },
 
     async deleteSecret(secretArn) {
