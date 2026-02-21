@@ -201,7 +201,9 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
    - domain must match configured agent email domain
    - value must be unique across all advisors
 7. Default `agentEmail` shall be derived at advisor onboarding from advisor identity using `{advisor-local-part}.agent@{configured-agent-domain}` and may be changed later by advisor.
-8. If inbound destination alias does not map to a known advisor, system shall fall back to configured default advisor context for backward compatibility until strict multi-tenant routing mode is enabled.
+8. If inbound destination alias does not map to a known advisor, system shall blackhole the request (no client response) and record a suppressed trace with admission reason `unknown_agent_alias`; no advisor fallback is allowed.
+9. Strict multi-tenant mode shall be enabled in deployed environments; runtime routing must not fall back to single-tenant `ADVISOR_ID` defaults for inbound email or authenticated advisor portal flows.
+10. Legacy single-tenant fallback behavior is out of scope and shall not be implemented in production paths.
 
 ### FR-22 Client Admission Control and Unknown-Sender Blackhole
 1. The agent shall respond only to:

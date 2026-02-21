@@ -62,11 +62,18 @@ Parameters:
     Description: Optional app-level secret name for Google OAuth client_id/client_secret.
   AdvisorId:
     Type: String
-    Default: manoj
+    Default: advisor
   AgentEmailDomain:
     Type: String
     Default: agent.letsconnect.ai
     Description: Domain used for per-advisor agent email defaults (for example advisor.agent@agent.letsconnect.ai).
+  StrictMultiTenantMode:
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "true"
+    Description: Enforces strict advisor routing with no default-advisor fallback for inbound or portal tenancy resolution.
   LlmMode:
     Type: String
     AllowedValues:
@@ -101,7 +108,7 @@ Parameters:
     Default: google_oauth
   AdvisorPortalAuthUsername:
     Type: String
-    Default: manoj
+    Default: advisor
   AdvisorPortalAuthSecretName:
     Type: String
     Default: ""
@@ -454,6 +461,7 @@ Resources:
           CONNECTIONS_TABLE_NAME: !Ref ConnectionsTable
           ADVISOR_ID: !Ref AdvisorId
           DEFAULT_AGENT_EMAIL_DOMAIN: !Ref AgentEmailDomain
+          STRICT_MULTI_TENANT_MODE: !Ref StrictMultiTenantMode
           CALENDAR_MODE: !Ref CalendarMode
           RESPONSE_MODE: !Ref ResponseMode
           SENDER_EMAIL: !Ref SenderEmail
@@ -583,6 +591,7 @@ Resources:
           STAGE: !Ref Stage
           ADVISOR_ID: !Ref AdvisorId
           DEFAULT_AGENT_EMAIL_DOMAIN: !Ref AgentEmailDomain
+          STRICT_MULTI_TENANT_MODE: !Ref StrictMultiTenantMode
           CALENDAR_MODE: !Ref CalendarMode
           HOST_TIMEZONE: !Ref HostTimezone
           ADVISING_DAYS: !Ref AdvisingDays

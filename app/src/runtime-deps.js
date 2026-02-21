@@ -345,11 +345,25 @@ export function createRuntimeDeps() {
           ExpressionAttributeValues: {
             ":agentEmail": normalizedAgentEmail
           },
-          Limit: 1
+          Limit: 2
         })
       );
 
-      return response.Items?.[0] ?? null;
+      const items = Array.isArray(response.Items) ? response.Items : [];
+      if (items.length <= 1) {
+        return items[0] ?? null;
+      }
+
+      const advisorIds = new Set(
+        items
+          .map((item) => String(item?.advisorId ?? "").trim().toLowerCase())
+          .filter(Boolean)
+      );
+      if (advisorIds.size > 1) {
+        throw new Error(`Ambiguous agentEmail mapping for ${normalizedAgentEmail}`);
+      }
+
+      return items[0] ?? null;
     },
 
     async putAdvisorSettings(advisorSettingsTableName, item) {

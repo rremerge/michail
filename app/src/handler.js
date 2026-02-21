@@ -807,6 +807,8 @@ function extractDestinationEmails(payload) {
   };
 
   pushEmail(payload?.toEmail);
+  pushEmail(payload?.to);
+  pushEmail(payload?.recipient);
 
   if (Array.isArray(payload?.toEmails)) {
     for (const value of payload.toEmails) {
@@ -822,6 +824,12 @@ function extractDestinationEmails(payload) {
 
   if (Array.isArray(payload?.ses?.destination)) {
     for (const value of payload.ses.destination) {
+      pushEmail(value);
+    }
+  }
+
+  if (Array.isArray(payload?.ses?.mail?.destination)) {
+    for (const value of payload.ses.mail.destination) {
       pushEmail(value);
     }
   }
@@ -967,31 +975,93 @@ function normalizeAdvisorId(rawValue, fallback = "advisor") {
     .slice(0, 254);
 }
 
+function deriveAdvisorIdFromAgentAlias(agentEmail, expectedDomain) {
+  const normalizedEmail = normalizeEmailAddress(agentEmail);
+  if (!normalizedEmail) {
+    return "";
+  }
+
+  const [localPart, domainPart] = normalizedEmail.split("@");
+  if (!localPart || !domainPart || domainPart !== expectedDomain) {
+    return "";
+  }
+
+  if (!localPart.endsWith(".agent")) {
+    return "";
+  }
+
+  const candidate = localPart.slice(0, -".agent".length);
+  return normalizeAdvisorId(candidate, "");
+}
+
 async function resolveAdvisorContext({ payload, env, deps }) {
-  const fallbackAdvisorId = normalizeAdvisorId(env.ADVISOR_ID ?? "manoj", "manoj");
   const advisorSettingsTableName = String(env.ADVISOR_SETTINGS_TABLE_NAME ?? "").trim();
+  const configuredAgentEmailDomain = String(env.DEFAULT_AGENT_EMAIL_DOMAIN ?? "")
+    .trim()
+    .toLowerCase();
   const destinationEmails = extractDestinationEmails(payload);
-  const inboundAgentEmail = destinationEmails[0] ?? "";
+  const inboundAgentEmail =
+    destinationEmails.find(
+      (email) =>
+        configuredAgentEmailDomain &&
+        extractDomainFromEmail(email) === configuredAgentEmailDomain
+    ) ??
+    destinationEmails[0] ??
+    "";
+  const inboundAgentDomain = extractDomainFromEmail(inboundAgentEmail);
+  const shouldRouteByInboundAlias = Boolean(
+    inboundAgentEmail && configuredAgentEmailDomain && inboundAgentDomain === configuredAgentEmailDomain
+  );
 
-  let advisorId = fallbackAdvisorId;
+  let advisorId = "unknown";
   let advisorSettings = null;
+  let unresolvedReason = "";
 
-  if (
-    inboundAgentEmail &&
-    advisorSettingsTableName &&
-    typeof deps.getAdvisorSettingsByAgentEmail === "function"
-  ) {
-    try {
-      advisorSettings = await deps.getAdvisorSettingsByAgentEmail(
-        advisorSettingsTableName,
-        inboundAgentEmail
-      );
-      if (advisorSettings?.advisorId) {
-        advisorId = normalizeAdvisorId(advisorSettings.advisorId, fallbackAdvisorId);
+  if (shouldRouteByInboundAlias) {
+    if (advisorSettingsTableName && typeof deps.getAdvisorSettingsByAgentEmail === "function") {
+      try {
+        advisorSettings = await deps.getAdvisorSettingsByAgentEmail(
+          advisorSettingsTableName,
+          inboundAgentEmail
+        );
+      } catch {
+        unresolvedReason = "agent_alias_lookup_failed";
       }
-    } catch {
-      advisorSettings = null;
+
+      if (!unresolvedReason) {
+        if (advisorSettings?.advisorId) {
+          advisorId = normalizeAdvisorId(advisorSettings.advisorId, "advisor");
+        } else {
+          unresolvedReason = "unknown_agent_alias";
+        }
+      }
+    } else {
+      const derivedAdvisorId = deriveAdvisorIdFromAgentAlias(
+        inboundAgentEmail,
+        configuredAgentEmailDomain
+      );
+      if (derivedAdvisorId) {
+        advisorId = derivedAdvisorId;
+      } else {
+        unresolvedReason = "agent_alias_routing_unavailable";
+      }
     }
+  } else if (!inboundAgentEmail) {
+    unresolvedReason = "agent_alias_missing";
+  } else if (!configuredAgentEmailDomain) {
+    unresolvedReason = "agent_alias_routing_unavailable";
+  } else {
+    unresolvedReason = "agent_alias_invalid_domain";
+  }
+
+  if (unresolvedReason) {
+    return {
+      advisorId: "unknown",
+      advisorSettings: null,
+      inboundAgentEmail,
+      unresolved: true,
+      unresolvedReason
+    };
   }
 
   if (!advisorSettings && advisorSettingsTableName && typeof deps.getAdvisorSettings === "function") {
@@ -1305,6 +1375,58 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const advisorId = advisorContext.advisorId;
   const advisorSettings = advisorContext.advisorSettings;
   const inboundAgentEmail = advisorContext.inboundAgentEmail;
+  if (advisorContext.unresolved) {
+    const completedAtMs = now();
+    await deps.writeTrace(env.TRACE_TABLE_NAME, {
+      requestId,
+      responseId,
+      advisorId,
+      status: "suppressed",
+      stage: "advisor_routing",
+      errorCode: "UNKNOWN_AGENT_ALIAS_BLACKHOLE",
+      providerStatus: "skipped",
+      channel: payload.channel ?? "email",
+      fromDomain,
+      senderHash: hashSenderIdentity(fromEmail),
+      admissionDecision: "blackhole",
+      admissionReason: advisorContext.unresolvedReason,
+      responseMode: (env.RESPONSE_MODE ?? "log").toLowerCase(),
+      calendarMode: (env.CALENDAR_MODE ?? "mock").toLowerCase(),
+      llmMode: (env.LLM_MODE ?? "disabled").toLowerCase(),
+      llmCredentialSource: "not_applicable",
+      llmStatus: "skipped_unknown_agent_alias",
+      ...buildLlmTraceUsageFields(createLlmUsageAccumulator()),
+      bodySource,
+      intentSource: "parser",
+      intentLlmStatus: "skipped",
+      promptGuardMode: normalizePromptGuardMode(env.PROMPT_GUARD_MODE),
+      promptGuardDecision: "not_run",
+      promptGuardLlmStatus: "not_run",
+      promptInjectionRiskLevel: "low",
+      promptInjectionSignalCount: 0,
+      availabilityLinkStatus: "not_applicable",
+      requestedWindowCount: 0,
+      accessState: "unknown",
+      createdAt: startedAtIso,
+      updatedAt: new Date(completedAtMs).toISOString(),
+      latencyMs: completedAtMs - startedAtMs,
+      expiresAt: Math.floor((startedAtMs + 7 * 24 * 60 * 60 * 1000) / 1000)
+    });
+
+    return {
+      http: ok({
+        requestId,
+        responseId,
+        deliveryStatus: "suppressed",
+        llmStatus: "skipped_unknown_agent_alias",
+        suggestionCount: 0,
+        suggestions: [],
+        blackholed: true,
+        admissionDecision: "blackhole",
+        admissionReason: advisorContext.unresolvedReason
+      })
+    };
+  }
 
   const hostTimezone = normalizeTimezone(advisorSettings?.timezone, normalizeTimezone(env.HOST_TIMEZONE, DEFAULT_ADVISOR_TIMEZONE));
   const defaultAdvisingDays = parseAdvisingDaysList(env.ADVISING_DAYS ?? "Tue,Wed", ["Tue", "Wed"]);

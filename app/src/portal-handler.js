@@ -4446,7 +4446,14 @@ export function createPortalHandler(overrides = {}) {
     const method = event.requestContext?.http?.method ?? "GET";
     const rawPath = normalizeRawPath(event.rawPath ?? "/", event.requestContext?.stage);
 
-    const configuredAdvisorId = process.env.ADVISOR_ID ?? "manoj";
+    const authMode = (process.env.ADVISOR_PORTAL_AUTH_MODE ?? "none").toLowerCase();
+    const strictMultiTenantMode = parseBooleanEnv(
+      process.env.STRICT_MULTI_TENANT_MODE,
+      authMode === "google_oauth"
+    );
+    const configuredAdvisorId = strictMultiTenantMode
+      ? "advisor"
+      : normalizeAdvisorId(process.env.ADVISOR_ID, "advisor");
     const appName = process.env.APP_NAME ?? "calendar-agent-spike";
     const stage = process.env.STAGE ?? "dev";
     const connectionsTableName = process.env.CONNECTIONS_TABLE_NAME;
@@ -4486,9 +4493,10 @@ export function createPortalHandler(overrides = {}) {
 
     const sessionPayload = await readPortalSessionPayload(event, deps);
     const sessionAdvisorEmail = normalizeAdvisorEmail(sessionPayload?.email);
+    const advisorIdFallback = strictMultiTenantMode ? "advisor" : configuredAdvisorId;
     const advisorId = sessionPayload?.advisorId
-      ? normalizeAdvisorId(sessionPayload.advisorId, configuredAdvisorId)
-      : deriveAdvisorIdFromEmail(sessionAdvisorEmail, configuredAdvisorId);
+      ? normalizeAdvisorId(sessionPayload.advisorId, advisorIdFallback)
+      : deriveAdvisorIdFromEmail(sessionAdvisorEmail, advisorIdFallback);
     const advisorEmail = sessionAdvisorEmail;
 
     let customPolicyRecords = [];
@@ -4731,7 +4739,6 @@ export function createPortalHandler(overrides = {}) {
       const state = crypto.randomUUID();
       const nowMs = Date.now();
       await deps.putOauthState(oauthStateTableName, state, {
-        advisorId: configuredAdvisorId,
         purpose: "portal_login",
         returnTo,
         createdAt: new Date(nowMs).toISOString(),
@@ -4802,7 +4809,7 @@ export function createPortalHandler(overrides = {}) {
         return advisorAuthErrorPage("The signed-in Google account is not authorized for this advisor portal.");
       }
       const loginEmail = normalizeAdvisorEmail(profile.email);
-      const loginAdvisorId = deriveAdvisorIdFromEmail(loginEmail, configuredAdvisorId);
+      const loginAdvisorId = deriveAdvisorIdFromEmail(loginEmail, "advisor");
       const derivedPreferredName = deriveAdvisorPreferredNameFromGoogleProfile(profile, loginAdvisorId);
       const defaultAgentEmail = deriveDefaultAgentEmail({
         advisorId: loginAdvisorId,
@@ -4849,7 +4856,7 @@ export function createPortalHandler(overrides = {}) {
             await deps.putAdvisorSettings(advisorSettingsTableName, nextSettings);
           }
         } catch {
-          // Best-effort default advisor profile hydration after Google login.
+          // Best-effort advisor profile hydration after Google login.
         }
       }
 

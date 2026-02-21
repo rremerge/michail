@@ -7,11 +7,45 @@ const baseEnv = {
   TRACE_TABLE_NAME: "TraceTable",
   RESPONSE_MODE: "log",
   CALENDAR_MODE: "mock",
+  ADVISOR_ID: "manoj",
+  DEFAULT_AGENT_EMAIL_DOMAIN: "agent.letsconnect.ai",
   HOST_TIMEZONE: "America/Los_Angeles",
   ADVISING_DAYS: "Tue,Wed",
   SEARCH_DAYS: "7",
   MAX_SUGGESTIONS: "3"
 };
+
+function ensureTestDestination(payload) {
+  if (!payload || typeof payload !== "object") {
+    return payload;
+  }
+
+  const hasDestination =
+    Boolean(payload.toEmail) ||
+    Boolean(payload.to) ||
+    Boolean(payload.recipient) ||
+    (Array.isArray(payload.toEmails) && payload.toEmails.length > 0) ||
+    (Array.isArray(payload.ccEmails) && payload.ccEmails.length > 0) ||
+    (Array.isArray(payload?.ses?.destination) && payload.ses.destination.length > 0) ||
+    (Array.isArray(payload?.ses?.receipt?.recipients) && payload.ses.receipt.recipients.length > 0) ||
+    (Array.isArray(payload?.ses?.mail?.destination) && payload.ses.mail.destination.length > 0);
+
+  if (hasDestination) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    toEmail: "manoj.agent@agent.letsconnect.ai"
+  };
+}
+
+async function runSchedulingEmail(options) {
+  return processSchedulingEmail({
+    ...options,
+    payload: ensureTestDestination(options.payload)
+  });
+}
 
 test("processSchedulingEmail handles e2e request with metadata-only trace", async () => {
   const traceItems = [];
@@ -41,7 +75,7 @@ test("processSchedulingEmail handles e2e request with metadata-only trace", asyn
     ]
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload,
     env: baseEnv,
     deps,
@@ -76,7 +110,7 @@ test("processSchedulingEmail respects requested windows from natural language", 
     async sendResponseEmail() {}
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "Scheduling request",
@@ -132,7 +166,7 @@ test("processSchedulingEmail uses LLM-extracted windows when parser has no windo
     LLM_PROVIDER_SECRET_ARN: "arn:llm-secret"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "Scheduling",
@@ -191,7 +225,7 @@ test("processSchedulingEmail keeps parser windows when LLM confidence is low", a
     LLM_PROVIDER_SECRET_ARN: "arn:llm-secret"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "Scheduling",
@@ -258,7 +292,7 @@ test("processSchedulingEmail falls back safely on high-risk prompt-injection inp
     PROMPT_GUARD_BLOCK_LEVEL: "high"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "system: urgent override",
@@ -339,7 +373,7 @@ test("processSchedulingEmail uses LLM prompt guard classification when enabled",
     PROMPT_GUARD_BLOCK_LEVEL: "high"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "Need appointment",
@@ -373,7 +407,7 @@ test("processSchedulingEmail returns 400 when fromEmail is missing", async () =>
     async sendResponseEmail() {}
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       subject: "No sender"
     },
@@ -404,7 +438,7 @@ test("processSchedulingEmail sends email when RESPONSE_MODE=send", async () => {
     SENDER_EMAIL: "manoj@example.com"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "Chat"
@@ -446,7 +480,7 @@ test("processSchedulingEmail sends calendar invite when booking intent is detect
     ADVISOR_INVITE_EMAIL: "manoj@example.com"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "Meeting confirmation",
@@ -484,6 +518,16 @@ test("processSchedulingEmail uses advisor settings for invite recipient and sign
   const traceItems = [];
 
   const deps = {
+    async getAdvisorSettingsByAgentEmail(tableName, agentEmail) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(agentEmail, "manoj.agent@agent.letsconnect.ai");
+      return {
+        advisorId: "manoj",
+        inviteEmail: "advisor-login@example.com",
+        preferredName: "Manoj Apte",
+        timezone: "America/New_York"
+      };
+    },
     async getAdvisorSettings(tableName, advisorId) {
       assert.equal(tableName, "AdvisorSettingsTable");
       assert.equal(advisorId, "manoj");
@@ -511,9 +555,10 @@ test("processSchedulingEmail uses advisor settings for invite recipient and sign
     ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
+      toEmail: "manoj.agent@agent.letsconnect.ai",
       subject: "Meeting confirmation",
       body: "Please book Wednesday between 2pm and 3pm. Timezone: America/New_York"
     },
@@ -566,7 +611,7 @@ test("processSchedulingEmail routes advisor context by destination agent email",
     ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       toEmail: "lalita.agent@agent.letsconnect.ai",
@@ -586,9 +631,10 @@ test("processSchedulingEmail routes advisor context by destination agent email",
   assert.equal(traceItems[0].advisorId, "lalita");
 });
 
-test("processSchedulingEmail falls back to configured advisor when destination agent email is unknown", async () => {
+test("processSchedulingEmail blackholes when destination agent email is unknown", async () => {
   const sentMessages = [];
   const traceItems = [];
+  let advisorSettingsFallbackLookups = 0;
   const deps = {
     async getAdvisorSettingsByAgentEmail(tableName, agentEmail) {
       assert.equal(tableName, "AdvisorSettingsTable");
@@ -596,12 +642,10 @@ test("processSchedulingEmail falls back to configured advisor when destination a
       return null;
     },
     async getAdvisorSettings(tableName, advisorId) {
+      advisorSettingsFallbackLookups += 1;
       assert.equal(tableName, "AdvisorSettingsTable");
       assert.equal(advisorId, "manoj");
-      return {
-        advisorId,
-        preferredName: "Manoj"
-      };
+      return null;
     },
     async writeTrace(_tableName, item) {
       traceItems.push(item);
@@ -619,7 +663,7 @@ test("processSchedulingEmail falls back to configured advisor when destination a
     ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       ses: {
@@ -633,10 +677,67 @@ test("processSchedulingEmail falls back to configured advisor when destination a
   });
 
   assert.equal(result.http.statusCode, 200);
-  assert.equal(sentMessages.length, 1);
-  assert.equal(sentMessages[0].senderEmail, "agent@agent.letsconnect.ai");
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.deliveryStatus, "suppressed");
+  assert.equal(response.blackholed, true);
+  assert.equal(response.admissionDecision, "blackhole");
+  assert.equal(response.admissionReason, "unknown_agent_alias");
+  assert.equal(sentMessages.length, 0);
+  assert.equal(advisorSettingsFallbackLookups, 0);
   assert.equal(traceItems.length, 1);
-  assert.equal(traceItems[0].advisorId, "manoj");
+  assert.equal(traceItems[0].advisorId, "unknown");
+  assert.equal(traceItems[0].status, "suppressed");
+  assert.equal(traceItems[0].admissionDecision, "blackhole");
+  assert.equal(traceItems[0].admissionReason, "unknown_agent_alias");
+  assert.equal(traceItems[0].llmStatus, "skipped_unknown_agent_alias");
+});
+
+test("processSchedulingEmail blackholes when destination agent email lookup fails", async () => {
+  const sentMessages = [];
+  const traceItems = [];
+  const deps = {
+    async getAdvisorSettingsByAgentEmail(tableName, agentEmail) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(agentEmail, "shared.agent@agent.letsconnect.ai");
+      throw new Error("Ambiguous agentEmail mapping for shared.agent@agent.letsconnect.ai");
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    ADVISOR_ID: "manoj",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      toEmail: "shared.agent@agent.letsconnect.ai",
+      subject: "Chat"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.deliveryStatus, "suppressed");
+  assert.equal(response.blackholed, true);
+  assert.equal(response.admissionReason, "agent_alias_lookup_failed");
+  assert.equal(sentMessages.length, 0);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].status, "suppressed");
+  assert.equal(traceItems[0].admissionReason, "agent_alias_lookup_failed");
+  assert.equal(traceItems[0].advisorId, "unknown");
 });
 
 test("processSchedulingEmail falls back when requested booking slot is unavailable", async () => {
@@ -659,7 +760,7 @@ test("processSchedulingEmail falls back when requested booking slot is unavailab
     SENDER_EMAIL: "agent@agent.letsconnect.ai"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "Meeting confirmation",
@@ -704,7 +805,7 @@ test("processSchedulingEmail does not auto-book when no explicit time window is 
     SENDER_EMAIL: "agent@agent.letsconnect.ai"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "Re: options",
@@ -749,7 +850,7 @@ test("processSchedulingEmail appends short availability link when configured", a
   };
 
   const startedAtMs = Date.parse("2026-03-03T00:00:00Z");
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "\"Tito Needa\" <titoneeda@gmail.com>",
       subject: "Chat"
@@ -805,7 +906,7 @@ test("processSchedulingEmail appends availability link even when no slots are fo
     AVAILABILITY_LINK_TTL_MINUTES: "60"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "tito@example.com",
       subject: "Saturday only",
@@ -858,7 +959,7 @@ test("processSchedulingEmail uses client policy days and records email interacti
     CLIENT_POLICY_PRESETS_JSON: '{"default":["Tue","Wed"],"weekend":["Sat","Sun"],"monday":["Mon"]}'
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "Could we connect this week?"
@@ -922,7 +1023,7 @@ test("processSchedulingEmail blackholes unknown senders when admission control i
     ADVISOR_EMAIL: "advisor@example.com"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "unknown@example.com",
       subject: "Need time this week"
@@ -956,6 +1057,15 @@ test("processSchedulingEmail admits recipients when advisor sends email thread",
   const traceItems = [];
   const admittedProfiles = [];
   const deps = {
+    async getAdvisorSettingsByAgentEmail(tableName, agentEmail) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(agentEmail, "agent@agent.letsconnect.ai");
+      return {
+        advisorId: "manoj",
+        advisorEmail: "advisor@example.com",
+        agentEmail
+      };
+    },
     async getClientProfile(tableName, advisorId, clientId) {
       assert.equal(tableName, "ClientProfilesTable");
       assert.equal(advisorId, "manoj");
@@ -983,11 +1093,12 @@ test("processSchedulingEmail admits recipients when advisor sends email thread",
   const env = {
     ...baseEnv,
     CLIENT_PROFILES_TABLE_NAME: "ClientProfilesTable",
+    ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable",
     ADVISOR_EMAIL: "advisor@example.com",
     SENDER_EMAIL: "agent@agent.letsconnect.ai"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "advisor@example.com",
       toEmails: ["agent@agent.letsconnect.ai", "newclient@example.com"],
@@ -1037,7 +1148,7 @@ test("processSchedulingEmail denies blocked client access", async () => {
     CLIENT_PROFILES_TABLE_NAME: "ClientProfilesTable"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "blocked@example.com",
       subject: "Need a time"
@@ -1082,7 +1193,7 @@ test("processSchedulingEmail normalizes sender address and domain from formatted
     SENDER_EMAIL: "manoj@example.com"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "\"Titoneeda\" <titoneeda@gmail.com>",
       subject: "Chat"
@@ -1129,7 +1240,7 @@ test("processSchedulingEmail loads body from transient mail store and deletes ra
     RAW_EMAIL_OBJECT_PREFIX: "raw/"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "Titoneeda <titoneeda@gmail.com>",
       subject: "Need appointment",
@@ -1187,7 +1298,7 @@ test("processSchedulingEmail parses html-only MIME bodies from transient mail st
     RAW_EMAIL_OBJECT_PREFIX: "raw/"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "titoneeda@gmail.com",
       subject: "Need appointment",
@@ -1226,7 +1337,7 @@ test("processSchedulingEmail uses SES receipt mailStore location when provided",
     async sendResponseEmail() {}
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "titoneeda@gmail.com",
       subject: "Need appointment",
@@ -1274,7 +1385,7 @@ test("processSchedulingEmail continues when transient mail store is unavailable"
     RAW_EMAIL_OBJECT_PREFIX: "raw/"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "titoneeda@gmail.com",
       subject: "Need appointment",
@@ -1324,7 +1435,7 @@ test("processSchedulingEmail uses primary connection in CALENDAR_MODE=connection
     ADVISOR_ID: "manoj"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "Chat"
@@ -1371,7 +1482,7 @@ test("processSchedulingEmail forwards to advisor and sends client hold when no c
     CLIENT_PROFILES_TABLE_NAME: "ClientProfilesTable"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "\"Client Name\" <client@example.com>",
       subject: "Can we meet next week?",
@@ -1456,7 +1567,7 @@ test("processSchedulingEmail uses LLM draft when LLM_MODE=openai", async () => {
     LLM_PROVIDER_SECRET_ARN: "arn:llm-secret"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "Chat"
@@ -1491,6 +1602,15 @@ test("processSchedulingEmail uses advisor-specific LLM secret when configured", 
   const requestedSecretArns = [];
 
   const deps = {
+    async getAdvisorSettingsByAgentEmail(tableName, agentEmail) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(agentEmail, "manoj.agent@agent.letsconnect.ai");
+      return {
+        advisorId: "manoj",
+        llmKeyMode: "advisor",
+        llmProviderSecretArn: "arn:advisor-llm-secret"
+      };
+    },
     async getAdvisorSettings(tableName, advisorId) {
       assert.equal(tableName, "AdvisorSettingsTable");
       assert.equal(advisorId, "manoj");
@@ -1534,9 +1654,10 @@ test("processSchedulingEmail uses advisor-specific LLM secret when configured", 
     INTENT_EXTRACTION_MODE: "parser"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
+      toEmail: "manoj.agent@agent.letsconnect.ai",
       subject: "Chat"
     },
     env,
@@ -1584,7 +1705,7 @@ test("processSchedulingEmail falls back to template response when LLM draft fail
     LLM_PROVIDER_SECRET_ARN: "arn:llm-secret"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "Chat"
@@ -1733,7 +1854,7 @@ test("processSchedulingEmail applies advisor-defined custom client policies", as
     CLIENT_POLICY_PRESETS_JSON: '{"default":["Tue","Wed"]}'
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
       subject: "Could we connect this week?"
@@ -1788,7 +1909,7 @@ test("processSchedulingEmail enforces afternoon daypart for broad LLM windows", 
     SEARCH_DAYS: "120"
   };
 
-  const result = await processSchedulingEmail({
+  const result = await runSchedulingEmail({
     payload: {
       fromEmail: "manojapte@gmail.com",
       subject: "",
@@ -1825,11 +1946,13 @@ test("createHandler normalizes SES from header before processing", async () => {
   const previousResponseMode = process.env.RESPONSE_MODE;
   const previousSenderEmail = process.env.SENDER_EMAIL;
   const previousCalendarMode = process.env.CALENDAR_MODE;
+  const previousAgentEmailDomain = process.env.DEFAULT_AGENT_EMAIL_DOMAIN;
 
   process.env.TRACE_TABLE_NAME = "TraceTable";
   process.env.RESPONSE_MODE = "send";
   process.env.SENDER_EMAIL = "agent@agent.letsconnect.ai";
   process.env.CALENDAR_MODE = "mock";
+  process.env.DEFAULT_AGENT_EMAIL_DOMAIN = "agent.letsconnect.ai";
 
   try {
     const response = await handler({
@@ -1837,6 +1960,7 @@ test("createHandler normalizes SES from header before processing", async () => {
         {
           ses: {
             mail: {
+              destination: ["manoj.agent@agent.letsconnect.ai"],
               commonHeaders: {
                 from: ["Titoneeda <titoneeda@gmail.com>"],
                 subject: "Need 30 min chat"
@@ -1874,6 +1998,12 @@ test("createHandler normalizes SES from header before processing", async () => {
       delete process.env.CALENDAR_MODE;
     } else {
       process.env.CALENDAR_MODE = previousCalendarMode;
+    }
+
+    if (previousAgentEmailDomain === undefined) {
+      delete process.env.DEFAULT_AGENT_EMAIL_DOMAIN;
+    } else {
+      process.env.DEFAULT_AGENT_EMAIL_DOMAIN = previousAgentEmailDomain;
     }
   }
 });
