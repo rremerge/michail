@@ -2808,6 +2808,14 @@ function buildAdvisorPage() {
       .profile-grid input, .profile-grid select { width: 100%; margin-right: 0; box-sizing: border-box; }
       .profile-actions { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
       .profile-status { margin-top: 8px; }
+      .section-subtitle { margin: 12px 0 8px; font-size: 15px; color: #0f172a; }
+      .section-divider { border: 0; border-top: 1px solid #e5e7eb; margin: 16px 0; }
+      .overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 10px; }
+      .overview-stat { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; background: #f8fafc; }
+      .overview-label { font-size: 12px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
+      .overview-value { margin-top: 6px; font-size: 20px; font-weight: 700; color: #0f172a; line-height: 1.1; }
+      .advanced-summary { cursor: pointer; font-weight: 700; color: #0f172a; }
+      details .advanced-content { margin-top: 12px; }
       .brand-preview { display: block; height: 34px; width: auto; max-width: 260px; border: 1px solid #d0d7e2; border-radius: 8px; background: #fff; padding: 4px 8px; }
       .brand-status { margin-top: 10px; }
       .site-footer { margin-top: 16px; padding-top: 10px; border-top: 1px solid #d0d7e2; text-align: center; }
@@ -2829,17 +2837,124 @@ function buildAdvisorPage() {
     </header>
 
     <div class="card">
-      <h2 style="margin-top:0;">Connected Calendars</h2>
-      <div id="statusBanner" style="display:none"></div>
-      <p class="muted">Add calendars for availability checks without manually editing AWS secrets.</p>
-      <button id="addMock">Add Mock Calendar (Test)</button>
-      <button id="googleConnect">Connect Google (Sign In)</button>
-      <button id="logout">Logout</button>
-      <span class="muted">Google flow requires app credentials configured in backend secret.</span>
+      <h2 style="margin-top:0;">Overview</h2>
+      <p class="muted">Quick summary of current portal health and activity. Usage and billing cards will be expanded next.</p>
+      <div class="overview-grid">
+        <div class="overview-stat">
+          <div class="overview-label">Connected Calendars</div>
+          <div id="overviewConnectedCalendars" class="overview-value">0</div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-label">Total Clients</div>
+          <div id="overviewTotalClients" class="overview-value">0</div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-label">Active Clients</div>
+          <div id="overviewActiveClients" class="overview-value">0</div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-label">Blocked Clients</div>
+          <div id="overviewBlockedClients" class="overview-value">0</div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-label">Email Uses</div>
+          <div id="overviewEmailUses" class="overview-value">0</div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-label">Web Uses</div>
+          <div id="overviewWebUses" class="overview-value">0</div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-label">Total Interactions</div>
+          <div id="overviewTotalInteractions" class="overview-value">0</div>
+        </div>
+      </div>
+      <p id="overviewUsageHint" class="muted">Usage and billing metrics (API calls, token usage, estimated spend) are coming in the next update.</p>
     </div>
 
     <div class="card">
-      <h2 style="margin-top:0;">Advisor Profile</h2>
+      <h2 style="margin-top:0;">Connected Calendars</h2>
+      <div id="statusBanner" style="display:none"></div>
+      <p class="muted">Add calendars for availability checks without manually editing AWS secrets, then manage them below.</p>
+      <div class="row inline-controls">
+        <button id="addMock">Add Mock Calendar (Test)</button>
+        <button id="googleConnect">Connect Google (Sign In)</button>
+        <button id="refreshPortalData">Refresh Data</button>
+        <button id="logout">Logout</button>
+      </div>
+      <span class="muted">Google flow requires app credentials configured in backend secret.</span>
+      <h3 class="section-subtitle">Current Connections</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Provider</th>
+            <th>Account</th>
+            <th>Status</th>
+            <th>Primary</th>
+            <th>Updated</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody id="connectionsBody"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0;">Clients &amp; Access</h2>
+      <p class="muted">Manage client cohorts, access policies, and admission allowlist from one place.</p>
+      <h3 class="section-subtitle">Access Policies</h3>
+      <div class="row inline-controls">
+        <input id="newPolicyId" placeholder="policy id (example: founders)" style="min-width: 220px;" />
+        <input id="newPolicyDays" placeholder="days (example: Tue,Wed)" style="min-width: 220px;" />
+        <button id="createPolicy">Create Policy</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Policy ID</th>
+            <th>Allowed Days</th>
+            <th>Type</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="policiesBody"></tbody>
+      </table>
+
+      <hr class="section-divider" />
+
+      <h3 class="section-subtitle">Client Directory</h3>
+      <p class="muted">Metadata-only client list with first contact, usage counters, and access policy controls.</p>
+      <div class="row inline-controls">
+        <input id="newClientEmail" placeholder="client email (example: client@example.com)" style="min-width: 260px;" />
+        <input id="newClientDisplayName" placeholder="display name (optional)" style="min-width: 200px;" />
+        <select id="newClientPolicy" class="small-select"></select>
+        <button id="addClient">Add Client</button>
+      </div>
+      <div class="row inline-controls">
+        <textarea id="bulkClientEmails" rows="4" style="min-width: 520px;" placeholder="Bulk import client emails (one per line)"></textarea>
+        <button id="bulkImportClients">Bulk Import</button>
+      </div>
+      <p id="clientImportStatus" class="muted">Add one client or bulk import emails to control who can receive agent responses.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th>Access</th>
+            <th>Policy</th>
+            <th>First Contact</th>
+            <th>Last Activity</th>
+            <th>Email Uses</th>
+            <th>Web Uses</th>
+            <th>Total</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="clientsBody"></tbody>
+      </table>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0;">Advisor Profile &amp; AI Settings</h2>
       <p class="muted">Defaults are initialized from advisor Google login and can be edited here.</p>
       <div class="profile-grid">
         <div>
@@ -2914,96 +3029,30 @@ function buildAdvisorPage() {
     </div>
 
     <div class="card">
-      <h2 style="margin-top:0;">Current Connections</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Provider</th>
-            <th>Account</th>
-            <th>Status</th>
-            <th>Primary</th>
-            <th>Updated</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody id="connectionsBody"></tbody>
-      </table>
-    </div>
-
-    <div class="card">
-      <h2 style="margin-top:0;">Access Policies</h2>
-      <p class="muted">Define reusable client visibility policies (advising days) directly in the portal.</p>
-      <div class="row inline-controls">
-        <input id="newPolicyId" placeholder="policy id (example: founders)" style="min-width: 220px;" />
-        <input id="newPolicyDays" placeholder="days (example: Tue,Wed)" style="min-width: 220px;" />
-        <button id="createPolicy">Create Policy</button>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Policy ID</th>
-            <th>Allowed Days</th>
-            <th>Type</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="policiesBody"></tbody>
-      </table>
-    </div>
-
-    <div class="card">
-      <h2 style="margin-top:0;">Client Directory</h2>
-      <p class="muted">Metadata-only client list with first contact, usage counters, and access policy controls.</p>
-      <div class="row inline-controls">
-        <input id="newClientEmail" placeholder="client email (example: client@example.com)" style="min-width: 260px;" />
-        <input id="newClientDisplayName" placeholder="display name (optional)" style="min-width: 200px;" />
-        <select id="newClientPolicy" class="small-select"></select>
-        <button id="addClient">Add Client</button>
-      </div>
-      <div class="row inline-controls">
-        <textarea id="bulkClientEmails" rows="4" style="min-width: 520px;" placeholder="Bulk import client emails (one per line)"></textarea>
-        <button id="bulkImportClients">Bulk Import</button>
-      </div>
-      <p id="clientImportStatus" class="muted">Add one client or bulk import emails to control who can receive agent responses.</p>
-      <table>
-        <thead>
-          <tr>
-            <th>Client</th>
-            <th>Access</th>
-            <th>Policy</th>
-            <th>First Contact</th>
-            <th>Last Activity</th>
-            <th>Email Uses</th>
-            <th>Web Uses</th>
-            <th>Total</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="clientsBody"></tbody>
-      </table>
-    </div>
-
-    <div class="card">
-      <h2 style="margin-top:0;">Debug Request By ID</h2>
-      <p class="muted">Looks up metadata-only trace details. No raw email or calendar content is stored.</p>
-      <div class="row">
-        <input id="traceRequestId" placeholder="requestId (UUID)" style="min-width: 320px;" />
-        <button id="traceLookup">Lookup Trace</button>
-      </div>
-      <div class="row">
-        <select id="feedbackReason">
-          <option value="other">Feedback reason: other</option>
-          <option value="availability_mismatch">availability_mismatch</option>
-          <option value="timezone_issue">timezone_issue</option>
-          <option value="tone_quality">tone_quality</option>
-          <option value="latency">latency</option>
-        </select>
-        <button id="markIncorrect">Mark Incorrect</button>
-        <button id="markOdd">Mark Odd</button>
-        <button id="markHelpful">Mark Helpful</button>
-      </div>
-      <p id="traceStatus" class="muted">Enter a request ID and click Lookup Trace.</p>
-      <pre id="traceResult">{}</pre>
+      <details id="advancedDebugDetails">
+        <summary class="advanced-summary">Advanced: Debug Request By ID</summary>
+        <div class="advanced-content">
+          <p class="muted">Looks up metadata-only trace details. No raw email or calendar content is stored.</p>
+          <div class="row">
+            <input id="traceRequestId" placeholder="requestId (UUID)" style="min-width: 320px;" />
+            <button id="traceLookup">Lookup Trace</button>
+          </div>
+          <div class="row">
+            <select id="feedbackReason">
+              <option value="other">Feedback reason: other</option>
+              <option value="availability_mismatch">availability_mismatch</option>
+              <option value="timezone_issue">timezone_issue</option>
+              <option value="tone_quality">tone_quality</option>
+              <option value="latency">latency</option>
+            </select>
+            <button id="markIncorrect">Mark Incorrect</button>
+            <button id="markOdd">Mark Odd</button>
+            <button id="markHelpful">Mark Helpful</button>
+          </div>
+          <p id="traceStatus" class="muted">Enter a request ID and click Lookup Trace.</p>
+          <pre id="traceResult">{}</pre>
+        </div>
+      </details>
     </div>
 
     <footer class="site-footer">
@@ -3014,6 +3063,8 @@ function buildAdvisorPage() {
     <script>
       let lastTrace = null;
       let policyOptions = ['default', 'weekend', 'monday'];
+      let latestConnections = [];
+      let latestClients = [];
       const BRAND_STORAGE_KEY = '${BRAND_STORAGE_KEY}';
       const BRAND_MAX_BYTES = 1024 * 1024;
 
@@ -3304,11 +3355,55 @@ function buildAdvisorPage() {
         node.textContent = text;
       }
 
+      function setOverviewMetric(nodeId, value) {
+        const node = document.getElementById(nodeId);
+        if (!node) {
+          return;
+        }
+        node.textContent = String(value);
+      }
+
+      function normalizeCount(value) {
+        const parsed = Number(value || 0);
+        if (!Number.isFinite(parsed)) {
+          return 0;
+        }
+        return Math.max(0, Math.trunc(parsed));
+      }
+
+      function renderOverviewMetrics() {
+        const connectedCalendars = latestConnections.filter((connection) => String(connection?.status || '').toLowerCase() === 'connected').length;
+        const totalClients = latestClients.length;
+        const blockedClients = latestClients.filter((client) => String(client?.accessState || '').toLowerCase() === 'blocked').length;
+        const activeClients = latestClients.filter((client) => String(client?.accessState || '').toLowerCase() === 'active').length;
+        const emailUses = latestClients.reduce((sum, client) => sum + normalizeCount(client?.emailAgentCount), 0);
+        const webUses = latestClients.reduce((sum, client) => sum + normalizeCount(client?.availabilityWebCount), 0);
+        const totalInteractions = latestClients.reduce((sum, client) => sum + normalizeCount(client?.totalInteractionCount), 0);
+
+        setOverviewMetric('overviewConnectedCalendars', connectedCalendars);
+        setOverviewMetric('overviewTotalClients', totalClients);
+        setOverviewMetric('overviewActiveClients', activeClients);
+        setOverviewMetric('overviewBlockedClients', blockedClients);
+        setOverviewMetric('overviewEmailUses', emailUses);
+        setOverviewMetric('overviewWebUses', webUses);
+        setOverviewMetric('overviewTotalInteractions', totalInteractions);
+
+        const usageHint = document.getElementById('overviewUsageHint');
+        if (usageHint) {
+          const hasClientUsage = totalInteractions > 0;
+          usageHint.textContent = hasClientUsage
+            ? 'Usage and billing metrics (API calls, token usage, estimated spend) are coming in the next update. Current interaction counters are shown above.'
+            : 'Usage and billing metrics (API calls, token usage, estimated spend) are coming in the next update.';
+        }
+      }
+
       async function loadConnections() {
         const response = await fetch('./advisor/api/connections');
         const payload = await response.json();
         const tbody = document.getElementById('connectionsBody');
         tbody.innerHTML = '';
+        latestConnections = Array.isArray(payload.connections) ? payload.connections : [];
+        renderOverviewMetrics();
 
         if (!payload.connections || payload.connections.length === 0) {
           const row = document.createElement('tr');
@@ -3590,6 +3685,8 @@ function buildAdvisorPage() {
         const response = await fetch('./advisor/api/clients');
         const payload = await response.json();
         if (!response.ok) {
+          latestClients = [];
+          renderOverviewMetrics();
           const row = document.createElement('tr');
           row.innerHTML = '<td colspan="9" class="error">' + escapeHtml(payload.error || 'Unable to load clients.') + '</td>';
           tbody.appendChild(row);
@@ -3597,6 +3694,8 @@ function buildAdvisorPage() {
         }
 
         const clients = Array.isArray(payload.clients) ? payload.clients : [];
+        latestClients = clients;
+        renderOverviewMetrics();
         const availablePolicies =
           Array.isArray(policyOptions) && policyOptions.length > 0
             ? policyOptions
@@ -3661,6 +3760,15 @@ function buildAdvisorPage() {
       document.getElementById('addMock').addEventListener('click', async () => {
         await fetch('./advisor/api/connections/mock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
         await loadConnections();
+      });
+
+      document.getElementById('refreshPortalData').addEventListener('click', async () => {
+        await Promise.all([
+          loadConnections(),
+          loadPolicies(),
+          loadClients(),
+          loadAdvisorSettings()
+        ]);
       });
 
       document.getElementById('saveAdvisorSettings').addEventListener('click', async () => {
@@ -3793,6 +3901,7 @@ function buildAdvisorPage() {
 
       applyPortalBranding();
       showStatusFromQuery();
+      renderOverviewMetrics();
       loadAdvisorSettings().catch((error) => {
         setAdvisorSettingsStatus(error.message || 'Unable to load advisor profile settings.', 'error');
       });
