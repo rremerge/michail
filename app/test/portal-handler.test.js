@@ -1180,6 +1180,97 @@ test("advisor portal can bulk import clients into allowlist", async () => {
   }
 });
 
+test("advisor portal usage summary aggregates advisor-scoped llm and infra metrics", async () => {
+  const traces = [
+    {
+      requestId: "req-1",
+      advisorId: "manoj",
+      createdAt: "2026-02-20T10:00:00.000Z",
+      status: "completed",
+      responseMode: "send",
+      bookingStatus: "invite_sent",
+      inviteRecipientCount: 2,
+      providerStatus: "ok",
+      llmProvider: "openai",
+      llmModel: "gpt-5.2",
+      llmRequestCount: 2,
+      llmInputTokens: 1000,
+      llmOutputTokens: 200,
+      llmTotalTokens: 1200
+    },
+    {
+      requestId: "req-2",
+      advisorId: "manoj",
+      createdAt: "2026-02-20T11:00:00.000Z",
+      status: "completed",
+      responseMode: "send",
+      bookingStatus: "not_requested",
+      providerStatus: "error",
+      llmProvider: "openai",
+      llmModel: "gpt-5.2",
+      llmRequestCount: 1,
+      llmInputTokens: 600,
+      llmOutputTokens: 300,
+      llmTotalTokens: 900
+    }
+  ];
+
+  const handler = createPortalHandler({
+    async listAdvisorTraceSummaries(tableName, advisorId, range) {
+      assert.equal(tableName, "TraceTable");
+      assert.equal(advisorId, "manoj");
+      assert.equal(typeof range.startIso, "string");
+      assert.equal(typeof range.endIso, "string");
+      return traces;
+    }
+  });
+
+  const previousTraceTable = process.env.TRACE_TABLE_NAME;
+  const previousAdvisorId = process.env.ADVISOR_ID;
+  process.env.TRACE_TABLE_NAME = "TraceTable";
+  process.env.ADVISOR_ID = "manoj";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        window: "weekly"
+      },
+      requestContext: {
+        http: { method: "GET" }
+      },
+      rawPath: "/advisor/api/usage-summary"
+    });
+
+    assert.equal(response.statusCode, 200);
+    const payload = JSON.parse(response.body);
+    assert.equal(payload.window, "weekly");
+    assert.equal(payload.advisorId, "manoj");
+    assert.equal(payload.totals.invocationCount, 2);
+    assert.equal(payload.totals.emailSendCount, 3);
+    assert.equal(payload.totals.calendarApiCallCount, 2);
+    assert.equal(payload.totals.llmRequestCount, 3);
+    assert.equal(payload.totals.llmTotalTokens, 2100);
+    assert.equal(payload.byModel.length, 1);
+    assert.equal(payload.byModel[0].provider, "openai");
+    assert.equal(payload.byModel[0].model, "gpt-5.2");
+    assert.equal(payload.byModel[0].requestCount, 3);
+    assert.equal(payload.byModel[0].totalTokens, 2100);
+    assert.equal(Math.abs(payload.totals.llmEstimatedCostUsd - 0.0093) < 0.0000001, true);
+    assert.equal(payload.totals.estimatedTotalCostUsd > payload.totals.llmEstimatedCostUsd, true);
+  } finally {
+    if (previousTraceTable === undefined) {
+      delete process.env.TRACE_TABLE_NAME;
+    } else {
+      process.env.TRACE_TABLE_NAME = previousTraceTable;
+    }
+    if (previousAdvisorId === undefined) {
+      delete process.env.ADVISOR_ID;
+    } else {
+      process.env.ADVISOR_ID = previousAdvisorId;
+    }
+  }
+});
+
 test("advisor portal settings api returns and updates advisor profile settings", async () => {
   const writes = [];
   let stored = {

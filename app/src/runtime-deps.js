@@ -98,6 +98,45 @@ export function createRuntimeDeps() {
       return response.Item ?? null;
     },
 
+    async listAdvisorTraceSummaries(
+      traceTableName,
+      advisorId,
+      { startIso, endIso, indexName = "AdvisorCreatedAtIndex" } = {}
+    ) {
+      const windowStartIso = String(startIso ?? "").trim();
+      const windowEndIso = String(endIso ?? "").trim();
+      if (!windowStartIso || !windowEndIso) {
+        return [];
+      }
+
+      const items = [];
+      let lastEvaluatedKey;
+      do {
+        const response = await ddbClient.send(
+          new QueryCommand({
+            TableName: traceTableName,
+            IndexName: indexName,
+            KeyConditionExpression: "advisorId = :advisorId AND createdAt BETWEEN :startIso AND :endIso",
+            ExpressionAttributeValues: {
+              ":advisorId": advisorId,
+              ":startIso": windowStartIso,
+              ":endIso": windowEndIso
+            },
+            ExclusiveStartKey: lastEvaluatedKey,
+            ProjectionExpression:
+              "requestId, advisorId, createdAt, #status, providerStatus, responseMode, bookingStatus, inviteRecipientCount, llmStatus, llmMode, llmProvider, llmModel, llmRequestCount, llmInputTokens, llmOutputTokens, llmTotalTokens, intentLlmStatus, promptGuardLlmStatus",
+            ExpressionAttributeNames: {
+              "#status": "status"
+            }
+          })
+        );
+        items.push(...(response.Items ?? []));
+        lastEvaluatedKey = response.LastEvaluatedKey;
+      } while (lastEvaluatedKey);
+
+      return items;
+    },
+
     async updateTraceFeedback(
       traceTableName,
       { requestId, responseId, feedbackSource, feedbackType, feedbackReason, updatedAt }

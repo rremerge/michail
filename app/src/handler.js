@@ -120,6 +120,80 @@ function mergePromptGuardSignals({ heuristicSignals, llmSignals }) {
   return merged;
 }
 
+function toNonNegativeInteger(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.max(0, Math.trunc(parsed));
+}
+
+function createLlmUsageAccumulator() {
+  return {
+    requestCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    provider: "",
+    model: ""
+  };
+}
+
+function normalizeLlmTelemetry(rawTelemetry) {
+  if (!rawTelemetry || typeof rawTelemetry !== "object") {
+    return null;
+  }
+
+  const provider = String(rawTelemetry.provider ?? "")
+    .trim()
+    .toLowerCase();
+  const model = String(rawTelemetry.model ?? "").trim();
+  const inputTokens = toNonNegativeInteger(rawTelemetry.inputTokens);
+  const outputTokens = toNonNegativeInteger(rawTelemetry.outputTokens);
+  const totalTokens = toNonNegativeInteger(rawTelemetry.totalTokens || inputTokens + outputTokens);
+
+  if (!provider && !model && inputTokens === 0 && outputTokens === 0 && totalTokens === 0) {
+    return null;
+  }
+
+  return {
+    provider,
+    model,
+    inputTokens,
+    outputTokens,
+    totalTokens
+  };
+}
+
+function accumulateLlmTelemetry(accumulator, rawTelemetry) {
+  const normalized = normalizeLlmTelemetry(rawTelemetry);
+  if (!normalized) {
+    return;
+  }
+
+  accumulator.requestCount += 1;
+  accumulator.inputTokens += normalized.inputTokens;
+  accumulator.outputTokens += normalized.outputTokens;
+  accumulator.totalTokens += normalized.totalTokens;
+  if (!accumulator.provider && normalized.provider) {
+    accumulator.provider = normalized.provider;
+  }
+  if (!accumulator.model && normalized.model) {
+    accumulator.model = normalized.model;
+  }
+}
+
+function buildLlmTraceUsageFields(accumulator) {
+  return {
+    llmRequestCount: toNonNegativeInteger(accumulator.requestCount),
+    llmInputTokens: toNonNegativeInteger(accumulator.inputTokens),
+    llmOutputTokens: toNonNegativeInteger(accumulator.outputTokens),
+    llmTotalTokens: toNonNegativeInteger(accumulator.totalTokens),
+    llmProvider: String(accumulator.provider || "").trim(),
+    llmModel: String(accumulator.model || "").trim()
+  };
+}
+
 function normalizeRequestedWindowsToUtc(requestedWindows) {
   return requestedWindows
     .map((window) => {
@@ -1290,6 +1364,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   let promptGuardLlmStatus = "disabled";
   let promptInjectionRiskLevel = "low";
   let promptInjectionSignals = [];
+  const llmUsageAccumulator = createLlmUsageAccumulator();
 
   let clientProfile = null;
   const admissionControlEnabled = Boolean(
@@ -1335,6 +1410,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       llmMode,
       llmCredentialSource,
       llmStatus: "skipped_unknown_sender",
+      ...buildLlmTraceUsageFields(llmUsageAccumulator),
       bodySource,
       intentSource: "parser",
       intentLlmStatus: "skipped",
@@ -1414,6 +1490,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       llmMode,
       llmCredentialSource,
       llmStatus: "disabled",
+      ...buildLlmTraceUsageFields(llmUsageAccumulator),
       bodySource,
       intentSource: "parser",
       intentLlmStatus: "disabled",
@@ -1470,6 +1547,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
             fetchImpl: deps.fetchImpl,
             timeoutMs: promptGuardLlmTimeoutMs
           });
+          accumulateLlmTelemetry(llmUsageAccumulator, llmAssessment?.llmTelemetry);
           promptGuardLlmStatus = "ok";
           llmRiskLevel = normalizePromptGuardLevel(llmAssessment.riskLevel, "medium");
           llmSignals = Array.isArray(llmAssessment.signals) ? llmAssessment.signals : [];
@@ -1550,6 +1628,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         llmMode,
         llmCredentialSource,
         llmStatus: "guarded",
+        ...buildLlmTraceUsageFields(llmUsageAccumulator),
         bodySource,
         intentSource: "parser",
         intentLlmStatus: "skipped_guarded",
@@ -1642,6 +1721,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         fetchImpl: deps.fetchImpl,
         timeoutMs: intentLlmTimeoutMs
       });
+      accumulateLlmTelemetry(llmUsageAccumulator, llmIntent?.llmTelemetry);
 
       const merged = mergeParsedIntent({
         parserIntent,
@@ -1799,6 +1879,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         llmMode,
         llmCredentialSource,
         llmStatus: "skipped_no_calendar",
+        ...buildLlmTraceUsageFields(llmUsageAccumulator),
         bodySource,
         intentSource,
         intentLlmStatus,
@@ -1861,6 +1942,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       providerStatus,
       errorCode: "CALENDAR_LOOKUP_FAILED",
       bodySource,
+      ...buildLlmTraceUsageFields(llmUsageAccumulator),
       intentSource,
       intentLlmStatus,
       promptGuardMode,
@@ -1974,7 +2056,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
 
         const llmSecretString = await deps.getSecretString(llmProviderSecretArn);
         const openAiConfig = parseOpenAiConfigSecret(llmSecretString);
-        responseMessage = await deps.draftResponseWithLlm({
+        const llmDraft = await deps.draftResponseWithLlm({
           openAiConfig,
           suggestions,
           hostTimezone,
@@ -1983,6 +2065,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           fetchImpl: deps.fetchImpl,
           timeoutMs: llmTimeoutMs
         });
+        accumulateLlmTelemetry(llmUsageAccumulator, llmDraft?.llmTelemetry);
+        responseMessage = {
+          subject: llmDraft.subject,
+          bodyText: llmDraft.bodyText
+        };
         llmStatus = "ok";
       } catch {
         llmStatus = "fallback";
@@ -2080,6 +2167,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     llmMode,
     llmCredentialSource,
     llmStatus,
+    ...buildLlmTraceUsageFields(llmUsageAccumulator),
     bodySource,
     intentSource,
     intentLlmStatus,

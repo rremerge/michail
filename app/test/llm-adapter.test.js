@@ -63,6 +63,52 @@ test("draftResponseWithOpenAi parses structured chat completion", async () => {
   assert.equal(result.bodyText, "Here are 1 option(s).");
 });
 
+test("draftResponseWithOpenAi includes llm telemetry when usage is returned", async () => {
+  const openAiConfig = {
+    apiKey: "test-api-key",
+    provider: "openai",
+    model: "gpt-5.2",
+    endpoint: "https://example.test/v1/chat/completions"
+  };
+
+  const result = await draftResponseWithOpenAi({
+    openAiConfig,
+    suggestions: [],
+    hostTimezone: "America/Los_Angeles",
+    clientTimezone: null,
+    originalSubject: "Need 30 min chat",
+    fetchImpl: async () => ({
+      ok: true,
+      async json() {
+        return {
+          model: "gpt-5.2",
+          usage: {
+            prompt_tokens: 100,
+            completion_tokens: 40,
+            total_tokens: 140
+          },
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  subject: "Re: Need 30 min chat",
+                  bodyText: "Here are options."
+                })
+              }
+            }
+          ]
+        };
+      }
+    })
+  });
+
+  assert.equal(result.llmTelemetry.provider, "openai");
+  assert.equal(result.llmTelemetry.model, "gpt-5.2");
+  assert.equal(result.llmTelemetry.inputTokens, 100);
+  assert.equal(result.llmTelemetry.outputTokens, 40);
+  assert.equal(result.llmTelemetry.totalTokens, 140);
+});
+
 test("draftResponseWithOpenAi sanitizes untrusted subject in prompt payload", async () => {
   const openAiConfig = {
     apiKey: "test-api-key",

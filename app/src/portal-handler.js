@@ -23,6 +23,11 @@ function parseIntEnv(value, fallback) {
   return Number.isNaN(parsed) ? fallback : parsed;
 }
 
+function parseFloatEnv(value, fallback) {
+  const parsed = Number.parseFloat(value ?? "");
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
 function parseClampedIntEnv(value, fallback, minimum, maximum) {
   const parsed = parseIntEnv(value, fallback);
   return Math.min(Math.max(parsed, minimum), maximum);
@@ -41,6 +46,14 @@ function parseBooleanEnv(value, fallback = false) {
   return fallback;
 }
 
+function toNonNegativeInteger(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.max(0, Math.trunc(parsed));
+}
+
 const AVAILABILITY_VIEW_DAYS = 7;
 const DEFAULT_ADVISOR_TIMEZONE = "America/Los_Angeles";
 const DEFAULT_AGENT_EMAIL_DOMAIN = "agent.letsconnect.ai";
@@ -49,6 +62,12 @@ const DEFAULT_LLM_MODEL = "gpt-5.2";
 const DEFAULT_LLM_ENDPOINT = "https://api.openai.com/v1/chat/completions";
 const ALLOWED_LLM_PROVIDERS = new Set(["openai"]);
 const ALLOWED_LLM_KEY_MODES = new Set(["platform", "advisor"]);
+const USAGE_WINDOW_DAYS = {
+  daily: 1,
+  weekly: 7,
+  monthly: 30
+};
+const DEFAULT_USAGE_WINDOW = "weekly";
 const BRAND_STORAGE_KEY = "letsconnect.whitelabel.logo.dataurl";
 const BRAND_COPYRIGHT_NOTICE = "Copyright (C) 2026. RR Emerge LLC";
 const BRAND_POWERED_BY_NOTICE = "Powered by LetsConnect.ai";
@@ -2568,6 +2587,176 @@ function parsePolicyPresetPath(rawPath) {
   return match?.[1] ?? null;
 }
 
+function normalizeUsageWindow(value) {
+  const candidate = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return Object.hasOwn(USAGE_WINDOW_DAYS, candidate) ? candidate : DEFAULT_USAGE_WINDOW;
+}
+
+function estimateTokenCostUsd({ inputTokens, outputTokens, inputPer1K, outputPer1K }) {
+  const normalizedInput = toNonNegativeInteger(inputTokens);
+  const normalizedOutput = toNonNegativeInteger(outputTokens);
+  return (normalizedInput / 1000) * inputPer1K + (normalizedOutput / 1000) * outputPer1K;
+}
+
+function deriveFallbackLlmRequestCount(trace) {
+  let count = 0;
+  const llmStatus = String(trace?.llmStatus ?? "")
+    .trim()
+    .toLowerCase();
+  const intentLlmStatus = String(trace?.intentLlmStatus ?? "")
+    .trim()
+    .toLowerCase();
+  const promptGuardLlmStatus = String(trace?.promptGuardLlmStatus ?? "")
+    .trim()
+    .toLowerCase();
+
+  if (llmStatus === "ok" || llmStatus === "fallback") {
+    count += 1;
+  }
+  if (intentLlmStatus === "ok" || intentLlmStatus === "fallback") {
+    count += 1;
+  }
+  if (promptGuardLlmStatus === "ok" || promptGuardLlmStatus === "fallback") {
+    count += 1;
+  }
+
+  return count;
+}
+
+function estimateEmailSendsFromTrace(trace) {
+  if (String(trace?.responseMode ?? "").toLowerCase() !== "send") {
+    return 0;
+  }
+
+  const status = String(trace?.status ?? "").toLowerCase();
+  if (status === "suppressed" || status === "denied") {
+    return 0;
+  }
+
+  const bookingStatus = String(trace?.bookingStatus ?? "").toLowerCase();
+  if (bookingStatus === "invite_sent") {
+    return Math.max(1, toNonNegativeInteger(trace?.inviteRecipientCount));
+  }
+
+  return 1;
+}
+
+function estimateCalendarApiCallsFromTrace(trace) {
+  const providerStatus = String(trace?.providerStatus ?? "").toLowerCase();
+  return providerStatus === "ok" || providerStatus === "error" ? 1 : 0;
+}
+
+function buildAdvisorUsageSummary({
+  traces,
+  advisorId,
+  window,
+  startIso,
+  endIso,
+  llmInputCostPer1KUsd,
+  llmOutputCostPer1KUsd,
+  emailSendCostUsd,
+  calendarApiCallCostUsd,
+  lambdaInvocationCostUsd
+}) {
+  const totals = {
+    invocationCount: 0,
+    emailSendCount: 0,
+    calendarApiCallCount: 0,
+    llmRequestCount: 0,
+    llmInputTokens: 0,
+    llmOutputTokens: 0,
+    llmTotalTokens: 0,
+    llmEstimatedCostUsd: 0,
+    infraEstimatedCostUsd: 0,
+    estimatedTotalCostUsd: 0
+  };
+  const byModelMap = new Map();
+
+  for (const trace of Array.isArray(traces) ? traces : []) {
+    totals.invocationCount += 1;
+
+    const llmProvider = String(trace?.llmProvider ?? "")
+      .trim()
+      .toLowerCase() || String(trace?.llmMode ?? "").trim().toLowerCase() || "unknown";
+    const llmModel = String(trace?.llmModel ?? "").trim() || "unknown";
+    const llmRequestCountRaw = toNonNegativeInteger(trace?.llmRequestCount);
+    const llmRequestCount = llmRequestCountRaw > 0 ? llmRequestCountRaw : deriveFallbackLlmRequestCount(trace);
+    const llmInputTokens = toNonNegativeInteger(trace?.llmInputTokens);
+    const llmOutputTokens = toNonNegativeInteger(trace?.llmOutputTokens);
+    const llmTotalTokens = toNonNegativeInteger(
+      trace?.llmTotalTokens || llmInputTokens + llmOutputTokens
+    );
+    const llmEstimatedCostUsd = estimateTokenCostUsd({
+      inputTokens: llmInputTokens,
+      outputTokens: llmOutputTokens,
+      inputPer1K: llmInputCostPer1KUsd,
+      outputPer1K: llmOutputCostPer1KUsd
+    });
+
+    totals.llmRequestCount += llmRequestCount;
+    totals.llmInputTokens += llmInputTokens;
+    totals.llmOutputTokens += llmOutputTokens;
+    totals.llmTotalTokens += llmTotalTokens;
+    totals.llmEstimatedCostUsd += llmEstimatedCostUsd;
+
+    if (llmRequestCount > 0 || llmTotalTokens > 0) {
+      const modelKey = `${llmProvider}|${llmModel}`;
+      const existingModelMetrics = byModelMap.get(modelKey) ?? {
+        provider: llmProvider,
+        model: llmModel,
+        requestCount: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 0,
+        estimatedCostUsd: 0
+      };
+      existingModelMetrics.requestCount += llmRequestCount;
+      existingModelMetrics.inputTokens += llmInputTokens;
+      existingModelMetrics.outputTokens += llmOutputTokens;
+      existingModelMetrics.totalTokens += llmTotalTokens;
+      existingModelMetrics.estimatedCostUsd += llmEstimatedCostUsd;
+      byModelMap.set(modelKey, existingModelMetrics);
+    }
+
+    totals.emailSendCount += estimateEmailSendsFromTrace(trace);
+    totals.calendarApiCallCount += estimateCalendarApiCallsFromTrace(trace);
+  }
+
+  const lambdaInvocationEstimate = totals.invocationCount * lambdaInvocationCostUsd;
+  const emailSendEstimate = totals.emailSendCount * emailSendCostUsd;
+  const calendarApiEstimate = totals.calendarApiCallCount * calendarApiCallCostUsd;
+  totals.infraEstimatedCostUsd = lambdaInvocationEstimate + emailSendEstimate + calendarApiEstimate;
+  totals.estimatedTotalCostUsd = totals.llmEstimatedCostUsd + totals.infraEstimatedCostUsd;
+
+  const byModel = Array.from(byModelMap.values()).sort((left, right) => {
+    if (right.totalTokens !== left.totalTokens) {
+      return right.totalTokens - left.totalTokens;
+    }
+
+    return String(left.model).localeCompare(String(right.model));
+  });
+
+  return {
+    advisorId,
+    window,
+    range: {
+      startIso,
+      endIso
+    },
+    totals,
+    byModel,
+    assumptions: {
+      llmInputCostPer1KUsd,
+      llmOutputCostPer1KUsd,
+      emailSendCostUsd,
+      calendarApiCallCostUsd,
+      lambdaInvocationCostUsd
+    }
+  };
+}
+
 function parseClientAdvisingDaysOverride(rawValue) {
   if (rawValue === null || rawValue === undefined || rawValue === "") {
     return null;
@@ -2678,6 +2867,12 @@ function selectTraceMetadata(trace) {
     calendarMode: trace.calendarMode,
     llmMode: trace.llmMode,
     llmStatus: trace.llmStatus,
+    llmProvider: trace.llmProvider,
+    llmModel: trace.llmModel,
+    llmRequestCount: trace.llmRequestCount,
+    llmInputTokens: trace.llmInputTokens,
+    llmOutputTokens: trace.llmOutputTokens,
+    llmTotalTokens: trace.llmTotalTokens,
     intentSource: trace.intentSource,
     intentLlmStatus: trace.intentLlmStatus,
     requestedWindowCount: trace.requestedWindowCount,
@@ -2894,7 +3089,59 @@ function buildAdvisorPage() {
           <div id="overviewTotalInteractions" class="overview-value">0</div>
         </div>
       </div>
-      <p id="overviewUsageHint" class="muted">Usage and billing metrics (API calls, token usage, estimated spend) are coming in the next update.</p>
+      <p id="overviewUsageHint" class="muted">Usage and billing metrics are loading.</p>
+      <div class="row inline-controls">
+        <label for="usageWindowSelect" class="muted">Usage Window</label>
+        <select id="usageWindowSelect">
+          <option value="daily">Daily (24h)</option>
+          <option value="weekly" selected>Weekly (7d)</option>
+          <option value="monthly">Monthly (30d)</option>
+        </select>
+        <button id="refreshUsageSummary">Refresh Usage</button>
+      </div>
+      <div class="overview-grid">
+        <div class="overview-stat">
+          <div class="overview-label">LLM Requests</div>
+          <div id="overviewLlmRequests" class="overview-value">0</div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-label">LLM Tokens</div>
+          <div id="overviewLlmTokens" class="overview-value">0</div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-label">Email Sends</div>
+          <div id="overviewEmailSends" class="overview-value">0</div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-label">Calendar API Calls</div>
+          <div id="overviewCalendarApiCalls" class="overview-value">0</div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-label">Invocations</div>
+          <div id="overviewInvocations" class="overview-value">0</div>
+        </div>
+        <div class="overview-stat">
+          <div class="overview-label">Estimated Total Cost (USD)</div>
+          <div id="overviewEstimatedCost" class="overview-value">$0.0000</div>
+        </div>
+      </div>
+      <h3 class="section-subtitle">LLM Usage By Model</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Provider</th>
+            <th>Model</th>
+            <th>Requests</th>
+            <th>Input Tokens</th>
+            <th>Output Tokens</th>
+            <th>Total Tokens</th>
+            <th>Estimated Cost (USD)</th>
+          </tr>
+        </thead>
+        <tbody id="usageByModelBody">
+          <tr><td colspan="7" class="muted">Loading usage metrics...</td></tr>
+        </tbody>
+      </table>
     </div>
 
     <div class="card">
@@ -3113,6 +3360,8 @@ function buildAdvisorPage() {
       let latestClients = [];
       let latestClientPolicyOptions = ['default', 'weekend', 'monday'];
       let clientSearchQuery = '';
+      let latestUsageSummary = null;
+      let selectedUsageWindow = 'weekly';
       const BRAND_STORAGE_KEY = '${BRAND_STORAGE_KEY}';
       const BRAND_MAX_BYTES = 1024 * 1024;
 
@@ -3411,12 +3660,69 @@ function buildAdvisorPage() {
         node.textContent = String(value);
       }
 
+      function setOverviewText(nodeId, value) {
+        const node = document.getElementById(nodeId);
+        if (!node) {
+          return;
+        }
+        node.textContent = String(value || '');
+      }
+
       function normalizeCount(value) {
         const parsed = Number(value || 0);
         if (!Number.isFinite(parsed)) {
           return 0;
         }
         return Math.max(0, Math.trunc(parsed));
+      }
+
+      function formatUsd(value) {
+        const parsed = Number(value || 0);
+        if (!Number.isFinite(parsed)) {
+          return '$0.0000';
+        }
+        return '$' + parsed.toFixed(4);
+      }
+
+      function renderUsageByModelRows(usageSummary) {
+        const tbody = document.getElementById('usageByModelBody');
+        if (!tbody) {
+          return;
+        }
+        tbody.innerHTML = '';
+
+        const rows = Array.isArray(usageSummary?.byModel) ? usageSummary.byModel : [];
+        if (rows.length === 0) {
+          const row = document.createElement('tr');
+          row.innerHTML = '<td colspan="7" class="muted">No LLM usage in this window.</td>';
+          tbody.appendChild(row);
+          return;
+        }
+
+        for (const item of rows) {
+          const row = document.createElement('tr');
+          row.innerHTML =
+            '<td><code>' + escapeHtml(item.provider || 'unknown') + '</code></td>' +
+            '<td>' + escapeHtml(item.model || 'unknown') + '</td>' +
+            '<td>' + formatCount(item.requestCount) + '</td>' +
+            '<td>' + formatCount(item.inputTokens) + '</td>' +
+            '<td>' + formatCount(item.outputTokens) + '</td>' +
+            '<td>' + formatCount(item.totalTokens) + '</td>' +
+            '<td>' + formatUsd(item.estimatedCostUsd) + '</td>';
+          tbody.appendChild(row);
+        }
+      }
+
+      function renderUsageSummary(usageSummary) {
+        latestUsageSummary = usageSummary || null;
+        const totals = usageSummary?.totals || {};
+        setOverviewMetric('overviewLlmRequests', normalizeCount(totals.llmRequestCount));
+        setOverviewMetric('overviewLlmTokens', normalizeCount(totals.llmTotalTokens));
+        setOverviewMetric('overviewEmailSends', normalizeCount(totals.emailSendCount));
+        setOverviewMetric('overviewCalendarApiCalls', normalizeCount(totals.calendarApiCallCount));
+        setOverviewMetric('overviewInvocations', normalizeCount(totals.invocationCount));
+        setOverviewText('overviewEstimatedCost', formatUsd(totals.estimatedTotalCostUsd));
+        renderUsageByModelRows(usageSummary);
       }
 
       function renderOverviewMetrics() {
@@ -3438,11 +3744,33 @@ function buildAdvisorPage() {
 
         const usageHint = document.getElementById('overviewUsageHint');
         if (usageHint) {
-          const hasClientUsage = totalInteractions > 0;
-          usageHint.textContent = hasClientUsage
-            ? 'Usage and billing metrics (API calls, token usage, estimated spend) are coming in the next update. Current interaction counters are shown above.'
-            : 'Usage and billing metrics (API calls, token usage, estimated spend) are coming in the next update.';
+          const usageWindow = String(latestUsageSummary?.window || selectedUsageWindow || 'weekly');
+          const rangeStart = String(latestUsageSummary?.range?.startIso || '').slice(0, 19).replace('T', ' ');
+          const rangeEnd = String(latestUsageSummary?.range?.endIso || '').slice(0, 19).replace('T', ' ');
+          if (rangeStart && rangeEnd) {
+            usageHint.textContent =
+              'Usage window: ' + usageWindow + ' (' + rangeStart + ' UTC to ' + rangeEnd + ' UTC). Cost is an estimate from configurable token and infrastructure rates.';
+          } else {
+            usageHint.textContent = 'Usage and billing metrics are loading.';
+          }
         }
+      }
+
+      async function loadUsageSummary(windowKey = selectedUsageWindow) {
+        const normalizedWindow = String(windowKey || 'weekly').trim().toLowerCase();
+        const usageWindowSelect = document.getElementById('usageWindowSelect');
+        if (usageWindowSelect) {
+          usageWindowSelect.value = normalizedWindow;
+        }
+        selectedUsageWindow = normalizedWindow;
+
+        const response = await fetch('./advisor/api/usage-summary?window=' + encodeURIComponent(normalizedWindow));
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || 'Unable to load usage summary.');
+        }
+        renderUsageSummary(payload);
+        renderOverviewMetrics();
       }
 
       async function loadConnections() {
@@ -3870,8 +4198,26 @@ function buildAdvisorPage() {
           loadConnections(),
           loadPolicies(),
           loadClients(),
-          loadAdvisorSettings()
+          loadAdvisorSettings(),
+          loadUsageSummary(selectedUsageWindow)
         ]);
+      });
+
+      document.getElementById('refreshUsageSummary').addEventListener('click', async () => {
+        try {
+          await loadUsageSummary(selectedUsageWindow);
+        } catch (error) {
+          console.error(error);
+        }
+      });
+
+      document.getElementById('usageWindowSelect').addEventListener('change', async (event) => {
+        selectedUsageWindow = String(event.target?.value || 'weekly').trim().toLowerCase();
+        try {
+          await loadUsageSummary(selectedUsageWindow);
+        } catch (error) {
+          console.error(error);
+        }
       });
 
       document.getElementById('saveAdvisorSettings').addEventListener('click', async () => {
@@ -4032,6 +4378,9 @@ function buildAdvisorPage() {
       loadClients().catch((error) => {
         console.error(error);
       });
+      loadUsageSummary(selectedUsageWindow).catch((error) => {
+        console.error(error);
+      });
     </script>
   </body>
 </html>`;
@@ -4124,6 +4473,11 @@ export function createPortalHandler(overrides = {}) {
     const availabilitySlotMinutes = parseClampedIntEnv(process.env.AVAILABILITY_VIEW_SLOT_MINUTES, 30, 15, 60);
     const availabilityCompareUiEnabled = parseBooleanEnv(process.env.AVAILABILITY_COMPARE_UI_ENABLED, false);
     const availabilityViewMaxSlots = parseClampedIntEnv(process.env.AVAILABILITY_VIEW_MAX_SLOTS, 240, 24, 1200);
+    const llmInputCostPer1KUsd = Math.max(0, parseFloatEnv(process.env.LLM_INPUT_COST_PER_1K_USD, 0.003));
+    const llmOutputCostPer1KUsd = Math.max(0, parseFloatEnv(process.env.LLM_OUTPUT_COST_PER_1K_USD, 0.009));
+    const emailSendCostUsd = Math.max(0, parseFloatEnv(process.env.EMAIL_SEND_COST_USD, 0.0001));
+    const calendarApiCallCostUsd = Math.max(0, parseFloatEnv(process.env.CALENDAR_API_CALL_COST_USD, 0.000002));
+    const lambdaInvocationCostUsd = Math.max(0, parseFloatEnv(process.env.LAMBDA_INVOCATION_COST_USD, 0.0000002));
 
     const authFailure = await authorizePortalRequest({ event, rawPath, deps });
     if (authFailure) {
@@ -4876,6 +5230,40 @@ export function createPortalHandler(overrides = {}) {
           updatedAt: item.updatedAt
         }))
       });
+    }
+
+    if (method === "GET" && rawPath === "/advisor/api/usage-summary") {
+      if (!traceTableName) {
+        return serverError("TRACE_TABLE_NAME is required");
+      }
+      if (typeof deps.listAdvisorTraceSummaries !== "function") {
+        return serverError("Trace listing capability is required for usage summary");
+      }
+
+      const usageWindow = normalizeUsageWindow(event.queryStringParameters?.window);
+      const windowDays = USAGE_WINDOW_DAYS[usageWindow] ?? USAGE_WINDOW_DAYS[DEFAULT_USAGE_WINDOW];
+      const endIso = new Date().toISOString();
+      const startIso = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString();
+      const traces = await deps.listAdvisorTraceSummaries(traceTableName, advisorId, {
+        startIso,
+        endIso
+      });
+
+      return jsonResponse(
+        200,
+        buildAdvisorUsageSummary({
+          traces,
+          advisorId,
+          window: usageWindow,
+          startIso,
+          endIso,
+          llmInputCostPer1KUsd,
+          llmOutputCostPer1KUsd,
+          emailSendCostUsd,
+          calendarApiCallCostUsd,
+          lambdaInvocationCostUsd
+        })
+      );
     }
 
     if (method === "GET" && rawPath === "/advisor/api/policies") {

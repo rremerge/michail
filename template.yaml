@@ -159,9 +159,22 @@ Resources:
       AttributeDefinitions:
         - AttributeName: requestId
           AttributeType: S
+        - AttributeName: advisorId
+          AttributeType: S
+        - AttributeName: createdAt
+          AttributeType: S
       KeySchema:
         - AttributeName: requestId
           KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: AdvisorCreatedAtIndex
+          KeySchema:
+            - AttributeName: advisorId
+              KeyType: HASH
+            - AttributeName: createdAt
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
       TimeToLiveSpecification:
         AttributeName: expiresAt
         Enabled: true
@@ -673,6 +686,12 @@ Resources:
             ApiId: !Ref SpikeApi
             Method: POST
             Path: /advisor/api/traces/{requestId}/feedback
+        AdvisorUsageSummary:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /advisor/api/usage-summary
         AdvisorClientsList:
           Type: HttpApi
           Properties:
@@ -743,7 +762,10 @@ Resources:
               Action:
                 - dynamodb:GetItem
                 - dynamodb:UpdateItem
-              Resource: !GetAtt TraceTable.Arn
+                - dynamodb:Query
+              Resource:
+                - !GetAtt TraceTable.Arn
+                - !Sub "${TraceTable.Arn}/index/*"
             - Sid: ReadGoogleOAuthAppSecret
               Effect: Allow
               Action:

@@ -1430,7 +1430,14 @@ test("processSchedulingEmail uses LLM draft when LLM_MODE=openai", async () => {
     async draftResponseWithLlm() {
       return {
         subject: "Re: Chat request",
-        bodyText: "Hi,\nLLM drafted body\n\nBest regards,"
+        bodyText: "Hi,\nLLM drafted body\n\nBest regards,",
+        llmTelemetry: {
+          provider: "openai",
+          model: "gpt-5.2",
+          inputTokens: 1200,
+          outputTokens: 300,
+          totalTokens: 1500
+        }
       };
     },
     async writeTrace(_tableName, item) {
@@ -1470,6 +1477,12 @@ test("processSchedulingEmail uses LLM draft when LLM_MODE=openai", async () => {
   assert.equal(traceItems[0].llmStatus, "ok");
   assert.equal(traceItems[0].llmMode, "openai");
   assert.equal(traceItems[0].llmCredentialSource, "platform");
+  assert.equal(traceItems[0].llmProvider, "openai");
+  assert.equal(traceItems[0].llmModel, "gpt-5.2");
+  assert.equal(traceItems[0].llmRequestCount, 1);
+  assert.equal(traceItems[0].llmInputTokens, 1200);
+  assert.equal(traceItems[0].llmOutputTokens, 300);
+  assert.equal(traceItems[0].llmTotalTokens, 1500);
 });
 
 test("processSchedulingEmail uses advisor-specific LLM secret when configured", async () => {

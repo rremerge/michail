@@ -55,6 +55,41 @@ const PROMPT_GUARD_RULES = [
   }
 ];
 
+function toNonNegativeInteger(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return 0;
+  }
+  return Math.max(0, Math.trunc(parsed));
+}
+
+function parseOpenAiUsageTelemetry(payload, openAiConfig) {
+  const usage = payload?.usage ?? {};
+  const inputTokens = toNonNegativeInteger(
+    usage.prompt_tokens ??
+      usage.input_tokens ??
+      usage.promptTokens
+  );
+  const outputTokens = toNonNegativeInteger(
+    usage.completion_tokens ??
+      usage.output_tokens ??
+      usage.completionTokens
+  );
+  const totalTokens = toNonNegativeInteger(
+    usage.total_tokens ??
+      usage.totalTokens ??
+      inputTokens + outputTokens
+  );
+
+  return {
+    provider: String(openAiConfig?.provider ?? "openai").trim().toLowerCase() || "openai",
+    model: String(payload?.model ?? openAiConfig?.model ?? "").trim(),
+    inputTokens,
+    outputTokens,
+    totalTokens
+  };
+}
+
 function parseJsonObject(value, contextLabel) {
   try {
     return JSON.parse(value);
@@ -332,9 +367,11 @@ export function parseOpenAiConfigSecret(secretString) {
     throw new Error("OpenAI secret is missing api_key");
   }
 
+  const provider = String(parsed.provider ?? "openai").trim().toLowerCase() || "openai";
   const model = String(parsed.model ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL;
   const endpoint = String(parsed.endpoint ?? DEFAULT_ENDPOINT).trim() || DEFAULT_ENDPOINT;
   return {
+    provider,
     apiKey,
     model,
     endpoint
@@ -416,7 +453,11 @@ export async function draftResponseWithOpenAi({
       throw new Error("OpenAI response did not include message content");
     }
 
-    return validateDraftResponse(parseJsonObject(content, "OpenAI completion"));
+    const draft = validateDraftResponse(parseJsonObject(content, "OpenAI completion"));
+    return {
+      ...draft,
+      llmTelemetry: parseOpenAiUsageTelemetry(payload, openAiConfig)
+    };
   } catch (error) {
     if (error?.name === "AbortError") {
       throw new Error(`OpenAI request timed out after ${timeoutMs}ms`);
@@ -504,7 +545,11 @@ export async function extractSchedulingIntentWithOpenAi({
       throw new Error("OpenAI response did not include message content for intent extraction");
     }
 
-    return validateIntentExtraction(parseJsonObject(content, "OpenAI intent extraction"));
+    const intent = validateIntentExtraction(parseJsonObject(content, "OpenAI intent extraction"));
+    return {
+      ...intent,
+      llmTelemetry: parseOpenAiUsageTelemetry(payload, openAiConfig)
+    };
   } catch (error) {
     if (error?.name === "AbortError") {
       throw new Error(`OpenAI intent extraction timed out after ${timeoutMs}ms`);
@@ -585,7 +630,11 @@ export async function analyzePromptInjectionRiskWithOpenAi({
       throw new Error("OpenAI response did not include message content for prompt guard");
     }
 
-    return normalizePromptGuardAssessment(parseJsonObject(content, "OpenAI prompt guard"));
+    const assessment = normalizePromptGuardAssessment(parseJsonObject(content, "OpenAI prompt guard"));
+    return {
+      ...assessment,
+      llmTelemetry: parseOpenAiUsageTelemetry(payload, openAiConfig)
+    };
   } catch (error) {
     if (error?.name === "AbortError") {
       throw new Error(`OpenAI prompt guard timed out after ${timeoutMs}ms`);
