@@ -26,6 +26,7 @@ import { createRuntimeDeps } from "./runtime-deps.js";
 import { simpleParser } from "mailparser";
 
 const DEFAULT_INTENT_CONFIDENCE_THRESHOLD = 0.65;
+const DEFAULT_BOOKING_INTENT_CONFIDENCE_THRESHOLD = 0.75;
 const DEFAULT_AVAILABILITY_LINK_TTL_MINUTES = 7 * 24 * 60;
 const DEFAULT_ADVISOR_TIMEZONE = "America/Los_Angeles";
 const DEFAULT_PROMPT_GUARD_MODE = "heuristic_llm";
@@ -49,9 +50,21 @@ const PROMPT_GUARD_LEVEL_RANK = {
   medium: 1,
   high: 2
 };
-const BOOKING_INTENT_KEYWORDS =
+const EXPLICIT_BOOKING_INTENT_KEYWORDS =
   /\b(book|confirm|lock|reserve|schedule|send (?:me )?(?:the )?invite|calendar invite|works for me|that works|go ahead)\b/i;
+const AFFIRMATIVE_BOOKING_INTENT_KEYWORDS =
+  /\b(works|great|perfect|excellent|sounds good|looks good|yes|yep|yeah|ok|okay|lets do it|let's do it)\b/i;
+const NEGATIVE_BOOKING_INTENT_KEYWORDS = /\b(not|cannot|can't|won't|do not|don't)\b/i;
 const PROMPT_GUARD_ALLOWED_MODES = new Set(["off", "heuristic", "llm", "heuristic_llm"]);
+const QUOTED_THREAD_BOUNDARY_PATTERNS = [
+  /^on .+wrote:\s*$/i,
+  /^-{2,}\s*original message\s*-{2,}$/i,
+  /^-{2,}\s*forwarded message\s*-{2,}$/i,
+  /^from:\s.+@/i,
+  /^sent:\s/i,
+  /^to:\s.+@/i,
+  /^subject:\s/i
+];
 
 function parseIntEnv(value, fallback) {
   const parsed = Number.parseInt(value ?? "", 10);
@@ -217,7 +230,132 @@ function hasBookingIntent({ subject, body, normalizedRequestedWindows }) {
   }
 
   const merged = `${String(subject ?? "")}\n${String(body ?? "")}`;
-  return BOOKING_INTENT_KEYWORDS.test(merged);
+  if (EXPLICIT_BOOKING_INTENT_KEYWORDS.test(merged)) {
+    return true;
+  }
+
+  if (!AFFIRMATIVE_BOOKING_INTENT_KEYWORDS.test(merged)) {
+    return false;
+  }
+
+  if (NEGATIVE_BOOKING_INTENT_KEYWORDS.test(merged)) {
+    return false;
+  }
+
+  // Avoid auto-booking for tentative or interrogative phrasing.
+  if (/\?/.test(merged)) {
+    return false;
+  }
+
+  return true;
+}
+
+function buildBookingIntentTraceFields({
+  bookingIntentSource,
+  llmBookingIntent,
+  llmBookingIntentConfidence
+}) {
+  const normalizedSource = String(bookingIntentSource ?? "deterministic").trim() || "deterministic";
+  const confidenceValue = Number(llmBookingIntentConfidence);
+  const normalizedConfidence = Number.isFinite(confidenceValue) ? Math.max(0, Math.min(1, confidenceValue)) : 0;
+  const normalizedLlmValue = typeof llmBookingIntent === "boolean" ? String(llmBookingIntent) : "unknown";
+
+  return {
+    bookingIntentSource: normalizedSource,
+    bookingIntentLlmValue: normalizedLlmValue,
+    bookingIntentLlmConfidence: normalizedConfidence
+  };
+}
+
+function isQuotedThreadBoundaryLine(line) {
+  const trimmed = String(line ?? "").trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  if (trimmed.startsWith(">")) {
+    return true;
+  }
+
+  return QUOTED_THREAD_BOUNDARY_PATTERNS.some((pattern) => pattern.test(trimmed));
+}
+
+function extractLatestReplyText(bodyText) {
+  const normalizedBody = String(bodyText ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .trim();
+  if (!normalizedBody) {
+    return "";
+  }
+
+  const lines = normalizedBody.split("\n");
+  const boundaryIndex = lines.findIndex((line) => isQuotedThreadBoundaryLine(line));
+  const latestReplyLines = boundaryIndex >= 0 ? lines.slice(0, boundaryIndex) : lines;
+  while (latestReplyLines.length > 0 && latestReplyLines[latestReplyLines.length - 1].trim() === "") {
+    latestReplyLines.pop();
+  }
+
+  const latestReplyText = latestReplyLines.join("\n").trim();
+  if (latestReplyText) {
+    return latestReplyText;
+  }
+
+  const nonQuotedLines = lines.filter((line) => !String(line ?? "").trim().startsWith(">"));
+  const nonQuotedText = nonQuotedLines.join("\n").trim();
+  return nonQuotedText || normalizedBody;
+}
+
+function extractQuotedThreadContext(bodyText) {
+  const normalizedBody = String(bodyText ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .trim();
+  if (!normalizedBody) {
+    return "";
+  }
+
+  const lines = normalizedBody.split("\n");
+  const boundaryIndex = lines.findIndex((line) => isQuotedThreadBoundaryLine(line));
+  if (boundaryIndex >= 0 && boundaryIndex < lines.length) {
+    return lines.slice(boundaryIndex).join("\n").trim();
+  }
+
+  const quotedLines = lines.filter((line) => String(line ?? "").trim().startsWith(">"));
+  return quotedLines.join("\n").trim();
+}
+
+function buildThreadAwareIntentBody({ latestReplyText, quotedThreadContext }) {
+  const latest = String(latestReplyText ?? "").trim();
+  const context = String(quotedThreadContext ?? "").trim();
+  if (!context) {
+    return latest;
+  }
+  if (!latest) {
+    return context;
+  }
+
+  return [
+    "LATEST_CLIENT_REPLY:",
+    latest,
+    "",
+    "EARLIER_THREAD_CONTEXT:",
+    context
+  ].join("\n");
+}
+
+function buildIntentTraceFields({
+  intentInputMode,
+  intentInputLength,
+  intentLlmWindowCount,
+  intentLlmRetryUsed
+}) {
+  return {
+    intentInputMode: String(intentInputMode ?? "full_body"),
+    intentInputLength: toNonNegativeInteger(intentInputLength),
+    intentLlmWindowCount: toNonNegativeInteger(intentLlmWindowCount),
+    intentLlmRetryUsed: Boolean(intentLlmRetryUsed)
+  };
 }
 
 function uniqueEmails(items) {
@@ -1370,6 +1508,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const clientDisplayName = deriveClientDisplayName(payload.fromEmail, fromEmail);
   const fromDomain = extractDomainFromEmail(fromEmail);
   const { bodyText, bodySource } = await resolveInboundEmailBody({ payload, env, deps });
+  const latestReplyText = extractLatestReplyText(bodyText);
+  const quotedThreadContext = extractQuotedThreadContext(bodyText);
+  const intentInputBodyText = latestReplyText || bodyText;
+  const intentInputMode = latestReplyText && latestReplyText !== bodyText ? "latest_reply" : "full_body";
+  const intentInputLength = intentInputBodyText.length;
 
   const advisorContext = await resolveAdvisorContext({ payload, env, deps });
   const advisorId = advisorContext.advisorId;
@@ -1406,6 +1549,17 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       promptInjectionSignalCount: 0,
       availabilityLinkStatus: "not_applicable",
       requestedWindowCount: 0,
+      ...buildBookingIntentTraceFields({
+        bookingIntentSource: "deterministic",
+        llmBookingIntent: null,
+        llmBookingIntentConfidence: 0
+      }),
+      ...buildIntentTraceFields({
+        intentInputMode,
+        intentInputLength,
+        intentLlmWindowCount: 0,
+        intentLlmRetryUsed: false
+      }),
       accessState: "unknown",
       createdAt: startedAtIso,
       updatedAt: new Date(completedAtMs).toISOString(),
@@ -1469,6 +1623,9 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const intentLlmTimeoutMs = parseIntEnv(env.INTENT_LLM_TIMEOUT_MS, 10000);
   const intentConfidenceThreshold = Number.parseFloat(
     env.INTENT_LLM_CONFIDENCE_THRESHOLD ?? String(DEFAULT_INTENT_CONFIDENCE_THRESHOLD)
+  );
+  const bookingIntentConfidenceThreshold = Number.parseFloat(
+    env.BOOKING_INTENT_LLM_CONFIDENCE_THRESHOLD ?? String(DEFAULT_BOOKING_INTENT_CONFIDENCE_THRESHOLD)
   );
   const clientProfilesTableName = String(env.CLIENT_PROFILES_TABLE_NAME ?? "").trim();
   const policyPresetsTableName = String(env.POLICY_PRESETS_TABLE_NAME ?? "").trim();
@@ -1543,6 +1700,17 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       promptInjectionSignalCount: 0,
       availabilityLinkStatus: "not_applicable",
       requestedWindowCount: 0,
+      ...buildBookingIntentTraceFields({
+        bookingIntentSource: "deterministic",
+        llmBookingIntent: null,
+        llmBookingIntentConfidence: 0
+      }),
+      ...buildIntentTraceFields({
+        intentInputMode,
+        intentInputLength,
+        intentLlmWindowCount: 0,
+        intentLlmRetryUsed: false
+      }),
       accessState: "unknown",
       createdAt: startedAtIso,
       updatedAt: new Date(completedAtMs).toISOString(),
@@ -1623,6 +1791,17 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       promptInjectionSignalCount: 0,
       availabilityLinkStatus: "not_applicable",
       requestedWindowCount: 0,
+      ...buildBookingIntentTraceFields({
+        bookingIntentSource: "deterministic",
+        llmBookingIntent: null,
+        llmBookingIntentConfidence: 0
+      }),
+      ...buildIntentTraceFields({
+        intentInputMode,
+        intentInputLength,
+        intentLlmWindowCount: 0,
+        intentLlmRetryUsed: false
+      }),
       accessState,
       createdAt: startedAtIso,
       updatedAt: new Date(now()).toISOString(),
@@ -1761,6 +1940,17 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         promptInjectionSignalCount: promptInjectionSignals.length,
         availabilityLinkStatus,
         requestedWindowCount: 0,
+        ...buildBookingIntentTraceFields({
+          bookingIntentSource: "deterministic",
+          llmBookingIntent: null,
+          llmBookingIntentConfidence: 0
+        }),
+        ...buildIntentTraceFields({
+          intentInputMode,
+          intentInputLength,
+          intentLlmWindowCount: 0,
+          intentLlmRetryUsed: false
+        }),
         createdAt: startedAtIso,
         updatedAt: new Date(completedAtMs).toISOString(),
         latencyMs: completedAtMs - startedAtMs,
@@ -1816,7 +2006,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const parserIntent = parseSchedulingRequest({
     fromEmail,
     subject: payload.subject ?? "",
-    body: bodyText,
+    body: intentInputBodyText,
     defaultDurationMinutes: durationDefault,
     fallbackTimezone: hostTimezone,
     referenceIso: startedAtIso
@@ -1825,6 +2015,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   let parsed = parserIntent;
   let intentSource = "parser";
   let intentLlmStatus = "disabled";
+  let intentLlmWindowCount = 0;
+  let intentLlmRetryUsed = false;
+  let llmBookingIntent = null;
+  let llmBookingIntentConfidence = 0;
+  let bookingIntentSource = "deterministic";
 
   if (intentExtractionMode === "llm_hybrid") {
     try {
@@ -1837,17 +2032,81 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       const llmIntent = await deps.extractSchedulingIntentWithLlm({
         openAiConfig,
         subject: payload.subject ?? "",
-        body: bodyText,
+        body: intentInputBodyText,
         hostTimezone,
         referenceNowIso: startedAtIso,
         fetchImpl: deps.fetchImpl,
         timeoutMs: intentLlmTimeoutMs
       });
       accumulateLlmTelemetry(llmUsageAccumulator, llmIntent?.llmTelemetry);
+      let mergedLlmIntent = llmIntent;
+      const shouldRetryThreadContext =
+        intentInputMode === "latest_reply" &&
+        Boolean(quotedThreadContext) &&
+        Array.isArray(parserIntent.requestedWindows) &&
+        parserIntent.requestedWindows.length === 0 &&
+        Array.isArray(mergedLlmIntent?.requestedWindows) &&
+        mergedLlmIntent.requestedWindows.length === 0;
+      if (shouldRetryThreadContext) {
+        try {
+          const threadAwareLlmIntent = await deps.extractSchedulingIntentWithLlm({
+            openAiConfig,
+            subject: payload.subject ?? "",
+            body: buildThreadAwareIntentBody({
+              latestReplyText: intentInputBodyText,
+              quotedThreadContext
+            }),
+            hostTimezone,
+            referenceNowIso: startedAtIso,
+            fetchImpl: deps.fetchImpl,
+            timeoutMs: intentLlmTimeoutMs,
+            retryPolicy: "thread_context"
+          });
+          accumulateLlmTelemetry(llmUsageAccumulator, threadAwareLlmIntent?.llmTelemetry);
+          intentLlmRetryUsed = true;
+          if (Array.isArray(threadAwareLlmIntent?.requestedWindows) && threadAwareLlmIntent.requestedWindows.length > 0) {
+            mergedLlmIntent = threadAwareLlmIntent;
+          }
+        } catch {
+          intentLlmRetryUsed = true;
+        }
+      }
+
+      const shouldRetryBroadWindow =
+        Array.isArray(parserIntent.requestedWindows) &&
+        parserIntent.requestedWindows.length === 0 &&
+        Array.isArray(mergedLlmIntent?.requestedWindows) &&
+        mergedLlmIntent.requestedWindows.length === 0;
+      if (shouldRetryBroadWindow) {
+        try {
+          const retriedLlmIntent = await deps.extractSchedulingIntentWithLlm({
+            openAiConfig,
+            subject: payload.subject ?? "",
+            body: intentInputBodyText,
+            hostTimezone,
+            referenceNowIso: startedAtIso,
+            fetchImpl: deps.fetchImpl,
+            timeoutMs: intentLlmTimeoutMs,
+            retryPolicy: "broad_windows"
+          });
+          accumulateLlmTelemetry(llmUsageAccumulator, retriedLlmIntent?.llmTelemetry);
+          intentLlmRetryUsed = true;
+          if (Array.isArray(retriedLlmIntent?.requestedWindows) && retriedLlmIntent.requestedWindows.length > 0) {
+            mergedLlmIntent = retriedLlmIntent;
+          }
+        } catch {
+          intentLlmRetryUsed = true;
+        }
+      }
+      intentLlmWindowCount = Array.isArray(mergedLlmIntent?.requestedWindows) ? mergedLlmIntent.requestedWindows.length : 0;
+      llmBookingIntent = typeof mergedLlmIntent?.bookingIntent === "boolean" ? mergedLlmIntent.bookingIntent : null;
+      llmBookingIntentConfidence = Number.isFinite(Number(mergedLlmIntent?.bookingIntentConfidence))
+        ? Number(mergedLlmIntent.bookingIntentConfidence)
+        : 0;
 
       const merged = mergeParsedIntent({
         parserIntent,
-        llmIntent,
+        llmIntent: mergedLlmIntent,
         confidenceThreshold: Number.isFinite(intentConfidenceThreshold)
           ? intentConfidenceThreshold
           : DEFAULT_INTENT_CONFIDENCE_THRESHOLD
@@ -1859,10 +2118,13 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       parsed = parserIntent;
       intentSource = "parser";
       intentLlmStatus = "fallback";
+      intentLlmWindowCount = 0;
+      llmBookingIntent = null;
+      llmBookingIntentConfidence = 0;
     }
   }
 
-  const requestedDaypart = detectRequestedDaypart(payload.subject ?? "", bodyText);
+  const requestedDaypart = detectRequestedDaypart(payload.subject ?? "", intentInputBodyText);
   if (requestedDaypart && parsed.requestedWindows.length > 0) {
     const constrainedWindows = constrainRequestedWindowsToDaypart({
       requestedWindows: parsed.requestedWindows,
@@ -2015,6 +2277,17 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         clientHoldStatus,
         availabilityLinkStatus: "not_applicable",
         requestedWindowCount: parsed.requestedWindows.length,
+        ...buildBookingIntentTraceFields({
+          bookingIntentSource,
+          llmBookingIntent,
+          llmBookingIntentConfidence
+        }),
+        ...buildIntentTraceFields({
+          intentInputMode,
+          intentInputLength,
+          intentLlmWindowCount,
+          intentLlmRetryUsed
+        }),
         createdAt: startedAtIso,
         updatedAt: new Date(completedAtMs).toISOString(),
         latencyMs: completedAtMs - startedAtMs,
@@ -2073,6 +2346,17 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       promptInjectionRiskLevel,
       promptInjectionSignalCount: promptInjectionSignals.length,
       requestedWindowCount: parsed.requestedWindows.length,
+      ...buildBookingIntentTraceFields({
+        bookingIntentSource,
+        llmBookingIntent,
+        llmBookingIntentConfidence
+      }),
+      ...buildIntentTraceFields({
+        intentInputMode,
+        intentInputLength,
+        intentLlmWindowCount,
+        intentLlmRetryUsed
+      }),
       createdAt: startedAtIso,
       updatedAt: new Date(now()).toISOString(),
       fromDomain,
@@ -2109,12 +2393,27 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   let availabilityLinkStatus = "pending";
   let bookingStatus = "not_requested";
   let inviteRecipients = [];
-
-  const bookingRequested = hasBookingIntent({
+  const deterministicBookingRequested = hasBookingIntent({
     subject: payload.subject,
-    body: bodyText,
+    body: intentInputBodyText,
     normalizedRequestedWindows
   });
+  const bookingCandidateAvailable =
+    Array.isArray(normalizedRequestedWindows) && normalizedRequestedWindows.length > 0;
+  const hasHighConfidenceLlmBookingIntent =
+    typeof llmBookingIntent === "boolean" &&
+    Number.isFinite(bookingIntentConfidenceThreshold) &&
+    llmBookingIntentConfidence >= bookingIntentConfidenceThreshold;
+  let bookingRequested = deterministicBookingRequested;
+  if (intentExtractionMode === "llm_hybrid" && intentLlmStatus === "ok") {
+    if (hasHighConfidenceLlmBookingIntent) {
+      bookingRequested = bookingCandidateAvailable ? llmBookingIntent : false;
+      bookingIntentSource = "llm";
+    } else {
+      bookingRequested = deterministicBookingRequested;
+      bookingIntentSource = "deterministic_fallback";
+    }
+  }
 
   if (bookingRequested) {
     if (suggestions.length > 0) {
@@ -2302,6 +2601,17 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     inviteRecipientCount: inviteRecipients.length,
     availabilityLinkStatus,
     requestedWindowCount: parsed.requestedWindows.length,
+    ...buildBookingIntentTraceFields({
+      bookingIntentSource,
+      llmBookingIntent,
+      llmBookingIntentConfidence
+    }),
+    ...buildIntentTraceFields({
+      intentInputMode,
+      intentInputLength,
+      intentLlmWindowCount,
+      intentLlmRetryUsed
+    }),
     createdAt: startedAtIso,
     updatedAt: new Date(completedAtMs).toISOString(),
     latencyMs: completedAtMs - startedAtMs,

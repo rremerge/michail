@@ -8,6 +8,12 @@ const DATE_YMD_PATTERN = /\b(\d{4}-\d{2}-\d{2})\b/g;
 const DATE_SLASH_PATTERN = /\b(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\b/g;
 const DATE_MONTH_PATTERN =
   /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|sept|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})(?:,\s*(\d{4}))?\b/gi;
+const MONTH_ONLY_PATTERN =
+  /\b(?:in|during|throughout|sometime\s+in|any\s+time\s+in|anytime\s+in)?\s*(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|sept|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+(\d{4}))?\b(?!\s+\d{1,2}(?:st|nd|rd|th)?\b)/gi;
+const WEEK_OF_MONTH_PATTERN =
+  /\b(first|1st|second|2nd|third|3rd|fourth|4th|last)\s+week\s+of\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|sept|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?:\s+(\d{4}))?\b/gi;
+const MONTH_WEEK_PATTERN =
+  /\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|sept|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(first|1st|second|2nd|third|3rd|fourth|4th|last)\s+week(?:\s+(\d{4}))?\b/gi;
 const TIME_RANGE_PATTERN =
   /\b(?:between|from)?\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:-|to|and)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i;
 const DAYPART_PATTERN = /\b(early morning|late morning|morning|afternoon|late afternoon|evening|night|noon|lunch)\b/i;
@@ -77,6 +83,38 @@ function canonicalizeWeekday(rawValue) {
   return String(rawValue ?? "")
     .slice(0, 3)
     .toLowerCase();
+}
+
+function canonicalizeMonth(rawValue) {
+  const normalized = String(rawValue ?? "").toLowerCase();
+  if (normalized.slice(0, 4) === "sept") {
+    return "sept";
+  }
+
+  return normalized.slice(0, 3);
+}
+
+function parseOptionalYear(rawYear, fallbackYear) {
+  const trimmed = String(rawYear ?? "").trim();
+  if (!trimmed) {
+    return {
+      year: fallbackYear,
+      explicit: false
+    };
+  }
+
+  const parsed = Number.parseInt(trimmed, 10);
+  if (Number.isNaN(parsed)) {
+    return {
+      year: fallbackYear,
+      explicit: false
+    };
+  }
+
+  return {
+    year: parsed,
+    explicit: true
+  };
 }
 
 function parseDurationMinutes(subject, body, fallback) {
@@ -376,12 +414,10 @@ function resolveMonthDate(referenceDate, descriptor) {
     return null;
   }
 
-  const monthKey = match[1].toLowerCase().slice(0, 4).startsWith("sept")
-    ? "sept"
-    : match[1].toLowerCase().slice(0, 3);
+  const monthKey = canonicalizeMonth(match[1]);
   const month = MONTH_TO_NUMBER[monthKey];
   const day = Number.parseInt(match[2], 10);
-  const year = match[3] ? Number.parseInt(match[3], 10) : referenceDate.year;
+  const { year } = parseOptionalYear(match[3], referenceDate.year);
   if (!month || Number.isNaN(day) || Number.isNaN(year)) {
     return null;
   }
@@ -431,6 +467,155 @@ function resolveDateDescriptor(referenceDate, descriptor) {
   }
 
   return null;
+}
+
+function parseWeekOrdinal(rawValue) {
+  const normalized = String(rawValue ?? "").trim().toLowerCase();
+  if (normalized === "first" || normalized === "1st") {
+    return 1;
+  }
+  if (normalized === "second" || normalized === "2nd") {
+    return 2;
+  }
+  if (normalized === "third" || normalized === "3rd") {
+    return 3;
+  }
+  if (normalized === "fourth" || normalized === "4th") {
+    return 4;
+  }
+  if (normalized === "last") {
+    return "last";
+  }
+
+  return null;
+}
+
+function resolveMonthSpan(referenceDate, rawMonth, rawYear) {
+  const monthKey = canonicalizeMonth(rawMonth);
+  const month = MONTH_TO_NUMBER[monthKey];
+  const { year, explicit } = parseOptionalYear(rawYear, referenceDate.year);
+  if (!month || Number.isNaN(year)) {
+    return null;
+  }
+
+  let monthStart = DateTime.fromObject(
+    {
+      year,
+      month,
+      day: 1,
+      hour: 0,
+      minute: 0,
+      second: 0,
+      millisecond: 0
+    },
+    { zone: referenceDate.zoneName }
+  );
+  if (!monthStart.isValid) {
+    return null;
+  }
+
+  if (!explicit && monthStart.endOf("month") < referenceDate.startOf("day")) {
+    monthStart = monthStart.plus({ years: 1 }).startOf("month");
+  }
+
+  const monthEndExclusive = monthStart.plus({ months: 1 }).startOf("month");
+  return {
+    start: monthStart.startOf("day"),
+    end: monthEndExclusive
+  };
+}
+
+function parseWeekOfMonthSpans(clause, referenceDate) {
+  const spans = [];
+  for (const match of getMatches(clause, WEEK_OF_MONTH_PATTERN)) {
+    const ordinal = parseWeekOrdinal(match[1]);
+    if (!ordinal) {
+      continue;
+    }
+
+    const monthSpan = resolveMonthSpan(referenceDate, match[2], match[3]);
+    if (!monthSpan) {
+      continue;
+    }
+
+    const { start: monthStart, end: monthEnd } = monthSpan;
+    let start = monthStart;
+    if (ordinal === "last") {
+      start = monthEnd.minus({ days: 7 });
+      if (start < monthStart) {
+        start = monthStart;
+      }
+    } else {
+      start = monthStart.plus({ days: (ordinal - 1) * 7 });
+    }
+
+    if (start >= monthEnd) {
+      continue;
+    }
+
+    let end = start.plus({ days: 7 });
+    if (end > monthEnd) {
+      end = monthEnd;
+    }
+
+    spans.push({
+      start: start.startOf("day"),
+      end: end.startOf("day")
+    });
+  }
+
+  for (const match of getMatches(clause, MONTH_WEEK_PATTERN)) {
+    const ordinal = parseWeekOrdinal(match[2]);
+    if (!ordinal) {
+      continue;
+    }
+
+    const monthSpan = resolveMonthSpan(referenceDate, match[1], match[3]);
+    if (!monthSpan) {
+      continue;
+    }
+
+    const { start: monthStart, end: monthEnd } = monthSpan;
+    let start = monthStart;
+    if (ordinal === "last") {
+      start = monthEnd.minus({ days: 7 });
+      if (start < monthStart) {
+        start = monthStart;
+      }
+    } else {
+      start = monthStart.plus({ days: (ordinal - 1) * 7 });
+    }
+
+    if (start >= monthEnd) {
+      continue;
+    }
+
+    let end = start.plus({ days: 7 });
+    if (end > monthEnd) {
+      end = monthEnd;
+    }
+
+    spans.push({
+      start: start.startOf("day"),
+      end: end.startOf("day")
+    });
+  }
+
+  return spans;
+}
+
+function parseMonthOnlySpans(clause, referenceDate) {
+  const spans = [];
+  for (const match of getMatches(clause, MONTH_ONLY_PATTERN)) {
+    const monthSpan = resolveMonthSpan(referenceDate, match[1], match[2]);
+    if (!monthSpan) {
+      continue;
+    }
+
+    spans.push(monthSpan);
+  }
+
+  return spans;
 }
 
 function applyMinutesToDate(date, minuteOfDay) {
@@ -503,6 +688,60 @@ function parseNaturalLanguageRequestedWindows({ subject, body, timezone, referen
   return [...deduped.values()].sort((left, right) => left.startIso.localeCompare(right.startIso));
 }
 
+function parseBroadNaturalLanguageRequestedWindows({ subject, body, timezone, referenceIso }) {
+  const merged = `${subject}\n${body}`;
+  const clauses = merged
+    .split(/[\n.;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+  if (clauses.length === 0) {
+    return [];
+  }
+
+  const referenceDate = parseReferenceDateTime(referenceIso, timezone);
+  const windows = [];
+
+  for (const clause of clauses) {
+    const weekOfMonthSpans = parseWeekOfMonthSpans(clause, referenceDate);
+    const monthOnlySpans = weekOfMonthSpans.length > 0 ? [] : parseMonthOnlySpans(clause, referenceDate);
+    const spans = [...weekOfMonthSpans, ...monthOnlySpans];
+    if (spans.length === 0) {
+      continue;
+    }
+
+    const daypart = parseDaypart(clause);
+    const parsedRange = parseTimeRange(clause, daypart);
+    const range = parsedRange ?? (daypart ? DAYPART_WINDOWS[daypart] : { startMinute: 0, endMinute: 24 * 60 });
+
+    for (const span of spans) {
+      let dayCursor = span.start.startOf("day");
+      while (dayCursor < span.end) {
+        const start = applyMinutesToDate(dayCursor, range.startMinute);
+        const end = applyMinutesToDate(dayCursor, range.endMinute);
+        const effectiveStart = start > span.start ? start : span.start;
+        const effectiveEnd = end < span.end ? end : span.end;
+
+        if (effectiveStart.isValid && effectiveEnd.isValid && effectiveEnd > effectiveStart) {
+          windows.push({
+            startIso: effectiveStart.toISO(),
+            endIso: effectiveEnd.toISO()
+          });
+        }
+
+        dayCursor = dayCursor.plus({ days: 1 });
+      }
+    }
+  }
+
+  const deduped = new Map();
+  for (const window of windows) {
+    const key = `${window.startIso}|${window.endIso}`;
+    deduped.set(key, window);
+  }
+
+  return [...deduped.values()].sort((left, right) => left.startIso.localeCompare(right.startIso));
+}
+
 function parseRequestedWindows({ subject, body, timezone, referenceIso }) {
   const merged = `${subject}\n${body}`;
   const isoWindows = parseIsoRequestedWindows(merged);
@@ -510,7 +749,17 @@ function parseRequestedWindows({ subject, body, timezone, referenceIso }) {
     return isoWindows;
   }
 
-  return parseNaturalLanguageRequestedWindows({
+  const naturalLanguageWindows = parseNaturalLanguageRequestedWindows({
+    subject,
+    body,
+    timezone,
+    referenceIso
+  });
+  if (naturalLanguageWindows.length > 0) {
+    return naturalLanguageWindows;
+  }
+
+  return parseBroadNaturalLanguageRequestedWindows({
     subject,
     body,
     timezone,

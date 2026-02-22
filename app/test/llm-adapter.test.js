@@ -185,7 +185,9 @@ test("extractSchedulingIntentWithOpenAi parses and normalizes requested windows"
                     }
                   ],
                   clientTimezone: "America/Los_Angeles",
-                  confidence: 0.92
+                  confidence: 0.92,
+                  bookingIntent: true,
+                  bookingIntentConfidence: 0.88
                 })
               }
             }
@@ -200,6 +202,8 @@ test("extractSchedulingIntentWithOpenAi parses and normalizes requested windows"
   assert.equal(result.requestedWindows[0].endIso, "2026-02-26T00:00:00.000Z");
   assert.equal(result.clientTimezone, "America/Los_Angeles");
   assert.equal(result.confidence, 0.92);
+  assert.equal(result.bookingIntent, true);
+  assert.equal(result.bookingIntentConfidence, 0.88);
 });
 
 test("extractSchedulingIntentWithOpenAi drops invalid windows", async () => {
@@ -228,7 +232,9 @@ test("extractSchedulingIntentWithOpenAi drops invalid windows", async () => {
                     { startIso: "2026-02-25T14:00:00-08:00", endIso: "2026-02-25T12:00:00-08:00" }
                   ],
                   clientTimezone: "Not/AZone",
-                  confidence: 9
+                  confidence: 9,
+                  bookingIntent: "unknown",
+                  bookingIntentConfidence: "nan"
                 })
               }
             }
@@ -241,6 +247,8 @@ test("extractSchedulingIntentWithOpenAi drops invalid windows", async () => {
   assert.deepEqual(result.requestedWindows, []);
   assert.equal(result.clientTimezone, null);
   assert.equal(result.confidence, 1);
+  assert.equal(result.bookingIntent, null);
+  assert.equal(result.bookingIntentConfidence, 0);
 });
 
 test("extractSchedulingIntentWithOpenAi sanitizes untrusted email body before LLM call", async () => {
@@ -293,6 +301,92 @@ test("extractSchedulingIntentWithOpenAi sanitizes untrusted email body before LL
   assert.equal(userPromptPayload.untrustedEmail.body.toLowerCase().includes("ignore previous instructions"), false);
   assert.match(userPromptPayload.untrustedEmail.subject, /\[redacted-prompt-injection\]/i);
   assert.match(userPromptPayload.untrustedEmail.body, /\[redacted-prompt-injection\]/i);
+});
+
+test("extractSchedulingIntentWithOpenAi includes broad window retry policy hint when requested", async () => {
+  const openAiConfig = {
+    apiKey: "test-api-key",
+    model: "gpt-5.2",
+    endpoint: "https://example.test/v1/chat/completions"
+  };
+
+  let requestPayload = null;
+  await extractSchedulingIntentWithOpenAi({
+    openAiConfig,
+    subject: "Need appointment",
+    body: "Any time in april works",
+    hostTimezone: "America/Los_Angeles",
+    referenceNowIso: "2026-02-17T10:00:00-08:00",
+    retryPolicy: "broad_windows",
+    fetchImpl: async (_url, options) => {
+      requestPayload = JSON.parse(options.body);
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    requestedWindows: [],
+                    clientTimezone: null,
+                    confidence: 0.4
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    }
+  });
+
+  const userPromptPayload = JSON.parse(requestPayload.messages[1].content);
+  assert.equal(userPromptPayload.trustedContext.retryPolicy, "broad_windows");
+  assert.match(userPromptPayload.guidance.join(" "), /month or week/i);
+});
+
+test("extractSchedulingIntentWithOpenAi includes thread-context hint when requested", async () => {
+  const openAiConfig = {
+    apiKey: "test-api-key",
+    model: "gpt-5.2",
+    endpoint: "https://example.test/v1/chat/completions"
+  };
+
+  let requestPayload = null;
+  await extractSchedulingIntentWithOpenAi({
+    openAiConfig,
+    subject: "Re: meeting options",
+    body: "LATEST_CLIENT_REPLY:\noh yes 9 am works\n\nEARLIER_THREAD_CONTEXT:\nOption 1 Wed Mar 11 9:00 AM",
+    hostTimezone: "America/Los_Angeles",
+    referenceNowIso: "2026-03-10T10:00:00-08:00",
+    retryPolicy: "thread_context",
+    fetchImpl: async (_url, options) => {
+      requestPayload = JSON.parse(options.body);
+      return {
+        ok: true,
+        async json() {
+          return {
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    requestedWindows: [],
+                    clientTimezone: null,
+                    confidence: 0.4
+                  })
+                }
+              }
+            ]
+          };
+        }
+      };
+    }
+  });
+
+  const userPromptPayload = JSON.parse(requestPayload.messages[1].content);
+  assert.equal(userPromptPayload.trustedContext.retryPolicy, "thread_context");
+  assert.match(userPromptPayload.guidance.join(" "), /resolve references/i);
 });
 
 test("assessPromptInjectionRisk classifies obvious override patterns as high risk", () => {

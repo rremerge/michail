@@ -163,7 +163,8 @@ test("processSchedulingEmail uses LLM-extracted windows when parser has no windo
   const env = {
     ...baseEnv,
     INTENT_EXTRACTION_MODE: "llm_hybrid",
-    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret"
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "120"
   };
 
   const result = await runSchedulingEmail({
@@ -222,7 +223,8 @@ test("processSchedulingEmail keeps parser windows when LLM confidence is low", a
   const env = {
     ...baseEnv,
     INTENT_EXTRACTION_MODE: "llm_hybrid",
-    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret"
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "120"
   };
 
   const result = await runSchedulingEmail({
@@ -249,6 +251,208 @@ test("processSchedulingEmail keeps parser windows when LLM confidence is low", a
   assert.equal(traceItems[0].intentSource, "parser");
   assert.equal(traceItems[0].intentLlmStatus, "ok");
   assert.equal(traceItems[0].requestedWindowCount, 1);
+});
+
+test("processSchedulingEmail uses latest reply body for intent extraction and parses month-only windows", async () => {
+  const traceItems = [];
+  const observedIntentBodies = [];
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm(args) {
+      observedIntentBodies.push(args.body);
+      return {
+        requestedWindows: [],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.4
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "120"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Re: meeting in april",
+      body: [
+        "any time in april works",
+        "",
+        "On Fri, Feb 21, 2026 at 8:59 AM Advisor <advisor@example.com> wrote:",
+        "> Here are some options in February."
+      ].join("\n")
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-02-21T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.suggestionCount, 3);
+  for (const suggestion of response.suggestions) {
+    const hostStart = DateTime.fromISO(suggestion.startIsoHost);
+    assert.equal(hostStart.month, 4);
+  }
+
+  assert.equal(observedIntentBodies.length >= 1, true);
+  assert.match(observedIntentBodies[0], /^any time in april works/i);
+  assert.equal(observedIntentBodies[0].includes("On Fri, Feb 21"), false);
+  assert.equal(traceItems[0].intentInputMode, "latest_reply");
+  assert.equal(traceItems[0].intentSource, "parser");
+  assert.equal(traceItems[0].requestedWindowCount > 0, true);
+});
+
+test("processSchedulingEmail retries intent extraction with thread context for time-only confirmations", async () => {
+  const traceItems = [];
+  const extractionCalls = [];
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm(args) {
+      extractionCalls.push(args);
+      if (extractionCalls.length === 1) {
+        return {
+          requestedWindows: [],
+          clientTimezone: "America/Los_Angeles",
+          confidence: 0.3
+        };
+      }
+
+      return {
+        requestedWindows: [
+          {
+            startIso: "2026-03-11T16:00:00.000Z",
+            endIso: "2026-03-11T16:30:00.000Z"
+          }
+        ],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.87
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "30"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Re: meeting options",
+      body: [
+        "oh yes 9 am works",
+        "",
+        "On Tue, Mar 10, 2026 at 5:00 PM Advisor <advisor@example.com> wrote:",
+        "> Option 1: Wed Mar 11 at 9:00 AM",
+        "> Option 2: Thu Mar 12 at 10:00 AM"
+      ].join("\n")
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-10T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(extractionCalls.length, 2);
+  assert.equal(extractionCalls[0].retryPolicy, undefined);
+  assert.equal(extractionCalls[1].retryPolicy, "thread_context");
+  assert.match(extractionCalls[1].body, /LATEST_CLIENT_REPLY:/);
+  assert.match(extractionCalls[1].body, /EARLIER_THREAD_CONTEXT:/);
+  assert.match(extractionCalls[1].body, /Option 1: Wed Mar 11 at 9:00 AM/);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.suggestionCount > 0, true);
+  assert.equal(DateTime.fromISO(response.suggestions[0].startIsoHost).toISODate(), "2026-03-11");
+  assert.equal(traceItems[0].intentLlmRetryUsed, true);
+  assert.equal(traceItems[0].intentLlmWindowCount, 1);
+  assert.equal(traceItems[0].intentSource, "llm");
+});
+
+test("processSchedulingEmail retries intent extraction with broad window policy when first pass is empty", async () => {
+  const traceItems = [];
+  const extractionCalls = [];
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm(args) {
+      extractionCalls.push(args);
+      if (extractionCalls.length === 1) {
+        return {
+          requestedWindows: [],
+          clientTimezone: null,
+          confidence: 0.3
+        };
+      }
+
+      return {
+        requestedWindows: [
+          {
+            startIso: "2026-03-04T22:00:00.000Z",
+            endIso: "2026-03-05T00:00:00.000Z"
+          }
+        ],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.8
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Scheduling",
+      body: "Post-lunch next week works for me."
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-02T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(extractionCalls.length, 2);
+  assert.equal(extractionCalls[0].retryPolicy, undefined);
+  assert.equal(extractionCalls[1].retryPolicy, "broad_windows");
+  assert.equal(traceItems[0].intentLlmRetryUsed, true);
+  assert.equal(traceItems[0].intentLlmWindowCount, 1);
+  assert.equal(traceItems[0].intentSource, "llm");
 });
 
 test("processSchedulingEmail falls back safely on high-risk prompt-injection input", async () => {
@@ -821,6 +1025,320 @@ test("processSchedulingEmail does not auto-book when no explicit time window is 
   assert.equal(response.bookingStatus, "not_requested");
   assert.equal(sentInviteMessages.length, 0);
   assert.equal(sentResponseMessages.length, 1);
+});
+
+test("processSchedulingEmail auto-books for affirmative confirmation when a specific slot is extracted", async () => {
+  const traceItems = [];
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm() {
+      return {
+        requestedWindows: [
+          {
+            startIso: "2026-03-11T16:00:00.000Z",
+            endIso: "2026-03-11T16:30:00.000Z"
+          }
+        ],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.92
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "30"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Re: options",
+      body: "Oh great 9am works great"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-10T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "invite_logged");
+  assert.equal(response.llmStatus, "skipped_booking");
+  assert.equal(response.suggestionCount >= 1, true);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].bookingStatus, "invite_logged");
+  assert.equal(traceItems[0].llmStatus, "skipped_booking");
+});
+
+test("processSchedulingEmail does not auto-book for interrogative confirmation phrasing", async () => {
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm() {
+      return {
+        requestedWindows: [
+          {
+            startIso: "2026-03-11T16:00:00.000Z",
+            endIso: "2026-03-11T16:30:00.000Z"
+          }
+        ],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.92
+      };
+    },
+    async writeTrace() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "30"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Re: options",
+      body: "Does 9am work for you?"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-10T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "not_requested");
+  assert.equal(response.llmStatus, "disabled");
+});
+
+test("processSchedulingEmail uses high-confidence LLM booking intent when deterministic signal is weak", async () => {
+  const traceItems = [];
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm() {
+      return {
+        requestedWindows: [
+          {
+            startIso: "2026-03-11T16:00:00.000Z",
+            endIso: "2026-03-11T16:30:00.000Z"
+          }
+        ],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.9,
+        bookingIntent: true,
+        bookingIntentConfidence: 0.95
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "30"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Re: options",
+      body: "9am"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-10T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "invite_logged");
+  assert.equal(traceItems[0].bookingIntentSource, "llm");
+  assert.equal(traceItems[0].bookingIntentLlmValue, "true");
+});
+
+test("processSchedulingEmail handles 'Super! 10am then' via high-confidence LLM booking intent", async () => {
+  const traceItems = [];
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm() {
+      return {
+        requestedWindows: [
+          {
+            startIso: "2026-03-11T17:00:00.000Z",
+            endIso: "2026-03-11T17:30:00.000Z"
+          }
+        ],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.9,
+        bookingIntent: true,
+        bookingIntentConfidence: 0.94
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "30"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Re: options",
+      body: "Super! 10am then"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-10T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "invite_logged");
+  assert.equal(response.llmStatus, "skipped_booking");
+  assert.equal(traceItems[0].bookingIntentSource, "llm");
+  assert.equal(traceItems[0].bookingIntentLlmValue, "true");
+});
+
+test("processSchedulingEmail falls back to deterministic booking intent when LLM booking confidence is low", async () => {
+  const traceItems = [];
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm() {
+      return {
+        requestedWindows: [
+          {
+            startIso: "2026-03-11T16:00:00.000Z",
+            endIso: "2026-03-11T16:30:00.000Z"
+          }
+        ],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.9,
+        bookingIntent: false,
+        bookingIntentConfidence: 0.3
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "30"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Re: options",
+      body: "Oh great 9am works great"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-10T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "invite_logged");
+  assert.equal(traceItems[0].bookingIntentSource, "deterministic_fallback");
+  assert.equal(traceItems[0].bookingIntentLlmValue, "false");
+});
+
+test("processSchedulingEmail honors high-confidence negative LLM booking intent", async () => {
+  const traceItems = [];
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm() {
+      return {
+        requestedWindows: [
+          {
+            startIso: "2026-03-11T16:00:00.000Z",
+            endIso: "2026-03-11T16:30:00.000Z"
+          }
+        ],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.9,
+        bookingIntent: false,
+        bookingIntentConfidence: 0.95
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "30"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Re: options",
+      body: "Oh great 9am works great"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-10T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "not_requested");
+  assert.equal(traceItems[0].bookingIntentSource, "llm");
+  assert.equal(traceItems[0].bookingIntentLlmValue, "false");
 });
 
 test("processSchedulingEmail appends short availability link when configured", async () => {
