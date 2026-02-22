@@ -2965,8 +2965,9 @@ function buildAdvisorPage() {
     <title>Advisor Portal - Connected Calendars</title>
     <style>
       body { font-family: Arial, sans-serif; margin: 24px; background: #f5f7fb; color: #1f2937; }
-      .portal-brand-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+      .portal-brand-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
       .portal-page-title { margin: 0; }
+      .portal-header-right { display: flex; align-items: center; gap: 10px; margin-left: auto; }
       .portal-brand-logo {
         display: block;
         height: 68px;
@@ -3002,10 +3003,10 @@ function buildAdvisorPage() {
       .inline-controls textarea { margin-right: 0; }
       .connection-actions { gap: 10px; align-items: stretch; }
       .connection-actions button { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; }
-      .connection-actions #logout { margin-left: auto; }
       .connection-actions-note { margin: 8px 0 0; display: block; }
       @media (max-width: 960px) {
-        .connection-actions #logout { margin-left: 0; }
+        .portal-brand-header { align-items: flex-start; flex-wrap: wrap; }
+        .portal-header-right { width: 100%; justify-content: flex-end; }
       }
       .small-button { padding: 4px 8px; font-size: 12px; }
       .small-select { padding: 4px 8px; font-size: 12px; }
@@ -3047,13 +3048,16 @@ function buildAdvisorPage() {
   <body>
     <header class="portal-brand-header">
       <h1 class="portal-page-title">Advisor Portal</h1>
-      <img
-        id="portalBrandLogo"
-        class="portal-brand-logo"
-        src="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
-        data-default-logo="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
-        alt="LetsConnect.ai logo"
-      />
+      <div class="portal-header-right">
+        <img
+          id="portalBrandLogo"
+          class="portal-brand-logo"
+          src="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+          data-default-logo="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+          alt="LetsConnect.ai logo"
+        />
+        <button id="logout" type="button" class="small-button">Logout</button>
+      </div>
     </header>
 
     <div class="card">
@@ -3152,7 +3156,6 @@ function buildAdvisorPage() {
         <button id="addMock">Add Mock Calendar (Test)</button>
         <button id="googleConnect">Connect Google (Sign In)</button>
         <button id="refreshPortalData">Refresh Data</button>
-        <button id="logout">Logout</button>
       </div>
       <p class="muted connection-actions-note">Google flow requires app credentials configured in backend secret.</p>
       <h3 class="section-subtitle">Current Connections</h3>
