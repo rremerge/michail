@@ -86,6 +86,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 1. System shall provide a web interface showing busy/free blocks for selected advising days.
 2. System shall hide sensitive meeting details by default.
 3. System shall allow policy-based visibility for meetings belonging to a client's organization.
+4. When email responses include suggested time slots and an availability link, the generated availability URL shall include a `weekOffset` query parameter that opens the web view to the week containing the first suggested slot.
 
 ### FR-7 Conversational Agent Behavior
 1. System shall generate context-aware responses for scheduling conversations.
@@ -351,6 +352,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 28. Given inbound email is from an unknown sender not admitted as advisor/existing client, when processed, then no response is sent and the request is suppressed with metadata-only trace.
 29. Given advisor bulk-imports clients in portal, when imported clients send scheduling requests, then agent responds normally while still blackholing non-imported unknown senders.
 30. Given advisor configures their own LLM API key, when scheduling requests are processed, then LLM calls for that advisor use their key and usage/cost telemetry appears in advisor-only reporting.
+31. Given an email response includes suggested slots and an availability link, when the client opens that link, then the page defaults to the week containing the first suggested slot.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.

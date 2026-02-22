@@ -629,6 +629,33 @@ function appendAvailabilityLinkSection({ responseMessage, availabilityLink }) {
   };
 }
 
+function computeAvailabilityWeekOffset({
+  issuedAtMs,
+  hostTimezone,
+  firstSuggestedSlotStartIsoUtc
+}) {
+  const suggestedStartRaw = String(firstSuggestedSlotStartIsoUtc ?? "").trim();
+  if (!suggestedStartRaw) {
+    return null;
+  }
+
+  const suggestedStartUtc = DateTime.fromISO(suggestedStartRaw, { zone: "utc" });
+  if (!suggestedStartUtc.isValid) {
+    return null;
+  }
+
+  const timezone = normalizeTimezone(hostTimezone, DEFAULT_ADVISOR_TIMEZONE);
+  const baseWeekStartLocal = DateTime.fromMillis(issuedAtMs, { zone: timezone }).startOf("week");
+  const suggestedWeekStartLocal = suggestedStartUtc.setZone(timezone).startOf("week");
+  const rawWeekOffset = suggestedWeekStartLocal.diff(baseWeekStartLocal, "weeks").weeks;
+  if (!Number.isFinite(rawWeekOffset)) {
+    return null;
+  }
+
+  // Keep range aligned with portal `parseWeekOffset`.
+  return Math.min(Math.max(Math.trunc(rawWeekOffset), -8), 52);
+}
+
 function titleCaseWords(input) {
   return String(input ?? "")
     .split(/\s+/)
@@ -755,9 +782,11 @@ async function buildAvailabilityLink({
   env,
   deps,
   advisorId,
+  hostTimezone,
   clientTimezone,
   durationMinutes,
   issuedAtMs,
+  firstSuggestedSlotStartIsoUtc,
   normalizedClientEmail,
   clientDisplayName,
   clientId
@@ -814,6 +843,14 @@ async function buildAvailabilityLink({
   const availabilityUrl = new URL(baseUrl);
   availabilityUrl.searchParams.set("t", tokenId);
   availabilityUrl.searchParams.set("for", clientReference);
+  const weekOffset = computeAvailabilityWeekOffset({
+    issuedAtMs,
+    hostTimezone,
+    firstSuggestedSlotStartIsoUtc
+  });
+  if (weekOffset !== null) {
+    availabilityUrl.searchParams.set("weekOffset", String(weekOffset));
+  }
   return {
     availabilityLink: availabilityUrl.toString(),
     status: "included"
@@ -1876,9 +1913,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           env,
           deps,
           advisorId,
+          hostTimezone,
           clientTimezone: null,
           durationMinutes: durationDefault,
           issuedAtMs: startedAtMs,
+          firstSuggestedSlotStartIsoUtc: null,
           normalizedClientEmail: fromEmail,
           clientDisplayName,
           clientId
@@ -2450,9 +2489,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           env,
           deps,
           advisorId,
+          hostTimezone,
           clientTimezone: parsed.clientTimezone,
           durationMinutes: parsed.durationMinutes,
           issuedAtMs: startedAtMs,
+          firstSuggestedSlotStartIsoUtc: suggestions[0]?.startIsoUtc,
           normalizedClientEmail: fromEmail,
           clientDisplayName,
           clientId
@@ -2505,9 +2546,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         env,
         deps,
         advisorId,
+        hostTimezone,
         clientTimezone: parsed.clientTimezone,
         durationMinutes: parsed.durationMinutes,
         issuedAtMs: startedAtMs,
+        firstSuggestedSlotStartIsoUtc: suggestions[0]?.startIsoUtc,
         normalizedClientEmail: fromEmail,
         clientDisplayName,
         clientId

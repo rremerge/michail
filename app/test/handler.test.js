@@ -1392,10 +1392,55 @@ test("processSchedulingEmail appends short availability link when configured", a
   assert.ok(tokenId);
   assert.equal(tokenId.length, 16);
   assert.equal(link.searchParams.get("for"), "tito-needa");
+  assert.equal(link.searchParams.get("weekOffset"), "0");
   assert.equal(savedLinks[0].tokenId, tokenId);
   assert.equal(savedLinks[0].advisorId, "manoj");
   assert.equal(savedLinks[0].clientDisplayName, "Tito Needa");
   assert.equal(savedLinks[0].durationMinutes, 30);
+});
+
+test("processSchedulingEmail availability link opens week of first suggested slot", async () => {
+  const sentMessages = [];
+  const savedLinks = [];
+  const deps = {
+    async putAvailabilityLink(tableName, item) {
+      assert.equal(tableName, "AvailabilityLinkTable");
+      savedLinks.push(item);
+    },
+    async writeTrace() {},
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "manoj@example.com",
+    AVAILABILITY_LINK_BASE_URL: "https://example.test/availability",
+    AVAILABILITY_LINK_TABLE_NAME: "AvailabilityLinkTable",
+    AVAILABILITY_LINK_TTL_MINUTES: "60",
+    SEARCH_DAYS: "40"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Future week",
+      body: "I can do 2026-03-17T09:00:00-07:00 to 2026-03-17T11:00:00-07:00 only."
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(savedLinks.length, 1);
+  assert.equal(sentMessages.length, 1);
+  const linkMatch = sentMessages[0].bodyText.match(/Availability link:\s+(https:\/\/\S+)/);
+  assert.ok(linkMatch);
+  const link = new URL(linkMatch[1]);
+  assert.equal(link.searchParams.get("weekOffset"), "2");
 });
 
 test("processSchedulingEmail appends availability link even when no slots are found", async () => {
