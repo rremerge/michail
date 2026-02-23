@@ -4,6 +4,30 @@ import crypto from "node:crypto";
 import { DateTime } from "luxon";
 import { createPortalHandler } from "../src/portal-handler.js";
 
+const baselineAuthMode = process.env.ADVISOR_PORTAL_AUTH_MODE;
+const baselineAllowNoneAuthMode = process.env.ADVISOR_PORTAL_ALLOW_NONE;
+if (baselineAuthMode === undefined) {
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+}
+if (baselineAllowNoneAuthMode === undefined) {
+  process.env.ADVISOR_PORTAL_ALLOW_NONE = "true";
+}
+
+test.after(() => {
+  if (baselineAuthMode === undefined) {
+    delete process.env.ADVISOR_PORTAL_AUTH_MODE;
+  } else {
+    process.env.ADVISOR_PORTAL_AUTH_MODE = baselineAuthMode;
+  }
+
+  if (baselineAllowNoneAuthMode === undefined) {
+    delete process.env.ADVISOR_PORTAL_ALLOW_NONE;
+    return;
+  }
+
+  process.env.ADVISOR_PORTAL_ALLOW_NONE = baselineAllowNoneAuthMode;
+});
+
 function toBasicAuthorization(username, password) {
   return `Basic ${Buffer.from(`${username}:${password}`, "utf8").toString("base64")}`;
 }
@@ -62,6 +86,104 @@ test("advisor portal home serves html", async () => {
       delete process.env.CONNECTIONS_TABLE_NAME;
     } else {
       process.env.CONNECTIONS_TABLE_NAME = previousConnectionsTable;
+    }
+  }
+});
+
+test("advisor landing page serves marketing copy and google sign-in CTA", async () => {
+  const handler = createPortalHandler();
+
+  const response = await handler({
+    requestContext: {
+      domainName: "xytaxmumc3.execute-api.us-east-1.amazonaws.com",
+      stage: "dev",
+      http: { method: "GET" }
+    },
+    rawPath: "/dev"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(response.headers["content-type"], /text\/html/);
+  assert.match(response.body, /Turn inbound scheduling email into confirmed meetings\./);
+  assert.match(response.body, /Login with Google/);
+  assert.match(
+    response.body,
+    /https:\/\/xytaxmumc3\.execute-api\.us-east-1\.amazonaws\.com\/dev\/advisor\/auth\/google\/start\?returnTo=%2Fadvisor/
+  );
+  assert.doesNotMatch(response.body, /Open Advisor Portal/);
+  assert.match(response.body, /Copyright \(C\) 2026\. RR Emerge LLC/);
+});
+
+test("advisor landing page remains public when google oauth auth mode is enabled", async () => {
+  const handler = createPortalHandler({
+    async getSecretString() {
+      throw new Error("landing page should not require session secret lookup");
+    }
+  });
+
+  const previousAuthMode = process.env.ADVISOR_PORTAL_AUTH_MODE;
+  const previousSessionSecretArn = process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "google_oauth";
+  process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-session";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        domainName: "xytaxmumc3.execute-api.us-east-1.amazonaws.com",
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.body, /landingGoogleSignIn/);
+  } finally {
+    if (previousAuthMode === undefined) {
+      delete process.env.ADVISOR_PORTAL_AUTH_MODE;
+    } else {
+      process.env.ADVISOR_PORTAL_AUTH_MODE = previousAuthMode;
+    }
+
+    if (previousSessionSecretArn === undefined) {
+      delete process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
+    } else {
+      process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN = previousSessionSecretArn;
+    }
+  }
+});
+
+test("advisor portal rejects auth mode none unless explicitly allowed", async () => {
+  const handler = createPortalHandler();
+  const previousAuthMode = process.env.ADVISOR_PORTAL_AUTH_MODE;
+  const previousAllowNoneAuthMode = process.env.ADVISOR_PORTAL_ALLOW_NONE;
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  delete process.env.ADVISOR_PORTAL_ALLOW_NONE;
+
+  try {
+    const response = await handler({
+      requestContext: {
+        http: { method: "GET" }
+      },
+      rawPath: "/advisor"
+    });
+
+    assert.equal(response.statusCode, 500);
+    assert.match(
+      response.body,
+      /ADVISOR_PORTAL_AUTH_MODE=none is disabled; use google_oauth or secret_basic\./
+    );
+  } finally {
+    if (previousAuthMode === undefined) {
+      delete process.env.ADVISOR_PORTAL_AUTH_MODE;
+    } else {
+      process.env.ADVISOR_PORTAL_AUTH_MODE = previousAuthMode;
+    }
+
+    if (previousAllowNoneAuthMode === undefined) {
+      delete process.env.ADVISOR_PORTAL_ALLOW_NONE;
+    } else {
+      process.env.ADVISOR_PORTAL_ALLOW_NONE = previousAllowNoneAuthMode;
     }
   }
 });

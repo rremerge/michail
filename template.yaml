@@ -111,7 +111,6 @@ Parameters:
   AdvisorPortalAuthMode:
     Type: String
     AllowedValues:
-      - none
       - secret_basic
       - google_oauth
     Default: google_oauth
@@ -666,6 +665,18 @@ Resources:
           ADVISOR_PORTAL_SESSION_SECRET_ARN: !Ref AdvisorPortalSessionSecret
           ADVISOR_ALLOWED_EMAIL: !Ref AdvisorAllowedEmail
       Events:
+        AdvisorLanding:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /
+        AdvisorLandingAlias:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /landing
         AdvisorAvailabilityPublic:
           Type: HttpApi
           Properties:

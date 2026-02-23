@@ -781,8 +781,18 @@ function parseCookies(event) {
     }, {});
 }
 
+function resolveAdvisorPortalAuthMode() {
+  return String(process.env.ADVISOR_PORTAL_AUTH_MODE ?? "google_oauth")
+    .trim()
+    .toLowerCase();
+}
+
+function isNoneAuthModeAllowed() {
+  return parseBooleanEnv(process.env.ADVISOR_PORTAL_ALLOW_NONE, false);
+}
+
 async function readPortalSessionPayload(event, deps) {
-  const authMode = (process.env.ADVISOR_PORTAL_AUTH_MODE ?? "none").toLowerCase();
+  const authMode = resolveAdvisorPortalAuthMode();
   if (authMode !== "google_oauth") {
     return null;
   }
@@ -822,9 +832,15 @@ async function authorizePortalRequest({ event, rawPath, deps }) {
     return null;
   }
 
-  const authMode = (process.env.ADVISOR_PORTAL_AUTH_MODE ?? "none").toLowerCase();
+  const authMode = resolveAdvisorPortalAuthMode();
   if (authMode === "none") {
-    return null;
+    if (isNoneAuthModeAllowed()) {
+      return null;
+    }
+
+    return serverError(
+      "ADVISOR_PORTAL_AUTH_MODE=none is disabled; use google_oauth or secret_basic."
+    );
   }
 
   if (authMode === "secret_basic") {
@@ -3343,6 +3359,270 @@ function advisorAuthErrorPage(message) {
   );
 }
 
+function buildAdvisorLandingPage({ googleLoginUrl }) {
+  const safeGoogleLoginUrl = escapeHtml(googleLoginUrl);
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LetsConnect.ai | Advisor Sign-In</title>
+    <style>
+      :root {
+        --bg-1: #edf4ff;
+        --bg-2: #dceaff;
+        --bg-3: #f4f8ff;
+        --ink-900: #09172a;
+        --ink-700: #2c3f58;
+        --ink-600: #4b627f;
+        --ink-500: #617b9b;
+        --surface: #ffffff;
+        --line: #cfe0f3;
+        --brand-700: #0857b2;
+        --brand-500: #2b7bda;
+        --shadow: 0 25px 60px rgba(13, 40, 79, 0.12);
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--ink-900);
+        font-family: "Avenir Next", "Segoe UI Variable", "Gill Sans", "Trebuchet MS", sans-serif;
+        background:
+          radial-gradient(780px 480px at -5% 10%, rgba(36, 117, 214, 0.22), transparent 56%),
+          radial-gradient(820px 480px at 110% 30%, rgba(102, 175, 255, 0.16), transparent 58%),
+          linear-gradient(180deg, var(--bg-1), var(--bg-3) 50%, #f8fbff 100%);
+        display: grid;
+        place-items: center;
+        padding: 26px 14px;
+      }
+      .shell {
+        width: min(1080px, 100%);
+      }
+      .panel {
+        background: rgba(255, 255, 255, 0.92);
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        box-shadow: var(--shadow);
+        overflow: hidden;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1.08fr 0.92fr;
+      }
+      .content {
+        padding: 40px 42px 30px;
+      }
+      h1 {
+        margin: 0 0 10px;
+        line-height: 1.05;
+        letter-spacing: -0.02em;
+        font-size: clamp(34px, 5vw, 52px);
+      }
+      .lead {
+        margin: 0;
+        color: var(--ink-700);
+        font-size: 18px;
+        line-height: 1.5;
+        max-width: 54ch;
+      }
+      .proof-grid {
+        margin-top: 24px;
+        display: grid;
+        grid-template-columns: repeat(3, minmax(150px, 1fr));
+        gap: 10px;
+      }
+      .proof-card {
+        border: 1px solid #d7e6f7;
+        border-radius: 14px;
+        background: linear-gradient(180deg, #fafdff, #f3f8ff);
+        padding: 12px 10px;
+      }
+      .proof-title {
+        margin: 0;
+        color: #0d3f75;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+      }
+      .proof-copy {
+        margin: 5px 0 0;
+        color: var(--ink-600);
+        font-size: 12px;
+        line-height: 1.35;
+      }
+      .cta-row {
+        margin-top: 18px;
+      }
+      .cta {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 12px;
+        padding: 13px 18px;
+        text-decoration: none;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+        border: 1px solid #1b5aaa;
+        background: linear-gradient(180deg, var(--brand-500), var(--brand-700));
+        color: #fff;
+        box-shadow: 0 12px 22px rgba(21, 86, 164, 0.28);
+        transition: transform 140ms ease, box-shadow 140ms ease, filter 140ms ease;
+      }
+      .cta:hover {
+        transform: translateY(-1px);
+        box-shadow: 0 16px 26px rgba(21, 86, 164, 0.34);
+        filter: saturate(1.06);
+      }
+      .cta:active {
+        transform: translateY(0);
+      }
+      .note {
+        margin-top: 10px;
+        color: #577596;
+        text-align: center;
+        font-size: 13px;
+      }
+      .right {
+        position: relative;
+        background:
+          linear-gradient(180deg, rgba(240, 248, 255, 0.95), rgba(230, 242, 255, 0.93)),
+          linear-gradient(125deg, #e9f3ff 0%, #d9eaff 100%);
+        border-left: 1px solid #d6e5f5;
+        padding: 28px 26px;
+      }
+      .logo-frame {
+        width: fit-content;
+        margin-left: auto;
+        border: 1px solid #c9dcf1;
+        border-radius: 14px;
+        background: #fff;
+        padding: 8px 10px;
+      }
+      .logo {
+        height: 72px;
+        width: auto;
+        object-fit: contain;
+        display: block;
+      }
+      .stack {
+        margin-top: 22px;
+        display: grid;
+        gap: 10px;
+      }
+      .mini {
+        border: 1px solid #cfe0f3;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.88);
+        padding: 12px 12px 11px;
+      }
+      .mini h3 {
+        margin: 0;
+        color: #17487d;
+        font-size: 13px;
+        font-weight: 800;
+        letter-spacing: 0.01em;
+      }
+      .mini p {
+        margin: 6px 0 0;
+        color: var(--ink-600);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .right .cta {
+        width: 100%;
+      }
+      .copyright-global {
+        margin: 14px 0 0;
+        color: #577596;
+        font-size: 13px;
+        font-weight: 600;
+        text-align: center;
+      }
+      @media (max-width: 980px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+        .right {
+          border-left: 0;
+          border-top: 1px solid #d6e5f5;
+          padding-top: 16px;
+        }
+        .logo-frame {
+          margin: 0;
+        }
+      }
+      @media (max-width: 700px) {
+        .content {
+          padding: 28px 20px 24px;
+        }
+        .proof-grid {
+          grid-template-columns: 1fr;
+        }
+        .logo {
+          height: 62px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <section class="panel">
+        <div class="grid">
+          <div class="content">
+            <h1>Turn inbound scheduling email into confirmed meetings.</h1>
+            <p class="lead">
+              Sign in once with Google to activate your advisor workspace, connect calendars,
+              and let the agent handle professional back-and-forth with clients.
+            </p>
+            <div class="proof-grid">
+              <article class="proof-card">
+                <p class="proof-title">Unified Calendar Logic</p>
+                <p class="proof-copy">Checks all connected calendars before suggesting slots.</p>
+              </article>
+              <article class="proof-card">
+                <p class="proof-title">Strict Client Controls</p>
+                <p class="proof-copy">Replies only to allowed clients and advisor-managed contacts.</p>
+              </article>
+              <article class="proof-card">
+                <p class="proof-title">Privacy-First Traces</p>
+                <p class="proof-copy">Debug metadata without retaining email/calendar content.</p>
+              </article>
+            </div>
+          </div>
+          <aside class="right">
+            <div class="logo-frame">
+              <img class="logo" src="${DEFAULT_BRAND_LOGO_DATA_URI}" alt="letsconnect.ai logo" />
+            </div>
+            <div class="stack">
+              <article class="mini">
+                <h3>What this gives you</h3>
+                <p>Client directory, policy cohorts, calendar connection management, and trace visibility from one portal.</p>
+              </article>
+              <article class="mini">
+                <h3>Privacy First</h3>
+                <p>All Lambda: No calendar data stored anywhere. Bring your own LLM.</p>
+              </article>
+              <article class="mini">
+                <h3>Brand control</h3>
+                <p>Use default LetsConnect branding or switch to advisor logo/cobranding from workspace settings.</p>
+              </article>
+            </div>
+            <div class="cta-row">
+              <a class="cta" href="${safeGoogleLoginUrl}" id="landingGoogleSignIn">Login with Google</a>
+            </div>
+            <p class="note">First login creates your advisor account and default agent settings.</p>
+          </aside>
+        </div>
+      </section>
+      <p class="copyright-global">${escapeHtml(BRAND_COPYRIGHT_NOTICE)}</p>
+    </main>
+  </body>
+</html>`;
+}
+
 function buildAdvisorPage() {
   return `<!doctype html>
 <html lang="en">
@@ -5828,7 +6108,7 @@ export function createPortalHandler(overrides = {}) {
     const method = event.requestContext?.http?.method ?? "GET";
     const rawPath = normalizeRawPath(event.rawPath ?? "/", event.requestContext?.stage);
 
-    const authMode = (process.env.ADVISOR_PORTAL_AUTH_MODE ?? "none").toLowerCase();
+    const authMode = resolveAdvisorPortalAuthMode();
     const strictMultiTenantMode = parseBooleanEnv(
       process.env.STRICT_MULTI_TENANT_MODE,
       authMode === "google_oauth"
@@ -5897,6 +6177,17 @@ export function createPortalHandler(overrides = {}) {
       customPolicyRecords
     });
     const policyPresets = policyCatalog.mergedPresets;
+
+    if (method === "GET" && (rawPath === "/" || rawPath === "/landing")) {
+      const baseUrl = getBaseUrl(event);
+      const googleLoginUrl = `${baseUrl}/advisor/auth/google/start?returnTo=${encodeURIComponent("/advisor")}`;
+      return htmlResponse(
+        200,
+        buildAdvisorLandingPage({
+          googleLoginUrl
+        })
+      );
+    }
 
     if (method === "GET" && rawPath === "/availability") {
       const shortToken = String(event.queryStringParameters?.t ?? "").trim();

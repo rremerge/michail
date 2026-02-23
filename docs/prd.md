@@ -251,6 +251,14 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 5. Advisor calendar self-view shall support week navigation while preserving advisor timezone rendering.
 6. If no calendars are connected, advisor calendar self-view shall show a clear setup state with guidance to connect a calendar.
 
+### FR-26 Advisor Acquisition Landing Page and Google Onboarding
+1. System shall expose a public landing page route at the product root URL that is accessible without prior advisor authentication.
+2. Landing page shall communicate core service value for prospective advisors (multi-calendar scheduling automation, privacy-preserving flow, and advisor portal controls).
+3. Landing page shall include a primary call-to-action to `Sign in with Google` that initiates advisor onboarding through existing advisor Google OAuth flow.
+4. Landing page Google CTA shall route through `/advisor/auth/google/start` with deterministic return target `/advisor` after successful authentication.
+5. Landing page shall be compatible with strict multi-tenant onboarding: first-time advisor login must continue to create advisor-scoped profile/settings under existing tenancy logic.
+6. Landing page shall follow product branding requirements (default letsconnect.ai logo and legal footer notice).
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -326,6 +334,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 13. Multi-advisor tenancy with destination-alias routing and advisor-configurable `agentEmail`.
 14. Unknown-sender admission control with blackhole response policy.
 15. Advisor workspace cards with inline client snippets, quick-search summary, and conditional onboarding hints.
+16. Public advisor acquisition landing page with Google sign-in onboarding CTA.
 
 ## 11. Out of Scope for MVP
 1. LinkedIn integration.
@@ -380,6 +389,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 33. Given an onboarding hint is shown, when advisor clicks its action link, then the portal opens the relevant panel (for example `Connections` or `Clients & Access`) and focuses the related input/control.
 34. Given an advisor has multiple connected calendar connections and each connection may include multiple `calendar_ids`, when availability is computed for email responses or the client web availability page, then the system queries all connected connections and all configured `calendar_ids` within each connection and returns results based on the merged busy set.
 35. Given advisor opens the advisor calendar self-view from the portal, when one or more calendars are connected, then the page shows merged busy slots with full meeting details from all connected connections and all configured `calendar_ids`.
+36. Given a prospective advisor opens the root product URL, when the landing page loads, then it presents service-value messaging and a Google sign-in CTA that routes to advisor onboarding and returns the advisor to `/advisor` after successful login.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
