@@ -1,0 +1,474 @@
+{
+  "scenarios": [
+    {
+      "id": "new_advisor",
+      "label": "New Advisor",
+      "subtitle": "Fresh account, onboarding in progress",
+      "advisor": {
+        "name": "Manoj Apte",
+        "email": "manojapteindia@gmail.com",
+        "agentEmail": "manoj.agent@agent.letsconnect.ai",
+        "timezone": "America/Los_Angeles",
+        "plan": "Starter",
+        "preferredName": "Manoj",
+        "brandingMode": "default",
+        "advisorLogoName": "",
+        "advisorLogoSrc": ""
+      },
+      "overview": {
+        "connectedCalendars": 0,
+        "activeClients": 0,
+        "bookingsThisWeek": 0,
+        "inboundToday": 0,
+        "responseP95Seconds": 0,
+        "estimatedMonthCostUsd": 0
+      },
+      "alerts": [
+        {
+          "level": "warn",
+          "title": "Connect your first calendar",
+          "detail": "Scheduling responses remain in hold mode until at least one calendar is connected."
+        },
+        {
+          "level": "info",
+          "title": "Import clients to enable replies",
+          "detail": "Unknown senders are blackholed by policy until clients are admitted."
+        }
+      ],
+      "connections": [],
+      "policies": [
+        { "id": "default", "days": "Tue, Wed", "source": "system", "clients": 0 },
+        { "id": "weekend", "days": "Sat, Sun", "source": "system", "clients": 0 },
+        { "id": "monday", "days": "Mon", "source": "system", "clients": 0 }
+      ],
+      "clients": [],
+      "usageTrend": [
+        { "label": "Mon", "requests": 0, "tokens": 0, "costUsd": 0 },
+        { "label": "Tue", "requests": 0, "tokens": 0, "costUsd": 0 },
+        { "label": "Wed", "requests": 0, "tokens": 0, "costUsd": 0 },
+        { "label": "Thu", "requests": 0, "tokens": 0, "costUsd": 0 },
+        { "label": "Fri", "requests": 0, "tokens": 0, "costUsd": 0 },
+        { "label": "Sat", "requests": 0, "tokens": 0, "costUsd": 0 },
+        { "label": "Sun", "requests": 0, "tokens": 0, "costUsd": 0 }
+      ],
+      "usageByModel": [],
+      "diagnostics": [
+        {
+          "status": "open",
+          "requestId": "n/a",
+          "issue": "No runtime incidents yet.",
+          "updatedAt": "-"
+        }
+      ]
+    },
+    {
+      "id": "small_practice",
+      "label": "Small Practice",
+      "subtitle": "Early steady usage with mixed client policies",
+      "advisor": {
+        "name": "Manoj Apte",
+        "email": "manojapteindia@gmail.com",
+        "agentEmail": "manoj.agent@agent.letsconnect.ai",
+        "timezone": "America/Los_Angeles",
+        "plan": "Growth",
+        "preferredName": "Manoj",
+        "brandingMode": "co-branded",
+        "advisorLogoName": "Manoj Advisory mark",
+        "advisorLogoSrc": "../app/assets/letsconnect-logo.png"
+      },
+      "overview": {
+        "connectedCalendars": 2,
+        "activeClients": 37,
+        "bookingsThisWeek": 8,
+        "inboundToday": 11,
+        "responseP95Seconds": 21,
+        "estimatedMonthCostUsd": 34.72
+      },
+      "alerts": [
+        {
+          "level": "ok",
+          "title": "SLA healthy",
+          "detail": "p95 first response remains under 30 seconds."
+        }
+      ],
+      "connections": [
+        {
+          "provider": "google",
+          "account": "manojapteindia@gmail.com",
+          "status": "connected",
+          "primary": true,
+          "updatedAt": "2026-02-22T00:21:00Z"
+        },
+        {
+          "provider": "microsoft",
+          "account": "manoj@outlook.com",
+          "status": "connected",
+          "primary": false,
+          "updatedAt": "2026-02-22T01:05:00Z"
+        }
+      ],
+      "policies": [
+        { "id": "default", "days": "Tue, Wed", "source": "system", "clients": 22 },
+        { "id": "founders", "days": "Mon, Tue", "source": "custom", "clients": 8 },
+        { "id": "weekend", "days": "Sat, Sun", "source": "system", "clients": 7 }
+      ],
+      "clients": [
+        {
+          "name": "Tito Needa",
+          "email": "titoneeda@gmail.com",
+          "state": "active",
+          "policyId": "default",
+          "firstSeen": "2026-02-01",
+          "lastSeen": "2026-02-22",
+          "emailCount": 14,
+          "webCount": 19
+        },
+        {
+          "name": "Lalita Sharma",
+          "email": "lalita@rremerge.com",
+          "state": "active",
+          "policyId": "founders",
+          "firstSeen": "2026-02-05",
+          "lastSeen": "2026-02-21",
+          "emailCount": 9,
+          "webCount": 6
+        },
+        {
+          "name": "Rakesh Mehta",
+          "email": "rakesh@venturegrid.ai",
+          "state": "blocked",
+          "policyId": "default",
+          "firstSeen": "2026-02-03",
+          "lastSeen": "2026-02-12",
+          "emailCount": 3,
+          "webCount": 1
+        },
+        {
+          "name": "Mira Patel",
+          "email": "mira@finflow.io",
+          "state": "active",
+          "policyId": "weekend",
+          "firstSeen": "2026-02-08",
+          "lastSeen": "2026-02-22",
+          "emailCount": 5,
+          "webCount": 11
+        }
+      ],
+      "usageTrend": [
+        { "label": "Mon", "requests": 12, "tokens": 21432, "costUsd": 1.94 },
+        { "label": "Tue", "requests": 18, "tokens": 28640, "costUsd": 2.57 },
+        { "label": "Wed", "requests": 21, "tokens": 31030, "costUsd": 2.84 },
+        { "label": "Thu", "requests": 15, "tokens": 22700, "costUsd": 2.01 },
+        { "label": "Fri", "requests": 11, "tokens": 19331, "costUsd": 1.72 },
+        { "label": "Sat", "requests": 8, "tokens": 12420, "costUsd": 1.08 },
+        { "label": "Sun", "requests": 9, "tokens": 13980, "costUsd": 1.19 }
+      ],
+      "usageByModel": [
+        {
+          "provider": "openai",
+          "model": "gpt-5.2-2025-12-11",
+          "requests": 94,
+          "inputTokens": 85410,
+          "outputTokens": 61320,
+          "costUsd": 13.35
+        }
+      ],
+      "diagnostics": [
+        {
+          "status": "resolved",
+          "requestId": "7f834f1e-9de4-46ec-8f22-1f3321579870",
+          "issue": "Client requested date parser fallback",
+          "updatedAt": "2026-02-21T20:41:00Z"
+        },
+        {
+          "status": "open",
+          "requestId": "f770f9db-e1f8-4d3f-a4e7-37f3dcf7ce31",
+          "issue": "Microsoft reconnect test pending advisor validation",
+          "updatedAt": "2026-02-22T01:07:00Z"
+        }
+      ]
+    },
+    {
+      "id": "scaled_practice",
+      "label": "Scaled Practice",
+      "subtitle": "High-volume advisor with large client directory",
+      "advisor": {
+        "name": "Manoj Apte",
+        "email": "manojapteindia@gmail.com",
+        "agentEmail": "manoj.agent@agent.letsconnect.ai",
+        "timezone": "America/Los_Angeles",
+        "plan": "Pro",
+        "preferredName": "Manoj",
+        "brandingMode": "co-branded",
+        "advisorLogoName": "RR Emerge Advisors",
+        "advisorLogoSrc": "../app/assets/letsconnect-logo.png"
+      },
+      "overview": {
+        "connectedCalendars": 4,
+        "activeClients": 512,
+        "bookingsThisWeek": 66,
+        "inboundToday": 94,
+        "responseP95Seconds": 19,
+        "estimatedMonthCostUsd": 486.11
+      },
+      "alerts": [
+        {
+          "level": "info",
+          "title": "Client growth milestone",
+          "detail": "Directory crossed 500 active clients. Consider adding team reviewer access."
+        }
+      ],
+      "connections": [
+        {
+          "provider": "google",
+          "account": "manojapteindia@gmail.com",
+          "status": "connected",
+          "primary": true,
+          "updatedAt": "2026-02-21T23:54:00Z"
+        },
+        {
+          "provider": "google",
+          "account": "manojapte@gmail.com",
+          "status": "connected",
+          "primary": false,
+          "updatedAt": "2026-02-20T19:11:00Z"
+        },
+        {
+          "provider": "microsoft",
+          "account": "manoj@rremerge.com",
+          "status": "connected",
+          "primary": false,
+          "updatedAt": "2026-02-20T18:44:00Z"
+        },
+        {
+          "provider": "microsoft",
+          "account": "manoj@outlook.com",
+          "status": "connected",
+          "primary": false,
+          "updatedAt": "2026-02-19T21:02:00Z"
+        }
+      ],
+      "policies": [
+        { "id": "default", "days": "Tue, Wed", "source": "system", "clients": 314 },
+        { "id": "weekend", "days": "Sat, Sun", "source": "system", "clients": 42 },
+        { "id": "founders", "days": "Mon, Tue", "source": "custom", "clients": 56 },
+        { "id": "enterprise", "days": "Mon, Tue, Wed", "source": "custom", "clients": 100 }
+      ],
+      "clients": [
+        {
+          "name": "Aarav Ventures Ops",
+          "email": "ops@aaravventures.com",
+          "state": "active",
+          "policyId": "enterprise",
+          "firstSeen": "2025-12-08",
+          "lastSeen": "2026-02-22",
+          "emailCount": 141,
+          "webCount": 86
+        },
+        {
+          "name": "Orbit Capital Team",
+          "email": "team@orbitcap.com",
+          "state": "active",
+          "policyId": "founders",
+          "firstSeen": "2025-11-20",
+          "lastSeen": "2026-02-22",
+          "emailCount": 99,
+          "webCount": 120
+        },
+        {
+          "name": "Kite Labs",
+          "email": "ceo@kitelabs.ai",
+          "state": "active",
+          "policyId": "default",
+          "firstSeen": "2026-01-11",
+          "lastSeen": "2026-02-21",
+          "emailCount": 37,
+          "webCount": 51
+        },
+        {
+          "name": "Nexa Health",
+          "email": "partnerships@nexahealth.io",
+          "state": "deleted",
+          "policyId": "default",
+          "firstSeen": "2025-10-18",
+          "lastSeen": "2026-01-30",
+          "emailCount": 21,
+          "webCount": 17
+        },
+        {
+          "name": "Ridge Systems",
+          "email": "leaders@ridgesystems.com",
+          "state": "blocked",
+          "policyId": "weekend",
+          "firstSeen": "2026-01-05",
+          "lastSeen": "2026-02-10",
+          "emailCount": 18,
+          "webCount": 9
+        }
+      ],
+      "usageTrend": [
+        { "label": "Mon", "requests": 104, "tokens": 182211, "costUsd": 16.88 },
+        { "label": "Tue", "requests": 126, "tokens": 221608, "costUsd": 20.53 },
+        { "label": "Wed", "requests": 118, "tokens": 210004, "costUsd": 19.39 },
+        { "label": "Thu", "requests": 97, "tokens": 164122, "costUsd": 15.26 },
+        { "label": "Fri", "requests": 88, "tokens": 151004, "costUsd": 14.04 },
+        { "label": "Sat", "requests": 63, "tokens": 106820, "costUsd": 9.85 },
+        { "label": "Sun", "requests": 57, "tokens": 93402, "costUsd": 8.49 }
+      ],
+      "usageByModel": [
+        {
+          "provider": "openai",
+          "model": "gpt-5.2-2025-12-11",
+          "requests": 573,
+          "inputTokens": 736004,
+          "outputTokens": 393167,
+          "costUsd": 102.74
+        },
+        {
+          "provider": "openai",
+          "model": "gpt-5.2-mini-2025-12-11",
+          "requests": 80,
+          "inputTokens": 94120,
+          "outputTokens": 52315,
+          "costUsd": 11.23
+        }
+      ],
+      "diagnostics": [
+        {
+          "status": "open",
+          "requestId": "8d6c52f2-8f20-4200-b3ab-f6f239b61c30",
+          "issue": "Client follow-up intent needed context retry",
+          "updatedAt": "2026-02-22T00:31:00Z"
+        },
+        {
+          "status": "resolved",
+          "requestId": "71626457-b570-4e6c-8e54-422f44f8a9ce",
+          "issue": "Unknown sender correctly blackholed",
+          "updatedAt": "2026-02-21T19:58:00Z"
+        }
+      ]
+    },
+    {
+      "id": "warning_state",
+      "label": "Warning State",
+      "subtitle": "Operational risk state for incident review",
+      "advisor": {
+        "name": "Manoj Apte",
+        "email": "manojapteindia@gmail.com",
+        "agentEmail": "manoj.agent@agent.letsconnect.ai",
+        "timezone": "America/Los_Angeles",
+        "plan": "Growth",
+        "preferredName": "Manoj",
+        "brandingMode": "default",
+        "advisorLogoName": "",
+        "advisorLogoSrc": ""
+      },
+      "overview": {
+        "connectedCalendars": 1,
+        "activeClients": 91,
+        "bookingsThisWeek": 14,
+        "inboundToday": 43,
+        "responseP95Seconds": 271,
+        "estimatedMonthCostUsd": 219.04
+      },
+      "alerts": [
+        {
+          "level": "error",
+          "title": "Response latency elevated",
+          "detail": "p95 response crossed 4 minutes in the last hour."
+        },
+        {
+          "level": "warn",
+          "title": "Advisor LLM key approaching quota",
+          "detail": "Switch to platform key fallback or increase advisor quota."
+        }
+      ],
+      "connections": [
+        {
+          "provider": "google",
+          "account": "manojapteindia@gmail.com",
+          "status": "connected",
+          "primary": true,
+          "updatedAt": "2026-02-22T00:02:00Z"
+        },
+        {
+          "provider": "microsoft",
+          "account": "manoj@outlook.com",
+          "status": "error",
+          "primary": false,
+          "updatedAt": "2026-02-21T23:58:00Z"
+        }
+      ],
+      "policies": [
+        { "id": "default", "days": "Tue, Wed", "source": "system", "clients": 57 },
+        { "id": "founders", "days": "Mon, Tue", "source": "custom", "clients": 21 },
+        { "id": "weekend", "days": "Sat, Sun", "source": "system", "clients": 13 }
+      ],
+      "clients": [
+        {
+          "name": "Tito Needa",
+          "email": "titoneeda@gmail.com",
+          "state": "active",
+          "policyId": "default",
+          "firstSeen": "2026-01-01",
+          "lastSeen": "2026-02-22",
+          "emailCount": 66,
+          "webCount": 49
+        },
+        {
+          "name": "Scale Forge Team",
+          "email": "team@scaleforge.ai",
+          "state": "active",
+          "policyId": "founders",
+          "firstSeen": "2026-01-08",
+          "lastSeen": "2026-02-21",
+          "emailCount": 42,
+          "webCount": 35
+        },
+        {
+          "name": "Redwood Ops",
+          "email": "ops@redwood.io",
+          "state": "blocked",
+          "policyId": "default",
+          "firstSeen": "2026-01-19",
+          "lastSeen": "2026-02-14",
+          "emailCount": 9,
+          "webCount": 4
+        }
+      ],
+      "usageTrend": [
+        { "label": "Mon", "requests": 41, "tokens": 128004, "costUsd": 11.72 },
+        { "label": "Tue", "requests": 47, "tokens": 149320, "costUsd": 13.78 },
+        { "label": "Wed", "requests": 43, "tokens": 144512, "costUsd": 13.16 },
+        { "label": "Thu", "requests": 39, "tokens": 138991, "costUsd": 12.74 },
+        { "label": "Fri", "requests": 51, "tokens": 168770, "costUsd": 15.61 },
+        { "label": "Sat", "requests": 28, "tokens": 91840, "costUsd": 8.23 },
+        { "label": "Sun", "requests": 33, "tokens": 110141, "costUsd": 9.88 }
+      ],
+      "usageByModel": [
+        {
+          "provider": "openai",
+          "model": "gpt-5.2-2025-12-11",
+          "requests": 282,
+          "inputTokens": 525771,
+          "outputTokens": 264180,
+          "costUsd": 71.92
+        }
+      ],
+      "diagnostics": [
+        {
+          "status": "open",
+          "requestId": "4f5b8463-5d72-4ea4-9b5b-d611e38fd8a7",
+          "issue": "Latency threshold breach due to upstream API retry cascade",
+          "updatedAt": "2026-02-22T01:09:00Z"
+        },
+        {
+          "status": "open",
+          "requestId": "bb7fe81c-6f4f-4d9e-b189-87f1fe5a5c97",
+          "issue": "Microsoft calendar reconnect required",
+          "updatedAt": "2026-02-22T01:05:00Z"
+        }
+      ]
+    }
+  ]
+}

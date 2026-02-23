@@ -3017,31 +3017,95 @@ function buildAdvisorPage() {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Advisor Portal - Connected Calendars</title>
     <style>
-      body { font-family: Arial, sans-serif; margin: 24px; background: #f5f7fb; color: #1f2937; }
-      .portal-brand-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
-      .portal-page-title { margin: 0; }
-      .portal-header-right { display: flex; align-items: center; gap: 10px; margin-left: auto; }
+      :root {
+        --bg-top: #ecf4ff;
+        --bg-bottom: #f6f8fc;
+        --ink-900: #0f172a;
+        --ink-700: #334155;
+        --ink-600: #475569;
+        --ink-500: #64748b;
+        --line: #d8e1ec;
+        --surface: #ffffff;
+        --surface-soft: #f8fbff;
+        --brand: #0b6bbf;
+        --brand-strong: #0a4f8e;
+        --success: #0f9d58;
+        --warn: #c77b1e;
+        --danger: #be2f3f;
+        --shadow: 0 12px 40px rgba(15, 23, 42, 0.09);
+      }
+      * { box-sizing: border-box; }
+      body {
+        font-family: "Avenir Next", "Segoe UI Variable", "Gill Sans", "Trebuchet MS", sans-serif;
+        margin: 0;
+        min-height: 100%;
+        background: linear-gradient(180deg, var(--bg-top), var(--bg-bottom));
+        color: var(--ink-900);
+      }
+      .portal-shell { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
+      .portal-sidebar { border-right: 1px solid var(--line); background: linear-gradient(180deg, #ffffff, #f3f7fd); padding: 16px 12px; }
+      .portal-main { padding: 18px; }
+      .portal-brand-header {
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        background: #fff;
+        padding: 12px;
+        margin-bottom: 10px;
+      }
+      .portal-page-title { margin: 0 0 8px; font-size: 22px; color: var(--ink-900); letter-spacing: 0.01em; }
+      .sidebar-note { margin: 0 0 12px; font-size: 12px; color: var(--ink-600); }
       .portal-brand-logo {
         display: block;
-        height: 68px;
+        height: 62px;
         width: auto;
-        max-width: 260px;
+        max-width: 220px;
         object-fit: contain;
         background: #ffffff;
-        border: 1px solid #d0d7e2;
+        border: 1px solid var(--line);
         border-radius: 10px;
         padding: 4px 8px;
       }
-      .card { background: #fff; border: 1px solid #d0d7e2; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+      .sidebar-actions { margin-top: 10px; display: flex; justify-content: center; }
+      .portal-main-header { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
+      .advisor-header-title { margin: 0; font-size: 28px; color: var(--ink-900); letter-spacing: 0.01em; }
+      .advisor-header-meta { margin: 4px 0 0; color: var(--ink-600); font-size: 13px; }
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 16px;
+        margin-bottom: 16px;
+        box-shadow: var(--shadow);
+      }
       h1 { margin-top: 0; }
-      button { padding: 8px 12px; margin-right: 8px; cursor: pointer; }
-      input, select { padding: 8px 10px; margin-right: 8px; border: 1px solid #c7ced9; border-radius: 6px; }
+      button {
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--ink-700);
+        border-radius: 10px;
+        padding: 8px 12px;
+        margin-right: 8px;
+        cursor: pointer;
+        font-weight: 700;
+        transition: background 120ms ease, border-color 120ms ease;
+      }
+      button:hover {
+        background: #f5f9ff;
+        border-color: #bfd2e8;
+      }
+      input, select {
+        padding: 8px 10px;
+        margin-right: 8px;
+        border: 1px solid #c7ced9;
+        border-radius: 8px;
+        background: #fff;
+      }
       .banner { border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 14px; }
       .banner.ok { background: #ecfdf5; color: #065f46; border: 1px solid #a7f3d0; }
       .banner.error { background: #fef2f2; color: #991b1b; border: 1px solid #fecaca; }
       table { width: 100%; border-collapse: collapse; }
       th, td { text-align: left; border-bottom: 1px solid #e5e7eb; padding: 8px; font-size: 14px; }
-      .muted { color: #6b7280; }
+      .muted { color: var(--ink-500); }
       .status { font-weight: 600; }
       .ok { color: #047857; }
       .warn { color: #b45309; }
@@ -3055,15 +3119,11 @@ function buildAdvisorPage() {
       .inline-controls select,
       .inline-controls textarea { margin-right: 0; }
       .connection-actions { gap: 10px; align-items: stretch; }
-      .connection-actions button { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; font-weight: 600; }
+      .connection-actions button { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
       .connection-actions-note { margin: 8px 0 0; display: block; }
-      @media (max-width: 960px) {
-        .portal-brand-header { align-items: flex-start; flex-wrap: wrap; }
-        .portal-header-right { width: 100%; justify-content: flex-end; }
-      }
-      .small-button { padding: 4px 8px; font-size: 12px; }
+      .small-button { padding: 5px 9px; font-size: 12px; }
       .small-select { padding: 4px 8px; font-size: 12px; }
-      textarea { padding: 8px 10px; border: 1px solid #c7ced9; border-radius: 6px; font-family: inherit; }
+      textarea { padding: 8px 10px; border: 1px solid #c7ced9; border-radius: 8px; font-family: inherit; background: #fff; }
       .table-meta { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px; margin-top: 10px; margin-bottom: 8px; }
       .table-meta p { margin: 0; }
       .search-input { min-width: 260px; }
@@ -3071,51 +3131,221 @@ function buildAdvisorPage() {
       .table-scroll table { min-width: 1080px; }
       .table-scroll thead th { position: sticky; top: 0; background: #f8fafc; z-index: 1; }
       .settings-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 12px; margin-top: 10px; }
-      .settings-panel { border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; background: #f8fafc; }
+      .settings-panel { border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: var(--surface-soft); }
       .settings-panel .section-subtitle { margin-top: 0; }
       .settings-intro { margin: 0 0 10px; font-size: 13px; }
       .profile-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
-      .profile-grid label { display: block; font-size: 12px; color: #475569; font-weight: 600; margin-bottom: 4px; }
+      .profile-grid label { display: block; font-size: 12px; color: var(--ink-600); font-weight: 700; margin-bottom: 4px; }
       .profile-grid input, .profile-grid select { width: 100%; margin-right: 0; box-sizing: border-box; }
       .checkbox-field { display: flex; align-items: center; gap: 8px; min-height: 38px; }
       .checkbox-field input[type="checkbox"] { width: auto; margin: 0; padding: 0; }
-      .checkbox-field label { margin: 0; font-size: 13px; color: #334155; font-weight: 600; }
+      .checkbox-field label { margin: 0; font-size: 13px; color: var(--ink-700); font-weight: 700; }
       .profile-actions { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
       .profile-status { margin-top: 8px; }
-      .section-subtitle { margin: 12px 0 8px; font-size: 15px; color: #0f172a; }
+      .section-subtitle { margin: 12px 0 8px; font-size: 15px; color: var(--ink-900); }
       .section-divider { border: 0; border-top: 1px solid #e5e7eb; margin: 16px 0; }
       .overview-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-top: 10px; }
-      .overview-stat { border: 1px solid #e5e7eb; border-radius: 8px; padding: 10px; background: #f8fafc; }
-      .overview-label { font-size: 12px; color: #64748b; font-weight: 700; text-transform: uppercase; letter-spacing: 0.03em; }
-      .overview-value { margin-top: 6px; font-size: 20px; font-weight: 700; color: #0f172a; line-height: 1.1; }
-      .advanced-summary { cursor: pointer; font-weight: 700; color: #0f172a; }
+      .overview-stat { border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: var(--surface-soft); }
+      .overview-label { font-size: 12px; color: var(--ink-500); font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; }
+      .overview-value { margin-top: 6px; font-size: 20px; font-weight: 800; color: var(--ink-900); line-height: 1.1; }
+      .advanced-summary { cursor: pointer; font-weight: 700; color: var(--ink-900); }
       details .advanced-content { margin-top: 12px; }
-      .brand-preview { display: block; height: 34px; width: auto; max-width: 260px; border: 1px solid #d0d7e2; border-radius: 8px; background: #fff; padding: 4px 8px; }
+      .brand-preview { display: block; height: 34px; width: auto; max-width: 260px; border: 1px solid var(--line); border-radius: 8px; background: #fff; padding: 4px 8px; }
       .brand-status { margin-top: 10px; }
-      .site-footer { margin-top: 16px; padding-top: 10px; border-top: 1px solid #d0d7e2; text-align: center; }
-      .copyright { margin: 0; font-size: 12px; color: #475569; font-weight: 600; }
-      .powered-by { margin: 4px 0 0; font-size: 12px; color: #64748b; }
+      .site-footer { margin-top: 16px; padding-top: 10px; border-top: 1px solid var(--line); text-align: center; }
+      .copyright { margin: 0; font-size: 12px; color: var(--ink-600); font-weight: 600; }
+      .powered-by { margin: 4px 0 0; font-size: 12px; color: var(--ink-500); }
       .powered-by.hidden { display: none; }
+      .workspace-nav { display: grid; gap: 6px; margin-top: 10px; }
+      .workspace-nav-button {
+        width: 100%;
+        text-align: left;
+        padding: 10px 12px;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        color: var(--ink-700);
+        font-size: 13px;
+        font-weight: 700;
+        margin-right: 0;
+      }
+      .workspace-nav-button.active { background: #e7f2ff; border-color: #a9c9eb; color: var(--brand-strong); }
+      .sidebar-actions .workspace-nav-button { text-align: center; }
+      .workspace-grid { margin-top: 12px; display: grid; grid-template-columns: repeat(3, minmax(240px, 1fr)); gap: 10px; }
+      .workspace-card { border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); padding: 12px; display: grid; gap: 8px; }
+      .workspace-card h3 { margin: 0; font-size: 15px; color: var(--ink-900); }
+      .workspace-card p { margin: 0; font-size: 13px; color: var(--ink-600); line-height: 1.35; }
+      .workspace-inline-search { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+      .workspace-inline-search input {
+        flex: 1;
+        min-width: 165px;
+        width: 100%;
+        margin-right: 0;
+        padding: 7px 10px;
+      }
+      .workspace-inline-search button { margin-right: 0; }
+      .workspace-quick-summary { margin: 0; font-size: 12px; color: var(--ink-500); }
+      .workspace-card-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 6px;
+      }
+      .workspace-card-list li {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        padding: 8px 9px;
+      }
+      .workspace-detail-line {
+        margin: 0;
+        font-size: 12px;
+        color: var(--ink-600);
+        line-height: 1.35;
+      }
+      .workspace-detail-line strong {
+        color: var(--ink-700);
+      }
+      .workspace-client-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: center;
+      }
+      .workspace-client-name {
+        margin: 0;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--ink-700);
+      }
+      .workspace-client-meta {
+        margin: 2px 0 0;
+        font-size: 12px;
+        color: var(--ink-500);
+      }
+      .workspace-client-state {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border: 1px solid transparent;
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 11px;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .workspace-client-state.ok {
+        color: #0c6f3f;
+        border-color: #76c69f;
+        background: #e8f8ef;
+      }
+      .workspace-client-state.warn {
+        color: #8f5208;
+        border-color: #f0c78a;
+        background: #fff4e3;
+      }
+      .workspace-client-state.error {
+        color: #98303f;
+        border-color: #f2afb8;
+        background: #fff0f3;
+      }
+      .workspace-hints.hidden { display: none; }
+      .hint-grid {
+        margin-top: 8px;
+        display: grid;
+        gap: 8px;
+      }
+      .hint-card {
+        border-radius: 10px;
+        border: 1px solid var(--line);
+        background: #fff;
+        padding: 10px;
+      }
+      .hint-card.warn { border-left: 4px solid var(--warn); }
+      .hint-card.info { border-left: 4px solid var(--brand); }
+      .hint-title { margin: 0; font-size: 14px; font-weight: 800; color: var(--ink-700); }
+      .hint-detail { margin: 4px 0 0; font-size: 13px; color: var(--ink-600); }
+      .hint-action-link {
+        display: inline-flex;
+        margin-top: 8px;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--brand-strong);
+        text-decoration: none;
+        border-bottom: 1px solid transparent;
+      }
+      .hint-action-link:hover {
+        border-color: var(--brand-strong);
+      }
+      .workspace-card .card-actions { margin-top: 10px; }
+      .panel-store { display: none; }
+      .panel-modal { position: fixed; inset: 0; background: rgba(15, 23, 42, 0.5); display: grid; place-items: center; padding: 16px; z-index: 1200; }
+      .panel-modal.hidden { display: none; }
+      .panel-modal-dialog { width: min(1200px, 96vw); max-height: 92vh; background: #ffffff; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; display: grid; grid-template-rows: auto 1fr; }
+      .panel-modal-header { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); background: #f6f9ff; }
+      .panel-modal-title { margin: 0; font-size: 20px; color: var(--ink-900); }
+      .panel-modal-body { overflow: auto; padding: 14px; }
+      .panel-content { margin: 0; border: 0; border-radius: 0; padding: 0; box-shadow: none; }
+      @media (max-width: 1400px) {
+        .workspace-grid { grid-template-columns: repeat(2, minmax(240px, 1fr)); }
+      }
+      @media (max-width: 1080px) {
+        .portal-shell { grid-template-columns: 1fr; }
+        .portal-sidebar { border-right: 0; border-bottom: 1px solid var(--line); }
+        .portal-main-header { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 760px) {
+        .workspace-grid { grid-template-columns: 1fr; }
+      }
     </style>
   </head>
   <body>
-    <header class="portal-brand-header">
-      <h1 class="portal-page-title">Advisor Portal</h1>
-      <div class="portal-header-right">
-        <img
-          id="portalBrandLogo"
-          class="portal-brand-logo"
-          src="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
-          data-default-logo="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
-          alt="LetsConnect.ai logo"
-        />
-        <button id="logout" type="button" class="small-button">Logout</button>
+    <div class="portal-shell">
+      <aside class="portal-sidebar">
+        <header class="portal-brand-header">
+          <h1 class="portal-page-title">Advisor Portal</h1>
+          <img
+            id="portalBrandLogo"
+            class="portal-brand-logo"
+            src="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+            data-default-logo="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+            alt="LetsConnect.ai logo"
+          />
+        </header>
+        <p class="sidebar-note">Select an area to open full controls.</p>
+        <div class="workspace-nav" id="workspaceNav">
+          <button type="button" class="workspace-nav-button" data-panel="connections">Connections</button>
+          <button type="button" class="workspace-nav-button" data-panel="clients">Clients &amp; Access</button>
+          <button type="button" class="workspace-nav-button" data-panel="settings">Profile &amp; AI</button>
+          <button type="button" class="workspace-nav-button" data-panel="branding">Branding</button>
+          <button type="button" class="workspace-nav-button" data-panel="usage">Usage &amp; Billing</button>
+          <button type="button" class="workspace-nav-button" data-panel="debug">Diagnostics</button>
+        </div>
+        <div class="sidebar-actions">
+          <button id="logout" type="button" class="workspace-nav-button">Logout</button>
+        </div>
+      </aside>
+
+      <main class="portal-main">
+    <header class="card portal-main-header">
+      <div>
+        <h1 id="advisorHeaderName" class="advisor-header-title">Advisor</h1>
+        <p id="advisorHeaderMeta" class="advisor-header-meta">Loading advisor profile…</p>
       </div>
+      <button id="refreshPortalDataTop" type="button">Refresh Data</button>
     </header>
+
+    <section id="workspaceHintsCard" class="card workspace-hints hidden">
+      <h2 style="margin-top:0;">Setup Hints</h2>
+      <p class="muted">Complete these items to enable full scheduling behavior.</p>
+      <div id="workspaceHintsGrid" class="hint-grid"></div>
+    </section>
 
     <div class="card">
       <h2 style="margin-top:0;">Overview</h2>
-      <p class="muted">Quick summary of current portal health and activity. Usage and billing cards will be expanded next.</p>
+      <p class="muted">Portal health and usage snapshot. Open any workspace area below to edit or inspect details.</p>
       <div class="overview-grid">
         <div class="overview-stat">
           <div class="overview-label">Connected Calendars</div>
@@ -3146,16 +3376,6 @@ function buildAdvisorPage() {
           <div id="overviewTotalInteractions" class="overview-value">0</div>
         </div>
       </div>
-      <p id="overviewUsageHint" class="muted">Usage and billing metrics are loading.</p>
-      <div class="row inline-controls">
-        <label for="usageWindowSelect" class="muted">Usage Window</label>
-        <select id="usageWindowSelect">
-          <option value="daily">Daily (24h)</option>
-          <option value="weekly" selected>Weekly (7d)</option>
-          <option value="monthly">Monthly (30d)</option>
-        </select>
-        <button id="refreshUsageSummary">Refresh Usage</button>
-      </div>
       <div class="overview-grid">
         <div class="overview-stat">
           <div class="overview-label">LLM Requests</div>
@@ -3182,242 +3402,336 @@ function buildAdvisorPage() {
           <div id="overviewEstimatedCost" class="overview-value">$0.0000</div>
         </div>
       </div>
-      <h3 class="section-subtitle">LLM Usage By Model</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Provider</th>
-            <th>Model</th>
-            <th>Requests</th>
-            <th>Input Tokens</th>
-            <th>Output Tokens</th>
-            <th>Total Tokens</th>
-            <th>Estimated Cost (USD)</th>
-          </tr>
-        </thead>
-        <tbody id="usageByModelBody">
-          <tr><td colspan="7" class="muted">Loading usage metrics...</td></tr>
-        </tbody>
-      </table>
+      <p id="overviewUsageHint" class="muted">Usage and billing metrics are loading.</p>
     </div>
 
     <div class="card">
-      <h2 style="margin-top:0;">Connected Calendars</h2>
-      <div id="statusBanner" style="display:none"></div>
-      <p class="muted">Add calendars for availability checks without manually editing AWS secrets, then manage them below.</p>
-      <div class="row inline-controls connection-actions">
-        <button id="googleConnect">Connect Google (Sign In)</button>
-        <button id="microsoftConnect">Connect Microsoft (Sign In)</button>
-        <button id="refreshPortalData">Refresh Data</button>
+      <h2 style="margin-top:0;">Workspace</h2>
+      <p class="muted">Select an area to open full controls in a focused panel.</p>
+      <div class="workspace-grid">
+        <article class="workspace-card">
+          <h3>Connections</h3>
+          <p id="workspaceConnectionsSummary">No connections loaded.</p>
+          <ul id="workspaceConnectionsDetailList" class="workspace-card-list">
+            <li class="muted">No connection details yet.</li>
+          </ul>
+          <div class="card-actions"><button type="button" class="small-button" data-open-panel="connections">Open</button></div>
+        </article>
+        <article class="workspace-card">
+          <h3>Clients &amp; Access</h3>
+          <p id="workspaceClientsSummary">No clients loaded.</p>
+          <div class="workspace-inline-search">
+            <input
+              id="workspaceClientQuickSearch"
+              type="search"
+              placeholder="Quick search clients..."
+              aria-label="Quick search clients"
+            />
+            <button id="workspaceClientQuickSearchClear" type="button" class="small-button">Clear</button>
+          </div>
+          <p id="workspaceClientQuickSummary" class="workspace-quick-summary">Top clients will appear here.</p>
+          <ul id="workspaceClientQuickList" class="workspace-card-list">
+            <li class="muted">No clients loaded.</li>
+          </ul>
+          <div class="card-actions"><button type="button" class="small-button" data-open-panel="clients">Open</button></div>
+        </article>
+        <article class="workspace-card">
+          <h3>Profile &amp; AI Settings</h3>
+          <p id="workspaceSettingsSummary">Advisor profile loading.</p>
+          <ul id="workspaceSettingsDetailList" class="workspace-card-list">
+            <li class="muted">Advisor profile details are loading.</li>
+          </ul>
+          <div class="card-actions"><button type="button" class="small-button" data-open-panel="settings">Open</button></div>
+        </article>
+        <article class="workspace-card">
+          <h3>Branding</h3>
+          <p id="workspaceBrandingSummary">LetsConnect default branding.</p>
+          <ul id="workspaceBrandingDetailList" class="workspace-card-list">
+            <li class="muted">Branding details are loading.</li>
+          </ul>
+          <div class="card-actions"><button type="button" class="small-button" data-open-panel="branding">Open</button></div>
+        </article>
+        <article class="workspace-card">
+          <h3>Usage &amp; Billing</h3>
+          <p id="workspaceUsageSummary">Usage metrics loading.</p>
+          <ul id="workspaceUsageDetailList" class="workspace-card-list">
+            <li class="muted">Usage details are loading.</li>
+          </ul>
+          <div class="card-actions"><button type="button" class="small-button" data-open-panel="usage">Open</button></div>
+        </article>
+        <article class="workspace-card">
+          <h3>Diagnostics</h3>
+          <p id="workspaceDebugSummary">No trace selected.</p>
+          <ul id="workspaceDebugDetailList" class="workspace-card-list">
+            <li class="muted">Diagnostics details appear after trace lookup.</li>
+          </ul>
+          <div class="card-actions"><button type="button" class="small-button" data-open-panel="debug">Open</button></div>
+        </article>
       </div>
-      <p class="muted connection-actions-note">Google/Microsoft flows require app credentials configured in backend secrets.</p>
-      <h3 class="section-subtitle">Current Connections</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Provider</th>
-            <th>Account</th>
-            <th>Status</th>
-            <th>Primary</th>
-            <th>Updated</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody id="connectionsBody"></tbody>
-      </table>
     </div>
 
-    <div class="card">
-      <h2 style="margin-top:0;">Clients &amp; Access</h2>
-      <p class="muted">Manage client cohorts, access policies, and admission allowlist from one place.</p>
-      <h3 class="section-subtitle">Access Policies</h3>
-      <div class="row inline-controls">
-        <input id="newPolicyId" placeholder="policy id (example: founders)" style="min-width: 220px;" />
-        <input id="newPolicyDays" placeholder="days (example: Tue,Wed)" style="min-width: 220px;" />
-        <button id="createPolicy">Create Policy</button>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Policy ID</th>
-            <th>Allowed Days</th>
-            <th>Type</th>
-            <th>Actions</th>
-          </tr>
-        </thead>
-        <tbody id="policiesBody"></tbody>
-      </table>
-
-      <hr class="section-divider" />
-
-      <h3 class="section-subtitle">Client Directory</h3>
-      <p class="muted">Metadata-only client list with first contact, usage counters, and access policy controls.</p>
-      <div class="row inline-controls">
-        <input id="newClientEmail" placeholder="client email (example: client@example.com)" style="min-width: 260px;" />
-        <input id="newClientDisplayName" placeholder="display name (optional)" style="min-width: 200px;" />
-        <select id="newClientPolicy" class="small-select"></select>
-        <button id="addClient">Add Client</button>
-      </div>
-      <div class="row inline-controls">
-        <textarea id="bulkClientEmails" rows="4" style="min-width: 520px;" placeholder="Bulk import client emails (one per line)"></textarea>
-        <button id="bulkImportClients">Bulk Import</button>
-      </div>
-      <p id="clientImportStatus" class="muted">Add one client or bulk import emails to control who can receive agent responses.</p>
-      <div class="table-meta">
-        <div class="inline-controls">
-          <input id="clientSearchInput" class="search-input" placeholder="Search clients by name or email" />
-          <button id="clearClientSearch" class="small-button" type="button">Clear</button>
+    <div id="detailPanelStore" class="panel-store">
+      <section class="card panel-content" data-panel-id="connections" data-panel-title="Connected Calendars">
+        <h2 style="margin-top:0;">Connected Calendars</h2>
+        <div id="statusBanner" style="display:none"></div>
+        <p class="muted">Add calendars for availability checks without manually editing AWS secrets, then manage them below.</p>
+        <div class="row inline-controls connection-actions">
+          <button id="googleConnect">Connect Google (Sign In)</button>
+          <button id="microsoftConnect">Connect Microsoft (Sign In)</button>
+          <button id="refreshPortalData">Refresh Data</button>
         </div>
-        <p id="clientListSummary" class="muted">Showing 0 of 0 clients.</p>
-      </div>
-      <div class="table-scroll">
+        <p class="muted connection-actions-note">Google/Microsoft flows require app credentials configured in backend secrets.</p>
+        <h3 class="section-subtitle">Current Connections</h3>
         <table>
           <thead>
             <tr>
-              <th>Client</th>
-              <th>Access</th>
-              <th>Policy</th>
-              <th>First Contact</th>
-              <th>Last Activity</th>
-              <th>Email Uses</th>
-              <th>Web Uses</th>
-              <th>Total</th>
+              <th>Provider</th>
+              <th>Account</th>
+              <th>Status</th>
+              <th>Primary</th>
+              <th>Updated</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="connectionsBody"></tbody>
+        </table>
+      </section>
+
+      <section class="card panel-content" data-panel-id="clients" data-panel-title="Clients &amp; Access">
+        <h2 style="margin-top:0;">Clients &amp; Access</h2>
+        <p class="muted">Manage client cohorts, access policies, and admission allowlist from one place.</p>
+        <h3 class="section-subtitle">Access Policies</h3>
+        <div class="row inline-controls">
+          <input id="newPolicyId" placeholder="policy id (example: founders)" style="min-width: 220px;" />
+          <input id="newPolicyDays" placeholder="days (example: Tue,Wed)" style="min-width: 220px;" />
+          <button id="createPolicy">Create Policy</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Policy ID</th>
+              <th>Allowed Days</th>
+              <th>Type</th>
               <th>Actions</th>
             </tr>
           </thead>
-          <tbody id="clientsBody"></tbody>
+          <tbody id="policiesBody"></tbody>
         </table>
-      </div>
-    </div>
 
-    <div class="card">
-      <h2 style="margin-top:0;">Advisor Profile &amp; AI Settings</h2>
-      <p class="muted">Defaults are initialized from advisor Google login and can be edited here.</p>
-      <div class="settings-grid">
-        <section class="settings-panel">
-          <h3 class="section-subtitle">Advisor Identity</h3>
-          <p class="muted settings-intro">Email identity and timezone used in outbound responses and calendar suggestions.</p>
-          <div class="profile-grid">
-            <div>
-              <label for="advisorAgentEmail">Agent Email</label>
-              <input id="advisorAgentEmail" type="email" placeholder="advisor.agent@agent.letsconnect.ai" />
-            </div>
-            <div>
-              <label for="advisorInviteEmail">Advisor Invite Email</label>
-              <input id="advisorInviteEmail" type="email" placeholder="advisor@example.com" />
-            </div>
-            <div>
-              <label for="advisorPreferredName">Preferred Name</label>
-              <input id="advisorPreferredName" type="text" placeholder="Advisor name" maxlength="64" />
-            </div>
-            <div>
-              <label for="advisorTimezone">Advisor Timezone</label>
-              <input id="advisorTimezone" type="text" placeholder="America/Los_Angeles" />
-            </div>
-          </div>
-        </section>
-        <section class="settings-panel">
-          <h3 class="section-subtitle">AI Settings</h3>
-          <p class="muted settings-intro">Provider/model and advisor-managed key controls for email response generation.</p>
-          <div class="profile-grid">
-            <div>
-              <label for="advisorLlmKeyMode">LLM Key Source</label>
-              <select id="advisorLlmKeyMode">
-                <option value="platform">Platform Default Key</option>
-                <option value="advisor">Advisor Key</option>
-              </select>
-            </div>
-            <div>
-              <label for="advisorLlmProvider">LLM Provider</label>
-              <select id="advisorLlmProvider">
-                <option value="openai">OpenAI</option>
-              </select>
-            </div>
-            <div>
-              <label for="advisorLlmModel">LLM Model</label>
-              <input id="advisorLlmModel" type="text" placeholder="gpt-5.2" maxlength="80" />
-            </div>
-            <div>
-              <label for="advisorLlmEndpoint">LLM Endpoint</label>
-              <input id="advisorLlmEndpoint" type="url" placeholder="https://api.openai.com/v1/chat/completions" />
-            </div>
-            <div>
-              <label for="advisorLlmApiKey">Advisor LLM API Key (optional)</label>
-              <input id="advisorLlmApiKey" type="password" placeholder="sk-..." autocomplete="off" />
-            </div>
-            <div class="checkbox-field">
-              <input id="clearAdvisorLlmApiKey" type="checkbox" />
-              <label for="clearAdvisorLlmApiKey">Clear stored advisor key when saving</label>
-            </div>
-          </div>
-        </section>
-      </div>
-      <div class="profile-actions">
-        <button id="saveAdvisorSettings">Save Profile</button>
-      </div>
-      <p id="advisorSettingsStatus" class="muted profile-status">Loading advisor profile settings...</p>
-    </div>
+        <hr class="section-divider" />
 
-    <div class="card">
-      <h2 style="margin-top:0;">Branding</h2>
-      <p class="muted">Default letsconnect.ai logo is shown unless you upload an advisor logo.</p>
-      <div class="row inline-controls">
-        <img
-          id="brandLogoPreview"
-          class="brand-preview"
-          src="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
-          data-default-logo="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
-          alt="Current brand logo preview"
-        />
-        <input id="brandLogoFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif" />
-        <button id="saveBrandLogo">Use Uploaded Logo</button>
-        <button id="resetBrandLogo">Use LetsConnect Logo</button>
-      </div>
-      <p id="brandStatus" class="muted brand-status">Current branding: LetsConnect.ai default.</p>
-      <p class="muted">Local preview mode: uploaded logo is stored in this browser only for now.</p>
-    </div>
-
-    <div class="card">
-      <details id="advancedDebugDetails">
-        <summary class="advanced-summary">Advanced: Debug Request By ID</summary>
-        <div class="advanced-content">
-          <p class="muted">Looks up metadata-only trace details. No raw email or calendar content is stored.</p>
-          <div class="row">
-            <input id="traceRequestId" placeholder="requestId (UUID)" style="min-width: 320px;" />
-            <button id="traceLookup">Lookup Trace</button>
-          </div>
-          <div class="row">
-            <select id="feedbackReason">
-              <option value="other">Feedback reason: other</option>
-              <option value="availability_mismatch">availability_mismatch</option>
-              <option value="timezone_issue">timezone_issue</option>
-              <option value="tone_quality">tone_quality</option>
-              <option value="latency">latency</option>
-            </select>
-            <button id="markIncorrect">Mark Incorrect</button>
-            <button id="markOdd">Mark Odd</button>
-            <button id="markHelpful">Mark Helpful</button>
-          </div>
-          <p id="traceStatus" class="muted">Enter a request ID and click Lookup Trace.</p>
-          <pre id="traceResult">{}</pre>
+        <h3 class="section-subtitle">Client Directory</h3>
+        <p class="muted">Metadata-only client list with first contact, usage counters, and access policy controls.</p>
+        <div class="row inline-controls">
+          <input id="newClientEmail" placeholder="client email (example: client@example.com)" style="min-width: 260px;" />
+          <input id="newClientDisplayName" placeholder="display name (optional)" style="min-width: 200px;" />
+          <select id="newClientPolicy" class="small-select"></select>
+          <button id="addClient">Add Client</button>
         </div>
-      </details>
+        <div class="row inline-controls">
+          <textarea id="bulkClientEmails" rows="4" style="min-width: 520px;" placeholder="Bulk import client emails (one per line)"></textarea>
+          <button id="bulkImportClients">Bulk Import</button>
+        </div>
+        <p id="clientImportStatus" class="muted">Add one client or bulk import emails to control who can receive agent responses.</p>
+        <div class="table-meta">
+          <div class="inline-controls">
+            <input id="clientSearchInput" class="search-input" placeholder="Search clients by name or email" />
+            <button id="clearClientSearch" class="small-button" type="button">Clear</button>
+          </div>
+          <p id="clientListSummary" class="muted">Showing 0 of 0 clients.</p>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Client</th>
+                <th>Access</th>
+                <th>Policy</th>
+                <th>First Contact</th>
+                <th>Last Activity</th>
+                <th>Email Uses</th>
+                <th>Web Uses</th>
+                <th>Total</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody id="clientsBody"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="card panel-content" data-panel-id="settings" data-panel-title="Advisor Profile &amp; AI Settings">
+        <h2 style="margin-top:0;">Advisor Profile &amp; AI Settings</h2>
+        <p class="muted">Defaults are initialized from advisor Google login and can be edited here.</p>
+        <div class="settings-grid">
+          <section class="settings-panel">
+            <h3 class="section-subtitle">Advisor Identity</h3>
+            <p class="muted settings-intro">Email identity and timezone used in outbound responses and calendar suggestions.</p>
+            <div class="profile-grid">
+              <div>
+                <label for="advisorAgentEmail">Agent Email</label>
+                <input id="advisorAgentEmail" type="email" placeholder="advisor.agent@agent.letsconnect.ai" />
+              </div>
+              <div>
+                <label for="advisorInviteEmail">Advisor Invite Email</label>
+                <input id="advisorInviteEmail" type="email" placeholder="advisor@example.com" />
+              </div>
+              <div>
+                <label for="advisorPreferredName">Preferred Name</label>
+                <input id="advisorPreferredName" type="text" placeholder="Advisor name" maxlength="64" />
+              </div>
+              <div>
+                <label for="advisorTimezone">Advisor Timezone</label>
+                <input id="advisorTimezone" type="text" placeholder="America/Los_Angeles" />
+              </div>
+            </div>
+          </section>
+          <section class="settings-panel">
+            <h3 class="section-subtitle">AI Settings</h3>
+            <p class="muted settings-intro">Provider/model and advisor-managed key controls for email response generation.</p>
+            <div class="profile-grid">
+              <div>
+                <label for="advisorLlmKeyMode">LLM Key Source</label>
+                <select id="advisorLlmKeyMode">
+                  <option value="platform">Platform Default Key</option>
+                  <option value="advisor">Advisor Key</option>
+                </select>
+              </div>
+              <div>
+                <label for="advisorLlmProvider">LLM Provider</label>
+                <select id="advisorLlmProvider">
+                  <option value="openai">OpenAI</option>
+                </select>
+              </div>
+              <div>
+                <label for="advisorLlmModel">LLM Model</label>
+                <input id="advisorLlmModel" type="text" placeholder="gpt-5.2" maxlength="80" />
+              </div>
+              <div>
+                <label for="advisorLlmEndpoint">LLM Endpoint</label>
+                <input id="advisorLlmEndpoint" type="url" placeholder="https://api.openai.com/v1/chat/completions" />
+              </div>
+              <div>
+                <label for="advisorLlmApiKey">Advisor LLM API Key (optional)</label>
+                <input id="advisorLlmApiKey" type="password" placeholder="sk-..." autocomplete="off" />
+              </div>
+              <div class="checkbox-field">
+                <input id="clearAdvisorLlmApiKey" type="checkbox" />
+                <label for="clearAdvisorLlmApiKey">Clear stored advisor key when saving</label>
+              </div>
+            </div>
+          </section>
+        </div>
+        <div class="profile-actions">
+          <button id="saveAdvisorSettings">Save Profile</button>
+        </div>
+        <p id="advisorSettingsStatus" class="muted profile-status">Loading advisor profile settings...</p>
+      </section>
+
+      <section class="card panel-content" data-panel-id="branding" data-panel-title="Branding">
+        <h2 style="margin-top:0;">Branding</h2>
+        <p class="muted">Default letsconnect.ai logo is shown unless you upload an advisor logo.</p>
+        <div class="row inline-controls">
+          <img
+            id="brandLogoPreview"
+            class="brand-preview"
+            src="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+            data-default-logo="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+            alt="Current brand logo preview"
+          />
+          <input id="brandLogoFile" type="file" accept="image/png,image/jpeg,image/webp,image/svg+xml,image/gif" />
+          <button id="saveBrandLogo">Use Uploaded Logo</button>
+          <button id="resetBrandLogo">Use LetsConnect Logo</button>
+        </div>
+        <p id="brandStatus" class="muted brand-status">Current branding: LetsConnect.ai default.</p>
+        <p class="muted">Local preview mode: uploaded logo is stored in this browser only for now.</p>
+      </section>
+
+      <section class="card panel-content" data-panel-id="usage" data-panel-title="Usage &amp; Billing">
+        <h2 style="margin-top:0;">Usage &amp; Billing</h2>
+        <p class="muted">Model usage, token counts, and estimated costs across the selected time window.</p>
+        <div class="row inline-controls">
+          <label for="usageWindowSelect" class="muted">Usage Window</label>
+          <select id="usageWindowSelect">
+            <option value="daily">Daily (24h)</option>
+            <option value="weekly" selected>Weekly (7d)</option>
+            <option value="monthly">Monthly (30d)</option>
+          </select>
+          <button id="refreshUsageSummary">Refresh Usage</button>
+        </div>
+        <h3 class="section-subtitle">LLM Usage By Model</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>Model</th>
+              <th>Requests</th>
+              <th>Input Tokens</th>
+              <th>Output Tokens</th>
+              <th>Total Tokens</th>
+              <th>Estimated Cost (USD)</th>
+            </tr>
+          </thead>
+          <tbody id="usageByModelBody">
+            <tr><td colspan="7" class="muted">Loading usage metrics...</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section class="card panel-content" data-panel-id="debug" data-panel-title="Diagnostics">
+        <h2 style="margin-top:0;">Diagnostics</h2>
+        <p class="muted">Metadata-only trace lookup and feedback workflow for support and root-cause analysis.</p>
+        <div class="row">
+          <input id="traceRequestId" placeholder="requestId (UUID)" style="min-width: 320px;" />
+          <button id="traceLookup">Lookup Trace</button>
+        </div>
+        <div class="row inline-controls">
+          <select id="feedbackReason">
+            <option value="other">Feedback reason: other</option>
+            <option value="availability_mismatch">availability_mismatch</option>
+            <option value="timezone_issue">timezone_issue</option>
+            <option value="tone_quality">tone_quality</option>
+            <option value="latency">latency</option>
+          </select>
+          <button id="markIncorrect">Mark Incorrect</button>
+          <button id="markOdd">Mark Odd</button>
+          <button id="markHelpful">Mark Helpful</button>
+        </div>
+        <p id="traceStatus" class="muted">Enter a request ID and click Lookup Trace.</p>
+        <pre id="traceResult">{}</pre>
+      </section>
     </div>
 
     <footer class="site-footer">
       <p class="copyright">${escapeHtml(BRAND_COPYRIGHT_NOTICE)}</p>
       <p id="portalPoweredBy" class="powered-by hidden">${escapeHtml(BRAND_POWERED_BY_NOTICE)}</p>
     </footer>
+      </main>
+    </div>
+
+    <div id="panelModal" class="panel-modal hidden" role="dialog" aria-modal="true" aria-labelledby="panelModalTitle">
+      <div class="panel-modal-dialog">
+        <header class="panel-modal-header">
+          <h2 id="panelModalTitle" class="panel-modal-title">Workspace Panel</h2>
+          <button id="panelModalClose" type="button" class="small-button">Close</button>
+        </header>
+        <div id="panelModalBody" class="panel-modal-body"></div>
+      </div>
+    </div>
 
     <script>
       let lastTrace = null;
       let policyOptions = ['default', 'weekend', 'monday'];
+      let latestPolicies = [];
       let latestConnections = [];
       let latestClients = [];
       let latestClientPolicyOptions = ['default', 'weekend', 'monday'];
       let clientSearchQuery = '';
+      let workspaceClientQuickQuery = '';
       let latestUsageSummary = null;
+      let latestAdvisorSettings = null;
       let selectedUsageWindow = 'weekly';
+      let activePanelNode = null;
       const BRAND_STORAGE_KEY = '${BRAND_STORAGE_KEY}';
       const BRAND_MAX_BYTES = 1024 * 1024;
 
@@ -3456,6 +3770,467 @@ function buildAdvisorPage() {
         node.textContent = text;
       }
 
+      function setWorkspaceSummary(nodeId, text) {
+        const node = document.getElementById(nodeId);
+        if (!node) {
+          return;
+        }
+        node.textContent = String(text || '');
+      }
+
+      function renderWorkspaceDetailList(nodeId, lines, emptyMessage) {
+        const node = document.getElementById(nodeId);
+        if (!node) {
+          return;
+        }
+
+        node.innerHTML = '';
+        const normalizedLines = Array.isArray(lines)
+          ? lines
+              .map((line) => String(line || '').trim())
+              .filter(Boolean)
+          : [];
+
+        if (normalizedLines.length === 0) {
+          const emptyItem = document.createElement('li');
+          emptyItem.className = 'muted';
+          emptyItem.textContent = String(emptyMessage || 'No details available.');
+          node.appendChild(emptyItem);
+          return;
+        }
+
+        for (const line of normalizedLines) {
+          const item = document.createElement('li');
+          const paragraph = document.createElement('p');
+          paragraph.className = 'workspace-detail-line';
+          paragraph.textContent = line;
+          item.appendChild(paragraph);
+          node.appendChild(item);
+        }
+      }
+
+      function compactWorkspaceValue(value, maxLength = 48) {
+        const normalized = String(value || '').trim();
+        if (normalized.length <= maxLength) {
+          return normalized;
+        }
+        return normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd() + '…';
+      }
+
+      function setWorkspaceNavActive(panelId) {
+        const buttons = Array.from(document.querySelectorAll('#workspaceNav [data-panel]'));
+        for (const button of buttons) {
+          const isActive = String(button.getAttribute('data-panel') || '') === String(panelId || '');
+          button.classList.toggle('active', isActive);
+        }
+      }
+
+      function normalizeClientAccessStateLabel(value) {
+        const normalized = String(value || '')
+          .trim()
+          .toLowerCase();
+        if (normalized === 'blocked') {
+          return 'blocked';
+        }
+        if (normalized === 'deleted') {
+          return 'deleted';
+        }
+        return 'active';
+      }
+
+      function clientAccessStateClass(accessState) {
+        if (accessState === 'blocked') {
+          return 'warn';
+        }
+        if (accessState === 'deleted') {
+          return 'error';
+        }
+        return 'ok';
+      }
+
+      function renderWorkspaceClientQuickList() {
+        const listNode = document.getElementById('workspaceClientQuickList');
+        const summaryNode = document.getElementById('workspaceClientQuickSummary');
+        if (!listNode || !summaryNode) {
+          return;
+        }
+
+        const clients = Array.isArray(latestClients) ? latestClients : [];
+        const normalizedSearchQuery = normalizeClientSearchInput(workspaceClientQuickQuery);
+        const filteredClients = normalizedSearchQuery
+          ? clients.filter((client) => clientMatchesSearch(client, normalizedSearchQuery))
+          : clients;
+        const visibleClients = filteredClients.slice(0, 3);
+
+        listNode.innerHTML = '';
+
+        if (clients.length === 0) {
+          const emptyItem = document.createElement('li');
+          emptyItem.className = 'muted';
+          emptyItem.textContent = 'No clients imported yet.';
+          listNode.appendChild(emptyItem);
+          summaryNode.textContent = 'Import clients to start quick search.';
+          return;
+        }
+
+        if (visibleClients.length === 0) {
+          const emptyItem = document.createElement('li');
+          emptyItem.className = 'muted';
+          emptyItem.textContent = 'No clients match this search.';
+          listNode.appendChild(emptyItem);
+          summaryNode.textContent = 'No matches found in ' + clients.length + ' clients.';
+          return;
+        }
+
+        if (normalizedSearchQuery) {
+          summaryNode.textContent =
+            'Showing ' +
+            visibleClients.length +
+            ' of ' +
+            filteredClients.length +
+            ' matches (' +
+            clients.length +
+            ' total clients).';
+        } else {
+          summaryNode.textContent = 'Showing ' + visibleClients.length + ' of ' + clients.length + ' recent clients.';
+        }
+
+        for (const client of visibleClients) {
+          const accessState = normalizeClientAccessStateLabel(client?.accessState);
+          const listItem = document.createElement('li');
+          const row = document.createElement('div');
+          row.className = 'workspace-client-row';
+
+          const details = document.createElement('div');
+          const name = document.createElement('p');
+          name.className = 'workspace-client-name';
+          name.textContent = String(client?.clientDisplayName || 'Client');
+          const meta = document.createElement('p');
+          meta.className = 'workspace-client-meta';
+          meta.textContent = String(client?.clientEmail || client?.clientId || '');
+          details.appendChild(name);
+          details.appendChild(meta);
+
+          const state = document.createElement('span');
+          state.className = 'workspace-client-state ' + clientAccessStateClass(accessState);
+          state.textContent = accessState;
+
+          row.appendChild(details);
+          row.appendChild(state);
+          listItem.appendChild(row);
+          listNode.appendChild(listItem);
+        }
+      }
+
+      function renderWorkspaceHints() {
+        const cardNode = document.getElementById('workspaceHintsCard');
+        const gridNode = document.getElementById('workspaceHintsGrid');
+        if (!cardNode || !gridNode) {
+          return;
+        }
+
+        const connectedCalendars = latestConnections.filter(
+          (connection) => String(connection?.status || '').toLowerCase() === 'connected'
+        ).length;
+        const totalClients = Array.isArray(latestClients) ? latestClients.length : 0;
+        const hints = [];
+
+        if (connectedCalendars === 0) {
+          hints.push({
+            level: 'warn',
+            title: 'Connect your first calendar',
+            detail: 'Scheduling responses remain in hold mode until at least one calendar is connected.',
+            actionText: 'Connect a calendar now',
+            actionPanel: 'connections',
+            actionFocus: 'googleConnect'
+          });
+        }
+
+        if (totalClients === 0) {
+          hints.push({
+            level: 'info',
+            title: 'Import clients to enable replies',
+            detail: 'Unknown senders are blackholed by policy until clients are admitted.',
+            actionText: 'Import or add clients',
+            actionPanel: 'clients',
+            actionFocus: 'bulkClientEmails'
+          });
+        }
+
+        if (hints.length === 0) {
+          cardNode.classList.add('hidden');
+          gridNode.innerHTML = '';
+          return;
+        }
+
+        gridNode.innerHTML = '';
+        for (const hint of hints) {
+          const item = document.createElement('article');
+          item.className = 'hint-card ' + hint.level;
+          const title = document.createElement('p');
+          title.className = 'hint-title';
+          title.textContent = hint.title;
+          const detail = document.createElement('p');
+          detail.className = 'hint-detail';
+          detail.textContent = hint.detail;
+          item.appendChild(title);
+          item.appendChild(detail);
+          if (hint.actionText && hint.actionPanel) {
+            const actionLink = document.createElement('a');
+            actionLink.className = 'hint-action-link';
+            actionLink.href = '#';
+            actionLink.textContent = hint.actionText;
+            actionLink.setAttribute('data-hint-panel', hint.actionPanel);
+            actionLink.setAttribute('data-hint-focus', String(hint.actionFocus || ''));
+            item.appendChild(actionLink);
+          }
+          gridNode.appendChild(item);
+        }
+
+        cardNode.classList.remove('hidden');
+      }
+
+      function updateWorkspaceSummaries() {
+        const connectedCalendars = latestConnections.filter((connection) => String(connection?.status || '').toLowerCase() === 'connected').length;
+        const erroredConnections = latestConnections.filter((connection) => String(connection?.status || '').toLowerCase() === 'error').length;
+        const primaryConnection = latestConnections.find((connection) => Boolean(connection?.isPrimary));
+        const totalClients = latestClients.length;
+        const blockedClients = latestClients.filter((client) => String(client?.accessState || '').toLowerCase() === 'blocked').length;
+        const customPolicies = latestPolicies.filter((policy) => String(policy?.source || '').toLowerCase() === 'custom').length;
+        const usageTotals = latestUsageSummary?.totals || {};
+        const usageByModel = Array.isArray(latestUsageSummary?.byModel) ? latestUsageSummary.byModel : [];
+        const llmRequests = normalizeCount(usageTotals.llmRequestCount);
+        const llmTokens = normalizeCount(usageTotals.llmTotalTokens);
+        const estimatedCost = formatUsd(usageTotals.estimatedTotalCostUsd);
+        const usageWindow = String(latestUsageSummary?.window || selectedUsageWindow || 'weekly').trim().toLowerCase();
+        const profileAlias = String(latestAdvisorSettings?.agentEmail || '').trim();
+        const inviteEmail = String(latestAdvisorSettings?.inviteEmail || '').trim();
+        const advisorTimezone = String(latestAdvisorSettings?.timezone || '').trim();
+        const llmProvider = String(latestAdvisorSettings?.llmProvider || 'openai').trim();
+        const llmModel = String(latestAdvisorSettings?.llmModel || 'gpt-5.2').trim();
+        const llmKeyMode = String(latestAdvisorSettings?.llmKeyMode || 'platform').trim();
+        const profileName = String(latestAdvisorSettings?.preferredName || '').trim();
+        const storedLogo = getStoredBrandLogo();
+        const topUsageModel = usageByModel.length > 0 ? usageByModel[0] : null;
+        const usageWindowLabel =
+          usageWindow === 'daily'
+            ? 'Daily (24h)'
+            : usageWindow === 'monthly'
+              ? 'Monthly (30d)'
+              : 'Weekly (7d)';
+        const debugSummary =
+          lastTrace && lastTrace.requestId
+            ? 'Last trace: ' + String(lastTrace.requestId) + ' (' + String(lastTrace.status || 'unknown') + ')'
+            : 'No trace selected.';
+
+        setWorkspaceSummary(
+          'workspaceConnectionsSummary',
+          connectedCalendars + ' connected' + (erroredConnections > 0 ? ' | ' + erroredConnections + ' needs attention' : '')
+        );
+        setWorkspaceSummary(
+          'workspaceClientsSummary',
+          totalClients +
+            ' clients' +
+            (blockedClients > 0 ? ' | ' + blockedClients + ' blocked' : '') +
+            ' | ' +
+            latestPolicies.length +
+            ' policies' +
+            (customPolicies > 0 ? ' (' + customPolicies + ' custom)' : '')
+        );
+        setWorkspaceSummary(
+          'workspaceSettingsSummary',
+          profileAlias
+            ? (profileName ? profileName + ' | ' : '') + profileAlias
+            : 'Advisor profile loading.'
+        );
+        setWorkspaceSummary(
+          'workspaceBrandingSummary',
+          storedLogo ? 'Advisor uploaded logo active.' : 'LetsConnect default branding.'
+        );
+        setWorkspaceSummary(
+          'workspaceUsageSummary',
+          latestUsageSummary ? llmRequests + ' LLM requests | ' + estimatedCost + ' estimated cost' : 'Usage metrics loading.'
+        );
+        setWorkspaceSummary(
+          'workspaceDebugSummary',
+          debugSummary
+        );
+        renderWorkspaceDetailList(
+          'workspaceConnectionsDetailList',
+          [
+            'Connected: ' + connectedCalendars + ' of ' + latestConnections.length + ' calendars',
+            primaryConnection
+              ? 'Primary: ' +
+                compactWorkspaceValue(String(primaryConnection.provider || 'calendar') + ' · ' + String(primaryConnection.accountEmail || '-'))
+              : 'Primary: Not set',
+            erroredConnections > 0 ? 'Needs attention: ' + erroredConnections + ' connection(s) in error' : 'Health: All connection statuses are healthy'
+          ],
+          'No connection details yet.'
+        );
+        renderWorkspaceDetailList(
+          'workspaceSettingsDetailList',
+          [
+            inviteEmail ? 'Invite email: ' + compactWorkspaceValue(inviteEmail) : 'Invite email: Not configured',
+            profileAlias ? 'Agent alias: ' + compactWorkspaceValue(profileAlias) : 'Agent alias: Not configured',
+            advisorTimezone ? 'Timezone: ' + advisorTimezone : 'Timezone: America/Los_Angeles',
+            'LLM: ' + llmProvider + ' · ' + llmModel + ' (' + llmKeyMode + ' key mode)'
+          ],
+          'Advisor profile details are loading.'
+        );
+        renderWorkspaceDetailList(
+          'workspaceBrandingDetailList',
+          [
+            storedLogo ? 'Brand mode: Advisor logo + LetsConnect co-branding' : 'Brand mode: LetsConnect default',
+            storedLogo ? 'Footer note: Powered by LetsConnect.ai is visible' : 'Footer note: Powered by line is hidden',
+            'Logo source: ' + (storedLogo ? 'Browser-stored advisor upload' : 'System default letsconnect.ai logo')
+          ],
+          'Branding details are loading.'
+        );
+        renderWorkspaceDetailList(
+          'workspaceUsageDetailList',
+          [
+            'Window: ' + usageWindowLabel,
+            'LLM requests: ' + llmRequests + ' · Tokens: ' + llmTokens,
+            'Estimated cost: ' + estimatedCost,
+            topUsageModel
+              ? 'Top model: ' + compactWorkspaceValue(String(topUsageModel.model || 'unknown')) + ' · ' + formatCount(topUsageModel.requestCount || 0) + ' requests'
+              : 'Top model: No model usage yet'
+          ],
+          'Usage details are loading.'
+        );
+        renderWorkspaceDetailList(
+          'workspaceDebugDetailList',
+          lastTrace && lastTrace.requestId
+            ? [
+                'Request: ' + compactWorkspaceValue(String(lastTrace.requestId), 18),
+                'Status: ' + String(lastTrace.status || 'unknown') + ' · LLM: ' + String(lastTrace.llmStatus || 'unknown'),
+                'Feedback: ' + String(lastTrace.feedbackType || 'none') + (lastTrace.feedbackReason ? ' (' + String(lastTrace.feedbackReason) + ')' : '')
+              ]
+            : [
+                'No trace selected yet.',
+                'Use request ID lookup in Diagnostics.',
+                'Feedback actions appear after a trace is loaded.'
+              ],
+          'Diagnostics details appear after trace lookup.'
+        );
+        renderWorkspaceClientQuickList();
+      }
+
+      function closePanelModal() {
+        const modal = document.getElementById('panelModal');
+        const panelStore = document.getElementById('detailPanelStore');
+        const modalBody = document.getElementById('panelModalBody');
+        if (!modal || !panelStore || !modalBody) {
+          return;
+        }
+
+        if (activePanelNode) {
+          panelStore.appendChild(activePanelNode);
+          activePanelNode = null;
+        }
+
+        modal.classList.add('hidden');
+        modalBody.innerHTML = '';
+        setWorkspaceNavActive('');
+      }
+
+      function openPanel(panelId) {
+        const normalizedPanelId = String(panelId || '').trim();
+        if (!normalizedPanelId) {
+          return;
+        }
+
+        const panelStore = document.getElementById('detailPanelStore');
+        const modal = document.getElementById('panelModal');
+        const modalBody = document.getElementById('panelModalBody');
+        const modalTitle = document.getElementById('panelModalTitle');
+        if (!panelStore || !modal || !modalBody || !modalTitle) {
+          return;
+        }
+
+        const panelNode = panelStore.querySelector('[data-panel-id="' + normalizedPanelId + '"]');
+        if (!panelNode) {
+          return;
+        }
+
+        if (activePanelNode && activePanelNode !== panelNode) {
+          panelStore.appendChild(activePanelNode);
+          activePanelNode = null;
+        }
+
+        const title = String(panelNode.getAttribute('data-panel-title') || 'Workspace Panel');
+        modalTitle.textContent = title;
+        modalBody.innerHTML = '';
+        modalBody.appendChild(panelNode);
+        activePanelNode = panelNode;
+        modal.classList.remove('hidden');
+        setWorkspaceNavActive(normalizedPanelId);
+      }
+
+      function openPanelAndFocus(panelId, focusElementId) {
+        openPanel(panelId);
+        const normalizedFocusElementId = String(focusElementId || '').trim();
+        if (!normalizedFocusElementId) {
+          return;
+        }
+
+        window.setTimeout(() => {
+          const node = document.getElementById(normalizedFocusElementId);
+          if (!node || typeof node.focus !== 'function') {
+            return;
+          }
+          node.focus();
+        }, 0);
+      }
+
+      function bindWorkspacePanelInteractions() {
+        const navButtons = Array.from(document.querySelectorAll('#workspaceNav [data-panel]'));
+        for (const button of navButtons) {
+          button.addEventListener('click', () => {
+            openPanel(button.getAttribute('data-panel'));
+          });
+        }
+
+        const cardButtons = Array.from(document.querySelectorAll('[data-open-panel]'));
+        for (const button of cardButtons) {
+          button.addEventListener('click', () => {
+            openPanel(button.getAttribute('data-open-panel'));
+          });
+        }
+
+        const hintGrid = document.getElementById('workspaceHintsGrid');
+        if (hintGrid) {
+          hintGrid.addEventListener('click', (event) => {
+            const link = event.target?.closest?.('[data-hint-panel]');
+            if (!link) {
+              return;
+            }
+            event.preventDefault();
+            openPanelAndFocus(link.getAttribute('data-hint-panel'), link.getAttribute('data-hint-focus'));
+          });
+        }
+
+        const modal = document.getElementById('panelModal');
+        const closeButton = document.getElementById('panelModalClose');
+        if (closeButton) {
+          closeButton.addEventListener('click', () => {
+            closePanelModal();
+          });
+        }
+        if (modal) {
+          modal.addEventListener('click', (event) => {
+            if (event.target === modal) {
+              closePanelModal();
+            }
+          });
+        }
+        document.addEventListener('keydown', (event) => {
+          if (event.key === 'Escape') {
+            closePanelModal();
+          }
+        });
+      }
+
       function applyPortalBranding() {
         const portalLogo = document.getElementById('portalBrandLogo');
         const previewLogo = document.getElementById('brandLogoPreview');
@@ -3482,6 +4257,7 @@ function buildAdvisorPage() {
         } else {
           setBrandStatus('Current branding: LetsConnect.ai default.');
         }
+        updateWorkspaceSummaries();
       }
 
       function setAdvisorSettingsStatus(text, cssClass) {
@@ -3491,6 +4267,47 @@ function buildAdvisorPage() {
         }
         node.className = 'muted profile-status' + (cssClass ? ' ' + cssClass : '');
         node.textContent = text;
+      }
+
+      function deriveAdvisorHeaderName(settings) {
+        const preferredName = String(settings?.preferredName || '').trim();
+        if (preferredName) {
+          return preferredName;
+        }
+
+        const inviteEmail = String(settings?.inviteEmail || settings?.advisorEmail || '').trim();
+        if (inviteEmail.includes('@')) {
+          return inviteEmail.split('@')[0];
+        }
+
+        return 'Advisor';
+      }
+
+      function updateAdvisorHeader(settings = latestAdvisorSettings) {
+        const titleNode = document.getElementById('advisorHeaderName');
+        const metaNode = document.getElementById('advisorHeaderMeta');
+        if (!titleNode || !metaNode) {
+          return;
+        }
+
+        const resolvedSettings = settings || {};
+        titleNode.textContent = deriveAdvisorHeaderName(resolvedSettings);
+
+        const metaParts = [];
+        const inviteEmail = String(resolvedSettings.inviteEmail || '').trim();
+        const timezone = String(resolvedSettings.timezone || '').trim();
+        const agentEmail = String(resolvedSettings.agentEmail || '').trim();
+        if (inviteEmail) {
+          metaParts.push(inviteEmail);
+        }
+        if (timezone) {
+          metaParts.push(timezone);
+        }
+        if (agentEmail) {
+          metaParts.push(agentEmail);
+        }
+
+        metaNode.textContent = metaParts.length > 0 ? metaParts.join(' | ') : 'Loading advisor profile...';
       }
 
       function readAdvisorSettingsInputs() {
@@ -3527,6 +4344,8 @@ function buildAdvisorPage() {
         }
 
         const settings = payload.settings || {};
+        latestAdvisorSettings = settings;
+        updateAdvisorHeader(settings);
         const agentEmailInput = document.getElementById('advisorAgentEmail');
         const inviteEmailInput = document.getElementById('advisorInviteEmail');
         const preferredNameInput = document.getElementById('advisorPreferredName');
@@ -3573,6 +4392,7 @@ function buildAdvisorPage() {
           ? 'Advisor LLM key is configured.'
           : 'Advisor LLM key is not configured.';
         setAdvisorSettingsStatus('Advisor profile loaded. ' + configuredMessage, 'ok');
+        updateWorkspaceSummaries();
       }
 
       async function saveAdvisorSettings() {
@@ -3589,6 +4409,8 @@ function buildAdvisorPage() {
         }
 
         const updated = responsePayload.settings || {};
+        latestAdvisorSettings = updated;
+        updateAdvisorHeader(updated);
         const agentEmailInput = document.getElementById('advisorAgentEmail');
         const inviteEmailInput = document.getElementById('advisorInviteEmail');
         const preferredNameInput = document.getElementById('advisorPreferredName');
@@ -3635,6 +4457,7 @@ function buildAdvisorPage() {
           ? 'Advisor LLM key is configured.'
           : 'Advisor LLM key is not configured.';
         setAdvisorSettingsStatus('Advisor profile saved. ' + configuredMessage, 'ok');
+        updateWorkspaceSummaries();
       }
 
       function readFileAsDataUrl(file) {
@@ -3700,6 +4523,7 @@ function buildAdvisorPage() {
       function renderTrace(payload) {
         const pre = document.getElementById('traceResult');
         pre.textContent = JSON.stringify(payload, null, 2);
+        updateWorkspaceSummaries();
       }
 
       function setTraceStatus(text, cssClass) {
@@ -3810,6 +4634,8 @@ function buildAdvisorPage() {
             usageHint.textContent = 'Usage and billing metrics are loading.';
           }
         }
+        renderWorkspaceHints();
+        updateWorkspaceSummaries();
       }
 
       async function loadUsageSummary(windowKey = selectedUsageWindow) {
@@ -4027,16 +4853,20 @@ function buildAdvisorPage() {
           const row = document.createElement('tr');
           row.innerHTML = '<td colspan="4" class="error">' + escapeHtml(payload.error || 'Unable to load policies.') + '</td>';
           tbody.appendChild(row);
+          latestPolicies = [];
           policyOptions = ['default', 'weekend', 'monday'];
           renderClientPolicyOptions();
+          updateWorkspaceSummaries();
           return;
         }
 
         const policies = Array.isArray(payload.policies) ? payload.policies : [];
+        latestPolicies = policies;
         policyOptions = Array.isArray(payload.policyOptions) && payload.policyOptions.length > 0
           ? payload.policyOptions
           : ['default', 'weekend', 'monday'];
         renderClientPolicyOptions();
+        updateWorkspaceSummaries();
 
         if (policies.length === 0) {
           const row = document.createElement('tr');
@@ -4244,7 +5074,7 @@ function buildAdvisorPage() {
         renderClientsTableRows();
       }
 
-      document.getElementById('refreshPortalData').addEventListener('click', async () => {
+      async function refreshPortalDataNow() {
         await Promise.all([
           loadConnections(),
           loadPolicies(),
@@ -4252,7 +5082,18 @@ function buildAdvisorPage() {
           loadAdvisorSettings(),
           loadUsageSummary(selectedUsageWindow)
         ]);
+      }
+
+      document.getElementById('refreshPortalData').addEventListener('click', async () => {
+        await refreshPortalDataNow();
       });
+
+      const refreshPortalDataTopButton = document.getElementById('refreshPortalDataTop');
+      if (refreshPortalDataTopButton) {
+        refreshPortalDataTopButton.addEventListener('click', async () => {
+          await refreshPortalDataNow();
+        });
+      }
 
       document.getElementById('refreshUsageSummary').addEventListener('click', async () => {
         try {
@@ -4340,6 +5181,27 @@ function buildAdvisorPage() {
         renderClientsTableRows();
       });
 
+      const workspaceClientQuickSearchInput = document.getElementById('workspaceClientQuickSearch');
+      if (workspaceClientQuickSearchInput) {
+        workspaceClientQuickSearchInput.addEventListener('input', (event) => {
+          workspaceClientQuickQuery = normalizeClientSearchInput(event.target?.value || '');
+          renderWorkspaceClientQuickList();
+        });
+      }
+
+      const workspaceClientQuickSearchClearButton = document.getElementById('workspaceClientQuickSearchClear');
+      if (workspaceClientQuickSearchClearButton) {
+        workspaceClientQuickSearchClearButton.addEventListener('click', () => {
+          const input = document.getElementById('workspaceClientQuickSearch');
+          if (input) {
+            input.value = '';
+            input.focus();
+          }
+          workspaceClientQuickQuery = '';
+          renderWorkspaceClientQuickList();
+        });
+      }
+
       document.getElementById('googleConnect').addEventListener('click', () => {
         window.location.href = './advisor/api/connections/google/start';
       });
@@ -4368,12 +5230,14 @@ function buildAdvisorPage() {
           lastTrace = null;
           renderTrace(payload);
           setTraceStatus(payload.error || 'Trace lookup failed.', 'error');
+          updateWorkspaceSummaries();
           return;
         }
 
         lastTrace = payload.trace;
         renderTrace(payload);
         setTraceStatus('Trace loaded. You can submit feedback below.', 'ok');
+        updateWorkspaceSummaries();
       });
 
       async function submitAdvisorFeedback(feedbackType) {
@@ -4400,10 +5264,12 @@ function buildAdvisorPage() {
         if (!response.ok) {
           renderTrace(payload);
           setTraceStatus(payload.error || 'Feedback submission failed.', 'error');
+          updateWorkspaceSummaries();
           return;
         }
 
         setTraceStatus('Feedback recorded.', 'ok');
+        updateWorkspaceSummaries();
       }
 
       document.getElementById('markIncorrect').addEventListener('click', async () => {
@@ -4418,9 +5284,11 @@ function buildAdvisorPage() {
         await submitAdvisorFeedback('helpful');
       });
 
+      bindWorkspacePanelInteractions();
       applyPortalBranding();
       showStatusFromQuery();
       renderOverviewMetrics();
+      updateAdvisorHeader();
       loadAdvisorSettings().catch((error) => {
         setAdvisorSettingsStatus(error.message || 'Unable to load advisor profile settings.', 'error');
       });

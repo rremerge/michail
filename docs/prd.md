@@ -229,6 +229,18 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 6. If advisor key is missing, invalid, or quota-exhausted, system shall apply deterministic fallback behavior (safe template response and advisor notification) without failing silently.
 7. Cost and usage reporting shall be tenant-isolated; an advisor must not see another advisor's usage or estimated billing data.
 
+### FR-24 Advisor Workspace UX and Guided Onboarding
+1. Advisor portal workspace shall show concise, high-signal snippets on each workspace card so the advisor can get key status without opening detail panels.
+2. The `Clients & Access` workspace card shall display up to 3 recent client snippets (name, email, and access state) inline.
+3. The `Clients & Access` workspace card shall include inline quick search by client name or email and render matching snippets directly on the card.
+4. Inline quick-search snippets shall be read-only summary views; full edit actions remain in the detailed `Clients & Access` panel.
+5. Advisor portal shall use a consistent visual theme aligned to the approved workspace mock style (soft gradient backdrop, clear card hierarchy, and consistent color tokens) to improve readability and perceived quality.
+6. Advisor portal shall render conditional onboarding hints near the top of the workspace:
+   - if no connected calendars exist, show a hint to connect the first calendar;
+   - if no admitted clients exist, show a hint to import/add clients.
+7. Onboarding hints shall automatically hide once their corresponding conditions are no longer true.
+8. Each onboarding hint shall include a direct action link that opens the relevant workspace area so the advisor can complete the setup step without manually searching the portal.
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -303,6 +315,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 12. Branded web experience with default letsconnect.ai logo, legal footer notice, and advisor white-label logo override.
 13. Multi-advisor tenancy with destination-alias routing and advisor-configurable `agentEmail`.
 14. Unknown-sender admission control with blackhole response policy.
+15. Advisor workspace cards with inline client snippets, quick-search summary, and conditional onboarding hints.
 
 ## 11. Out of Scope for MVP
 1. LinkedIn integration.
@@ -353,6 +366,8 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 29. Given advisor bulk-imports clients in portal, when imported clients send scheduling requests, then agent responds normally while still blackholing non-imported unknown senders.
 30. Given advisor configures their own LLM API key, when scheduling requests are processed, then LLM calls for that advisor use their key and usage/cost telemetry appears in advisor-only reporting.
 31. Given an email response includes suggested slots and an availability link, when the client opens that link, then the page defaults to the week containing the first suggested slot.
+32. Given advisor opens the portal workspace, when clients and connections are loaded, then the `Clients & Access` card shows up to 3 client snippets with inline quick search and the page shows onboarding hints only for unmet setup prerequisites.
+33. Given an onboarding hint is shown, when advisor clicks its action link, then the portal opens the relevant panel (for example `Connections` or `Clients & Access`) and focuses the related input/control.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
