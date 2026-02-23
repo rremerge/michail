@@ -97,6 +97,31 @@ Recommended guided answers for first deploy:
 - `AdvisorPortalAuthMode`: `google_oauth`
 - `AvailabilityLinkBaseUrl`: `https://<api-id>.execute-api.<region>.amazonaws.com/<stage>/availability`
 
+## AWS-Hosted Installer (No Local Toolchain)
+Use this when you want deploys to run fully inside AWS from Git, without requiring a local machine with SAM/AWS CLI.
+
+1. Deploy installer stack once:
+```bash
+sam build --template-file infrastructure/deployment-control-plane/template.yaml
+sam deploy \
+  --template-file infrastructure/deployment-control-plane/template.yaml \
+  --stack-name letsconnect-agent-installer \
+  --capabilities CAPABILITY_IAM \
+  --resolve-s3 \
+  --parameter-overrides \
+    GitRepositoryUrl=https://github.com/<org>/<repo>.git \
+    DefaultAppStackName=letsconnect-agent-prod \
+    DefaultSamParameterOverrides=Stage=prod,AppName=letsconnectAgent,StrictMultiTenantMode=true \
+    DefaultSamTags=App=letsconnectAgent,Environment=prod \
+    DefaultSafeMode=true
+```
+2. Open `InstallerPortalUrl` output and start deployments from browser.
+3. Safe mode (default) creates a CloudFormation change set and pauses at `awaiting_approval`; click `Approve & Execute` in installer UI.
+4. Installer runs tests/build/deploy in containerized CodeBuild using `public.ecr.aws/sam/build-nodejs22.x`.
+5. Deployed app stack is tagged with `App=letsconnectAgent` by default.
+
+Detailed docs: `infrastructure/deployment-control-plane/README.md`.
+
 ## Minimal Hardening (Advisor Portal Auth)
 By default this stack now protects `/advisor` routes with advisor Google login.
 

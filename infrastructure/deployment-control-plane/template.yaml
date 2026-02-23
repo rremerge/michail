@@ -1,0 +1,344 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  LetsConnect Agent deployment control plane.
+  Runs containerized build/deploy jobs in CodeBuild so no local toolchain is required.
+
+Parameters:
+  AppTagValue:
+    Type: String
+    Default: letsconnectAgent
+    Description: Value for the App tag on control-plane and deployed app resources.
+  Stage:
+    Type: String
+    Default: prod
+  ApiStageName:
+    Type: String
+    Default: installer
+  GitRepositoryUrl:
+    Type: String
+    Description: HTTPS clone URL of the application repository.
+  GitRef:
+    Type: String
+    Default: main
+  GitCloneTokenSecretArn:
+    Type: String
+    Default: ""
+    Description: Optional Secrets Manager secret ARN containing a Git token for private repo cloning.
+  DefaultAppStackName:
+    Type: String
+    Default: letsconnect-agent-prod
+  DefaultTemplateFile:
+    Type: String
+    Default: template.yaml
+  DefaultSamParameterOverrides:
+    Type: String
+    Default: Stage=prod,AppName=letsconnectAgent,StrictMultiTenantMode=true
+  DefaultSamTags:
+    Type: String
+    Default: App=letsconnectAgent,Environment=prod
+  DefaultSafeMode:
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "true"
+  CodeBuildImage:
+    Type: String
+    Default: public.ecr.aws/sam/build-nodejs22.x:latest
+  DeploymentTimeoutMinutes:
+    Type: Number
+    Default: 90
+    MinValue: 10
+    MaxValue: 480
+
+Conditions:
+  HasGitCloneTokenSecret: !Not [!Equals [!Ref GitCloneTokenSecretArn, ""]]
+
+Resources:
+  DeploymentStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: deploymentId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: deploymentId
+          KeyType: HASH
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: App
+          Value: !Ref AppTagValue
+        - Key: Stage
+          Value: !Ref Stage
+
+  DeployerCodeBuildRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: DeployAppStackPolicy
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DeployAppStack
+                Effect: Allow
+                Action:
+                  - cloudformation:*
+                  - s3:*
+                  - lambda:*
+                  - iam:*
+                  - apigateway:*
+                  - dynamodb:*
+                  - secretsmanager:*
+                  - logs:*
+                  - events:*
+                  - cloudwatch:*
+                  - xray:*
+                  - ses:*
+                  - sesv2:*
+                  - kms:*
+                  - ssm:GetParameter
+                  - sts:GetCallerIdentity
+                Resource: "*"
+      Tags:
+        - Key: App
+          Value: !Ref AppTagValue
+        - Key: Stage
+          Value: !Ref Stage
+
+  DeployerProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub ${AWS::StackName}-deployer
+      Description: Containerized deploy runner for LetsConnect Agent application stacks.
+      ServiceRole: !GetAtt DeployerCodeBuildRole.Arn
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: LINUX_CONTAINER
+        ComputeType: BUILD_GENERAL1_MEDIUM
+        Image: !Ref CodeBuildImage
+        PrivilegedMode: false
+        EnvironmentVariables:
+          - Name: AWS_REGION
+            Type: PLAINTEXT
+            Value: !Ref AWS::Region
+          - Name: TZ
+            Type: PLAINTEXT
+            Value: America/Los_Angeles
+          - Name: GIT_REPO_URL
+            Type: PLAINTEXT
+            Value: !Ref GitRepositoryUrl
+          - Name: GIT_REF
+            Type: PLAINTEXT
+            Value: !Ref GitRef
+          - Name: APP_STACK_NAME
+            Type: PLAINTEXT
+            Value: !Ref DefaultAppStackName
+          - Name: APP_TEMPLATE_FILE
+            Type: PLAINTEXT
+            Value: !Ref DefaultTemplateFile
+          - Name: SAM_PARAMETER_OVERRIDES
+            Type: PLAINTEXT
+            Value: !Ref DefaultSamParameterOverrides
+          - Name: SAM_TAGS
+            Type: PLAINTEXT
+            Value: !Ref DefaultSamTags
+          - Name: DEPLOY_SAFE_MODE
+            Type: PLAINTEXT
+            Value: !Ref DefaultSafeMode
+          - !If
+            - HasGitCloneTokenSecret
+            - Name: GIT_CLONE_TOKEN
+              Type: SECRETS_MANAGER
+              Value: !Ref GitCloneTokenSecretArn
+            - !Ref AWS::NoValue
+      Source:
+        Type: NO_SOURCE
+        BuildSpec: |
+          version: 0.2
+          phases:
+            install:
+              commands:
+                - set -euo pipefail
+                - echo "Starting deployment ${DEPLOYMENT_ID:-manual}"
+            pre_build:
+              commands:
+                - export WORKDIR="$(mktemp -d)"
+                - export CLONE_URL="$GIT_REPO_URL"
+                - |
+                  if [[ -n "${GIT_CLONE_TOKEN:-}" ]]; then
+                    if [[ "$GIT_REPO_URL" != https://* ]]; then
+                      echo "GIT_REPO_URL must be https:// when using GIT_CLONE_TOKEN" >&2
+                      exit 1
+                    fi
+                    CLONE_URL="https://x-access-token:${GIT_CLONE_TOKEN}@${GIT_REPO_URL#https://}"
+                  fi
+                - git clone --quiet "$CLONE_URL" "$WORKDIR/repo"
+                - cd "$WORKDIR/repo"
+                - git fetch --all --tags --quiet
+                - git checkout "$GIT_REF"
+            build:
+              commands:
+                - |
+                  if [[ ! -f "${APP_TEMPLATE_FILE}" ]]; then
+                    echo "Template file not found: ${APP_TEMPLATE_FILE}" >&2
+                    exit 1
+                  fi
+                - npm --prefix app ci
+                - npm --prefix app test
+                - sam build --template-file "${APP_TEMPLATE_FILE}" --build-dir .aws-sam/build
+                - |
+                  deploy_cmd=(
+                    sam deploy
+                    --region "${AWS_REGION}"
+                    --stack-name "${APP_STACK_NAME}"
+                    --template-file ".aws-sam/build/template.yaml"
+                    --capabilities CAPABILITY_IAM
+                    --resolve-s3
+                    --no-confirm-changeset
+                    --no-fail-on-empty-changeset
+                  )
+                  if [[ "${DEPLOY_SAFE_MODE:-true}" == "true" ]]; then
+                    deploy_cmd+=(--no-execute-changeset)
+                  fi
+                  if [[ -n "${SAM_PARAMETER_OVERRIDES:-}" ]]; then
+                    normalized_parameter_overrides="${SAM_PARAMETER_OVERRIDES//,/ }"
+                    read -r -a parameter_args <<< "${normalized_parameter_overrides}"
+                    deploy_cmd+=(--parameter-overrides "${parameter_args[@]}")
+                  fi
+                  if [[ -n "${SAM_TAGS:-}" ]]; then
+                    normalized_tags="${SAM_TAGS//,/ }"
+                    read -r -a tag_args <<< "${normalized_tags}"
+                    deploy_cmd+=(--tags "${tag_args[@]}")
+                  fi
+                  "${deploy_cmd[@]}"
+                - |
+                  aws --region "${AWS_REGION}" cloudformation describe-stacks \
+                    --stack-name "${APP_STACK_NAME}" \
+                    --query "Stacks[0].Outputs[].{Key:OutputKey,Value:OutputValue}" \
+                    --output table
+      TimeoutInMinutes: !Ref DeploymentTimeoutMinutes
+      QueuedTimeoutInMinutes: !Ref DeploymentTimeoutMinutes
+      Tags:
+        - Key: App
+          Value: !Ref AppTagValue
+        - Key: Stage
+          Value: !Ref Stage
+
+  InstallerApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      StageName: !Ref ApiStageName
+      CorsConfiguration:
+        AllowMethods:
+          - GET
+          - POST
+          - OPTIONS
+        AllowOrigins:
+          - "*"
+        AllowHeaders:
+          - content-type
+
+  InstallerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: src/
+      Handler: installer-handler.handler
+      Runtime: nodejs22.x
+      MemorySize: 256
+      Timeout: 30
+      Tracing: Active
+      Environment:
+        Variables:
+          DEPLOYMENT_TABLE_NAME: !Ref DeploymentStateTable
+          CODEBUILD_PROJECT_NAME: !Ref DeployerProject
+          DEFAULT_GIT_REPO_URL: !Ref GitRepositoryUrl
+          DEFAULT_GIT_REF: !Ref GitRef
+          DEFAULT_STACK_NAME: !Ref DefaultAppStackName
+          DEFAULT_TEMPLATE_FILE: !Ref DefaultTemplateFile
+          DEFAULT_PARAMETER_OVERRIDES: !Ref DefaultSamParameterOverrides
+          DEFAULT_SAM_TAGS: !Ref DefaultSamTags
+          DEFAULT_SAFE_MODE: !Ref DefaultSafeMode
+      Events:
+        InstallerHome:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref InstallerApi
+            Method: GET
+            Path: /
+        InstallerHomeAlias:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref InstallerApi
+            Method: GET
+            Path: /installer
+        StartDeployment:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref InstallerApi
+            Method: POST
+            Path: /deployments
+        GetDeploymentStatus:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref InstallerApi
+            Method: GET
+            Path: /deployments/{deploymentId}
+        ExecuteDeployment:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref InstallerApi
+            Method: POST
+            Path: /deployments/{deploymentId}/execute
+      Policies:
+        - Statement:
+            - Sid: DeploymentStateReadWrite
+              Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt DeploymentStateTable.Arn
+            - Sid: StartAndInspectBuilds
+              Effect: Allow
+              Action:
+                - codebuild:StartBuild
+                - codebuild:BatchGetBuilds
+              Resource: !GetAtt DeployerProject.Arn
+            - Sid: ReadAndExecuteChangeSets
+              Effect: Allow
+              Action:
+                - cloudformation:ListChangeSets
+                - cloudformation:DescribeChangeSet
+                - cloudformation:ExecuteChangeSet
+              Resource: "*"
+      Tags:
+        App: !Ref AppTagValue
+        Stage: !Ref Stage
+
+Outputs:
+  InstallerPortalUrl:
+    Description: Browser URL for the deployment installer portal.
+    Value: !Sub https://${InstallerApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiStageName}/installer
+  StartDeploymentApiUrl:
+    Description: API endpoint to start a deployment.
+    Value: !Sub https://${InstallerApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiStageName}/deployments
+  DeploymentStatusApiUrl:
+    Description: API endpoint prefix for deployment status lookup.
+    Value: !Sub https://${InstallerApi}.execute-api.${AWS::Region}.amazonaws.com/${ApiStageName}/deployments/
+  DeployerProjectName:
+    Description: CodeBuild project used for containerized deployments.
+    Value: !Ref DeployerProject
+  DeploymentStateTableName:
+    Description: DynamoDB table containing deployment records.
+    Value: !Ref DeploymentStateTable
