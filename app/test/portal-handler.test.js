@@ -54,6 +54,7 @@ test("advisor portal home serves html", async () => {
     assert.match(response.body, /grid-template-columns: repeat\(3, minmax\(240px, 1fr\)\)/);
     assert.match(response.body, /Connect Google \(Sign In\)/);
     assert.match(response.body, /Connect Microsoft \(Sign In\)/);
+    assert.match(response.body, /Open Advisor Calendar/);
     assert.equal(response.body.includes("Add Mock Calendar"), false);
     assert.match(response.body, /Copyright \(C\) 2026\. RR Emerge LLC/);
   } finally {
@@ -2175,14 +2176,16 @@ test("availability page renders open slots for valid short token", async () => {
         expiresAtMs: nowMs + 60 * 60 * 1000
       };
     },
-    async getPrimaryConnection(tableName, suppliedAdvisorId) {
+    async listConnections(tableName, suppliedAdvisorId) {
       assert.equal(tableName, "ConnectionsTable");
       assert.equal(suppliedAdvisorId, "manoj");
-      return {
-        provider: "mock",
-        status: "connected",
-        isPrimary: true
-      };
+      return [
+        {
+          provider: "mock",
+          status: "connected",
+          isPrimary: true
+        }
+      ];
     }
   });
 
@@ -2310,14 +2313,16 @@ test("availability page supports microsoft primary connection in CALENDAR_MODE=c
         expiresAtMs: nowMs + 60 * 60 * 1000
       };
     },
-    async getPrimaryConnection() {
-      return {
-        provider: "microsoft",
-        status: "connected",
-        isPrimary: true,
-        accountEmail: "advisor@outlook.com",
-        secretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft-connection"
-      };
+    async listConnections() {
+      return [
+        {
+          provider: "microsoft",
+          status: "connected",
+          isPrimary: true,
+          accountEmail: "advisor@outlook.com",
+          secretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft-connection"
+        }
+      ];
     },
     async getSecretString(secretArn) {
       assert.equal(secretArn, "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft-connection");
@@ -2382,6 +2387,371 @@ test("availability page supports microsoft primary connection in CALENDAR_MODE=c
     assert.equal(lookupCalls.length > 0, true);
     assert.equal(lookupCalls[0].provider, "microsoft");
     assert.match(response.body, />Busy</);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("availability page aggregates busy intervals across all connected calendar connections", async () => {
+  const tokenId = "multiconnectionavailability1";
+  const nowMs = Date.now();
+  const hostTimezone = "America/Los_Angeles";
+  const weekStartLocal = DateTime.fromMillis(Date.now(), { zone: hostTimezone }).startOf("week");
+  const googleBusyStartIso = weekStartLocal.plus({ days: 2, hours: 9 }).toUTC().toISO();
+  const googleBusyEndIso = weekStartLocal.plus({ days: 2, hours: 9, minutes: 30 }).toUTC().toISO();
+  const microsoftBusyStartIso = weekStartLocal.plus({ days: 2, hours: 9, minutes: 30 }).toUTC().toISO();
+  const microsoftBusyEndIso = weekStartLocal.plus({ days: 2, hours: 10 }).toUTC().toISO();
+  const lookupProviders = [];
+
+  const handler = createPortalHandler({
+    async getAvailabilityLink() {
+      return {
+        tokenId,
+        advisorId: "manoj",
+        clientDisplayName: "Tito Needa",
+        clientReference: "tito-needa",
+        durationMinutes: 30,
+        expiresAtMs: nowMs + 60 * 60 * 1000
+      };
+    },
+    async listConnections(tableName, suppliedAdvisorId) {
+      assert.equal(tableName, "ConnectionsTable");
+      assert.equal(suppliedAdvisorId, "manoj");
+      return [
+        {
+          provider: "google",
+          status: "connected",
+          isPrimary: true,
+          accountEmail: "advisor@gmail.com",
+          secretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:google-connection",
+          updatedAt: "2026-03-03T00:00:00.000Z"
+        },
+        {
+          provider: "microsoft",
+          status: "connected",
+          accountEmail: "advisor@outlook.com",
+          secretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft-connection",
+          updatedAt: "2026-03-02T00:00:00.000Z"
+        }
+      ];
+    },
+    async getSecretString(secretArn) {
+      if (secretArn === "arn:aws:secretsmanager:us-east-1:111111111111:secret:google-connection") {
+        return JSON.stringify({
+          client_id: "google-client-id",
+          client_secret: "google-client-secret",
+          refresh_token: "google-refresh-token",
+          calendar_ids: ["primary", "team@group.calendar.google.com"]
+        });
+      }
+
+      if (secretArn === "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft-connection") {
+        return JSON.stringify({
+          client_id: "ms-client-id",
+          client_secret: "ms-client-secret",
+          refresh_token: "ms-refresh-token",
+          tenant_id: "common",
+          calendar_ids: ["primary"]
+        });
+      }
+
+      throw new Error(`unexpected secret arn: ${secretArn}`);
+    },
+    async lookupBusyIntervals(args) {
+      lookupProviders.push(args.provider);
+      if (args.provider === "google") {
+        assert.equal(args.oauthConfig.calendarIds.length, 2);
+        return [
+          {
+            startIso: googleBusyStartIso,
+            endIso: googleBusyEndIso,
+            calendarId: "primary"
+          }
+        ];
+      }
+      if (args.provider === "microsoft") {
+        assert.equal(args.oauthConfig.calendarIds.length, 1);
+        return [
+          {
+            startIso: microsoftBusyStartIso,
+            endIso: microsoftBusyEndIso,
+            calendarId: "primary"
+          }
+        ];
+      }
+
+      throw new Error(`unexpected provider: ${args.provider}`);
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
+    CALENDAR_MODE: process.env.CALENDAR_MODE,
+    HOST_TIMEZONE: process.env.HOST_TIMEZONE,
+    ADVISING_DAYS: process.env.ADVISING_DAYS,
+    SEARCH_DAYS: process.env.SEARCH_DAYS,
+    WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.CALENDAR_MODE = "connection";
+  process.env.HOST_TIMEZONE = hostTimezone;
+  process.env.ADVISING_DAYS = "Tue,Wed";
+  process.env.SEARCH_DAYS = "7";
+  process.env.WORKDAY_START_HOUR = "9";
+  process.env.WORKDAY_END_HOUR = "10";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        t: tokenId
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/availability"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(new Set(lookupProviders), new Set(["google", "microsoft"]));
+    assert.match(response.body, /data-slot-status="busy"/);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("advisor calendar view aggregates all connected calendars and shows meeting details", async () => {
+  const hostTimezone = "America/Los_Angeles";
+  const baseWeekStart = DateTime.fromMillis(Date.now(), { zone: hostTimezone }).startOf("week");
+  const googleStartIso = baseWeekStart
+    .plus({ days: 1 })
+    .set({ hour: 9, minute: 0, second: 0, millisecond: 0 })
+    .toUTC()
+    .toISO();
+  const googleEndIso = baseWeekStart
+    .plus({ days: 1 })
+    .set({ hour: 9, minute: 30, second: 0, millisecond: 0 })
+    .toUTC()
+    .toISO();
+  const microsoftStartIso = baseWeekStart
+    .plus({ days: 1 })
+    .set({ hour: 9, minute: 30, second: 0, millisecond: 0 })
+    .toUTC()
+    .toISO();
+  const microsoftEndIso = baseWeekStart
+    .plus({ days: 1 })
+    .set({ hour: 10, minute: 0, second: 0, millisecond: 0 })
+    .toUTC()
+    .toISO();
+
+  const lookupProviders = [];
+  const meetingProviders = [];
+  const handler = createPortalHandler({
+    async listConnections(tableName, suppliedAdvisorId) {
+      assert.equal(tableName, "ConnectionsTable");
+      assert.equal(suppliedAdvisorId, "manoj");
+      return [
+        {
+          provider: "google",
+          status: "connected",
+          isPrimary: true,
+          accountEmail: "advisor@gmail.com",
+          secretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:google-connection",
+          updatedAt: "2026-03-03T00:00:00.000Z"
+        },
+        {
+          provider: "microsoft",
+          status: "connected",
+          accountEmail: "advisor@outlook.com",
+          secretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft-connection",
+          updatedAt: "2026-03-02T00:00:00.000Z"
+        }
+      ];
+    },
+    async getSecretString(secretArn) {
+      if (secretArn === "arn:aws:secretsmanager:us-east-1:111111111111:secret:google-connection") {
+        return JSON.stringify({
+          client_id: "google-client-id",
+          client_secret: "google-client-secret",
+          refresh_token: "google-refresh-token",
+          calendar_ids: ["primary", "team@group.calendar.google.com"]
+        });
+      }
+
+      if (secretArn === "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft-connection") {
+        return JSON.stringify({
+          client_id: "ms-client-id",
+          client_secret: "ms-client-secret",
+          refresh_token: "ms-refresh-token",
+          tenant_id: "common",
+          calendar_ids: ["primary"]
+        });
+      }
+
+      throw new Error(`unexpected secret arn: ${secretArn}`);
+    },
+    async lookupBusyIntervals({ provider, oauthConfig }) {
+      lookupProviders.push(provider);
+      if (provider === "google") {
+        assert.equal(oauthConfig.calendarIds.length, 2);
+        return [
+          {
+            startIso: googleStartIso,
+            endIso: googleEndIso,
+            calendarId: "primary"
+          }
+        ];
+      }
+      if (provider === "microsoft") {
+        assert.equal(oauthConfig.calendarIds.length, 1);
+        return [
+          {
+            startIso: microsoftStartIso,
+            endIso: microsoftEndIso,
+            calendarId: "primary"
+          }
+        ];
+      }
+
+      throw new Error(`unexpected provider: ${provider}`);
+    },
+    async lookupAdvisorMeetings({ provider }) {
+      meetingProviders.push(provider);
+      if (provider === "google") {
+        return [
+          {
+            eventId: "g-evt-1",
+            calendarId: "primary",
+            startIso: googleStartIso,
+            endIso: googleEndIso,
+            title: "Google Team Sync",
+            advisorResponseStatus: "accepted"
+          }
+        ];
+      }
+      if (provider === "microsoft") {
+        return [
+          {
+            eventId: "m-evt-1",
+            calendarId: "primary",
+            startIso: microsoftStartIso,
+            endIso: microsoftEndIso,
+            title: "Microsoft Project Review",
+            advisorResponseStatus: "pending"
+          }
+        ];
+      }
+      throw new Error(`unexpected provider: ${provider}`);
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
+    CALENDAR_MODE: process.env.CALENDAR_MODE,
+    HOST_TIMEZONE: process.env.HOST_TIMEZONE,
+    ADVISING_DAYS: process.env.ADVISING_DAYS,
+    WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_ID = "manoj";
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.CALENDAR_MODE = "connection";
+  process.env.HOST_TIMEZONE = hostTimezone;
+  process.env.ADVISING_DAYS = "Tue,Wed";
+  process.env.WORKDAY_START_HOUR = "9";
+  process.env.WORKDAY_END_HOUR = "10";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        weekOffset: "0"
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/calendar"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.deepEqual(new Set(lookupProviders), new Set(["google", "microsoft"]));
+    assert.deepEqual(new Set(meetingProviders), new Set(["google", "microsoft"]));
+    assert.match(response.body, /Advisor Calendar/);
+    assert.match(response.body, /Google Team Sync/);
+    assert.match(response.body, /Microsoft Project Review/);
+    assert.match(response.body, /Accepted/);
+    assert.match(response.body, /Pending/);
+    assert.match(response.body, /Previous Week/);
+    assert.match(response.body, /Next Week/);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("advisor calendar view shows setup state when no calendars are connected", async () => {
+  const handler = createPortalHandler({
+    async listConnections(tableName, suppliedAdvisorId) {
+      assert.equal(tableName, "ConnectionsTable");
+      assert.equal(suppliedAdvisorId, "manoj");
+      return [];
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
+    CALENDAR_MODE: process.env.CALENDAR_MODE
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_ID = "manoj";
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.CALENDAR_MODE = "connection";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        weekOffset: "0"
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/calendar"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.body, /No connected calendars were found/);
+    assert.match(response.body, /Return to Advisor Portal/);
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {
@@ -2498,14 +2868,16 @@ test("availability page includes browser-only client calendar compare controls w
         expiresAtMs: nowMs + 60 * 60 * 1000
       };
     },
-    async getPrimaryConnection(tableName, suppliedAdvisorId) {
+    async listConnections(tableName, suppliedAdvisorId) {
       assert.equal(tableName, "ConnectionsTable");
       assert.equal(suppliedAdvisorId, "manoj");
-      return {
-        provider: "mock",
-        status: "connected",
-        isPrimary: true
-      };
+      return [
+        {
+          provider: "mock",
+          status: "connected",
+          isPrimary: true
+        }
+      ];
     },
     async getSecretString(secretArn) {
       assert.equal(secretArn, "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-app");
@@ -2601,12 +2973,14 @@ test("availability page hides browser calendar compare controls by default", asy
         expiresAtMs: nowMs + 60 * 60 * 1000
       };
     },
-    async getPrimaryConnection() {
-      return {
-        provider: "mock",
-        status: "connected",
-        isPrimary: true
-      };
+    async listConnections() {
+      return [
+        {
+          provider: "mock",
+          status: "connected",
+          isPrimary: true
+        }
+      ];
     },
     async getSecretString() {
       return JSON.stringify({
@@ -2687,14 +3061,16 @@ test("availability page keeps 30-minute slots while highlighting starts that fit
         expiresAtMs: nowMs + 60 * 60 * 1000
       };
     },
-    async getPrimaryConnection(tableName, suppliedAdvisorId) {
+    async listConnections(tableName, suppliedAdvisorId) {
       assert.equal(tableName, "ConnectionsTable");
       assert.equal(suppliedAdvisorId, "manoj");
-      return {
-        provider: "mock",
-        status: "connected",
-        isPrimary: true
-      };
+      return [
+        {
+          provider: "mock",
+          status: "connected",
+          isPrimary: true
+        }
+      ];
     }
   });
 
@@ -3021,6 +3397,134 @@ test("availability page shows client meeting details with accepted/pending and o
     assert.match(response.body, /Potential conflict/);
     assert.match(response.body, /client-accepted/);
     assert.match(response.body, /client-pending/);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("advisor calendar view marks potential conflict when two client meetings overlap", async () => {
+  const hostTimezone = "America/Los_Angeles";
+  const baseWeekStart = DateTime.fromMillis(Date.now(), { zone: hostTimezone }).startOf("week");
+  const meeting1StartIso = baseWeekStart
+    .plus({ days: 1 })
+    .set({ hour: 9, minute: 0, second: 0, millisecond: 0 })
+    .toUTC()
+    .toISO();
+  const meeting1EndIso = baseWeekStart
+    .plus({ days: 1 })
+    .set({ hour: 9, minute: 30, second: 0, millisecond: 0 })
+    .toUTC()
+    .toISO();
+  const meeting2StartIso = baseWeekStart
+    .plus({ days: 1 })
+    .set({ hour: 9, minute: 15, second: 0, millisecond: 0 })
+    .toUTC()
+    .toISO();
+  const meeting2EndIso = baseWeekStart
+    .plus({ days: 1 })
+    .set({ hour: 9, minute: 45, second: 0, millisecond: 0 })
+    .toUTC()
+    .toISO();
+
+  const handler = createPortalHandler({
+    async listConnections() {
+      return [
+        {
+          provider: "google",
+          status: "connected",
+          accountEmail: "advisor@gmail.com",
+          secretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:google-connection",
+          updatedAt: "2026-03-03T00:00:00.000Z"
+        }
+      ];
+    },
+    async getSecretString() {
+      return JSON.stringify({
+        client_id: "google-client-id",
+        client_secret: "google-client-secret",
+        refresh_token: "google-refresh-token",
+        calendar_ids: ["primary"]
+      });
+    },
+    async lookupBusyIntervals() {
+      return [
+        {
+          startIso: meeting1StartIso,
+          endIso: meeting1EndIso,
+          calendarId: "primary"
+        },
+        {
+          startIso: meeting2StartIso,
+          endIso: meeting2EndIso,
+          calendarId: "primary"
+        }
+      ];
+    },
+    async lookupAdvisorMeetings() {
+      return [
+        {
+          eventId: "evt-1",
+          calendarId: "primary",
+          startIso: meeting1StartIso,
+          endIso: meeting1EndIso,
+          title: "Session A",
+          advisorResponseStatus: "accepted"
+        },
+        {
+          eventId: "evt-2",
+          calendarId: "primary",
+          startIso: meeting2StartIso,
+          endIso: meeting2EndIso,
+          title: "Session B",
+          advisorResponseStatus: "accepted"
+        }
+      ];
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
+    CALENDAR_MODE: process.env.CALENDAR_MODE,
+    HOST_TIMEZONE: process.env.HOST_TIMEZONE,
+    ADVISING_DAYS: process.env.ADVISING_DAYS,
+    WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR
+  };
+
+  process.env.ADVISOR_ID = "manoj";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.CALENDAR_MODE = "connection";
+  process.env.HOST_TIMEZONE = hostTimezone;
+  process.env.ADVISING_DAYS = "Tue,Wed";
+  process.env.WORKDAY_START_HOUR = "9";
+  process.env.WORKDAY_END_HOUR = "10";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        weekOffset: "0"
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/calendar"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.match(response.body, /Session A/);
+    assert.match(response.body, /Session B/);
+    assert.match(response.body, /Potential conflict/);
+    assert.match(response.body, /Advisor Calendar Conflict/);
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {

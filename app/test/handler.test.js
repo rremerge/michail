@@ -2074,6 +2074,109 @@ test("processSchedulingEmail supports microsoft provider in CALENDAR_MODE=connec
   assert.equal(traceItems[0].calendarMode, "connection");
 });
 
+test("processSchedulingEmail aggregates busy intervals across all connected calendar connections", async () => {
+  const traceItems = [];
+  const googleLookupCalls = [];
+  const microsoftLookupCalls = [];
+  const deps = {
+    async listConnections(tableName, advisorId) {
+      assert.equal(tableName, "ConnectionsTable");
+      assert.equal(advisorId, "manoj");
+      return [
+        {
+          provider: "google",
+          status: "connected",
+          isPrimary: true,
+          secretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:google",
+          updatedAt: "2026-03-03T00:00:00Z"
+        },
+        {
+          provider: "microsoft",
+          status: "connected",
+          secretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft",
+          updatedAt: "2026-03-02T00:00:00Z"
+        }
+      ];
+    },
+    async getSecretString(secretArn) {
+      if (secretArn === "arn:aws:secretsmanager:us-east-1:111111111111:secret:google") {
+        return JSON.stringify({
+          client_id: "google-client-id",
+          client_secret: "google-client-secret",
+          refresh_token: "google-refresh-token",
+          calendar_ids: ["primary", "team-calendar@group.calendar.google.com"]
+        });
+      }
+
+      if (secretArn === "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft") {
+        return JSON.stringify({
+          client_id: "ms-client-id",
+          client_secret: "ms-client-secret",
+          refresh_token: "ms-refresh-token",
+          tenant_id: "common",
+          calendar_ids: ["primary"]
+        });
+      }
+
+      throw new Error(`unexpected secret arn: ${secretArn}`);
+    },
+    async lookupBusyIntervals(args) {
+      googleLookupCalls.push(args);
+      return [
+        {
+          startIso: "2026-03-03T17:00:00.000Z",
+          endIso: "2026-03-03T17:30:00.000Z",
+          calendarId: "primary"
+        }
+      ];
+    },
+    async lookupMicrosoftBusyIntervals(args) {
+      microsoftLookupCalls.push(args);
+      return [
+        {
+          startIso: "2026-03-03T17:30:00.000Z",
+          endIso: "2026-03-03T18:00:00.000Z",
+          calendarId: "primary"
+        }
+      ];
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    CALENDAR_MODE: "connection",
+    CONNECTIONS_TABLE_NAME: "ConnectionsTable",
+    ADVISOR_ID: "manoj",
+    ADVISING_DAYS: "Tue",
+    SEARCH_DAYS: "3",
+    WORKDAY_START_HOUR: "9",
+    WORKDAY_END_HOUR: "10"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Need 30 minutes Tuesday morning"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-02T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.suggestionCount, 0);
+  assert.equal(googleLookupCalls.length, 1);
+  assert.equal(microsoftLookupCalls.length, 1);
+  assert.equal(googleLookupCalls[0].oauthConfig.calendarIds.length, 2);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].calendarMode, "connection");
+});
+
 test("processSchedulingEmail forwards to advisor and sends client hold when no calendar is connected", async () => {
   const sentMessages = [];
   const traceItems = [];

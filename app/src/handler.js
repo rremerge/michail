@@ -875,6 +875,51 @@ function normalizeEmailAddress(rawValue) {
   return candidate.replace(/[<>]/g, "").trim();
 }
 
+function sortConnectionsByUpdatedAtDesc(connections) {
+  return [...connections].sort((left, right) =>
+    String(right?.updatedAt ?? "").localeCompare(String(left?.updatedAt ?? ""))
+  );
+}
+
+function selectPrimaryConnectionCandidate(connections) {
+  const normalized = Array.isArray(connections) ? connections.filter(Boolean) : [];
+  if (normalized.length === 0) {
+    return null;
+  }
+
+  const connected = normalized.filter((connection) => String(connection?.status ?? "").toLowerCase() === "connected");
+  if (connected.length === 0) {
+    return null;
+  }
+
+  const primaryCandidates = connected.filter((connection) => connection?.isPrimary === true);
+  const candidates = primaryCandidates.length > 0 ? primaryCandidates : connected;
+  return sortConnectionsByUpdatedAtDesc(candidates)[0] ?? null;
+}
+
+async function listConnectedCalendarConnections({ deps, connectionsTableName, advisorId }) {
+  if (!connectionsTableName) {
+    throw new Error("CONNECTIONS_TABLE_NAME is required for CALENDAR_MODE=connection");
+  }
+
+  let connections = [];
+  if (typeof deps.listConnections === "function") {
+    connections = await deps.listConnections(connectionsTableName, advisorId);
+  } else if (typeof deps.getPrimaryConnection === "function") {
+    // Backward-compatible path for tests/older dependency contracts.
+    const primaryConnection = await deps.getPrimaryConnection(connectionsTableName, advisorId);
+    connections = primaryConnection ? [primaryConnection] : [];
+  } else {
+    throw new Error("Connection listing capability is required for CALENDAR_MODE=connection");
+  }
+
+  return sortConnectionsByUpdatedAtDesc(
+    (Array.isArray(connections) ? connections : []).filter(
+      (connection) => String(connection?.status ?? "").toLowerCase() === "connected"
+    )
+  );
+}
+
 function buildAccessDeniedResponseMessage() {
   return {
     subject: "Re: Scheduling request",
@@ -2223,47 +2268,61 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       });
     } else if (calendarMode === "connection") {
       const connectionsTableName = env.CONNECTIONS_TABLE_NAME;
-      if (!connectionsTableName) {
-        throw new Error("CONNECTIONS_TABLE_NAME is required for CALENDAR_MODE=connection");
-      }
-
-      const connection = await deps.getPrimaryConnection(connectionsTableName, advisorId);
-      if (!connection) {
+      const connectedConnections = await listConnectedCalendarConnections({
+        deps,
+        connectionsTableName,
+        advisorId
+      });
+      if (connectedConnections.length === 0) {
         throw new Error("No connected calendars found. Add a calendar in Advisor Portal.");
       }
-      activeConnection = connection;
 
-      if (connection.provider === "mock") {
-        busyIntervals = [];
-      } else if (connection.provider === "google") {
-        if (!connection.secretArn) {
-          throw new Error("Google connection is missing secretArn");
+      activeConnection = selectPrimaryConnectionCandidate(connectedConnections);
+      const mergedBusyIntervals = [];
+
+      for (const connection of connectedConnections) {
+        if (connection.provider === "mock") {
+          continue;
         }
 
-        const secretString = await deps.getSecretString(connection.secretArn);
-        const oauthConfig = parseGoogleOauthSecret(secretString);
-        busyIntervals = await deps.lookupBusyIntervals({
-          oauthConfig,
-          windowStartIso: searchStartIso,
-          windowEndIso: searchEndIso,
-          fetchImpl: deps.fetchImpl
-        });
-      } else if (connection.provider === "microsoft") {
-        if (!connection.secretArn) {
-          throw new Error("Microsoft connection is missing secretArn");
+        if (connection.provider === "google") {
+          if (!connection.secretArn) {
+            throw new Error("Google connection is missing secretArn");
+          }
+
+          const secretString = await deps.getSecretString(connection.secretArn);
+          const oauthConfig = parseGoogleOauthSecret(secretString);
+          const providerBusyIntervals = await deps.lookupBusyIntervals({
+            oauthConfig,
+            windowStartIso: searchStartIso,
+            windowEndIso: searchEndIso,
+            fetchImpl: deps.fetchImpl
+          });
+          mergedBusyIntervals.push(...providerBusyIntervals);
+          continue;
         }
 
-        const secretString = await deps.getSecretString(connection.secretArn);
-        const oauthConfig = parseMicrosoftOauthSecret(secretString);
-        busyIntervals = await deps.lookupMicrosoftBusyIntervals({
-          oauthConfig,
-          windowStartIso: searchStartIso,
-          windowEndIso: searchEndIso,
-          fetchImpl: deps.fetchImpl
-        });
-      } else {
+        if (connection.provider === "microsoft") {
+          if (!connection.secretArn) {
+            throw new Error("Microsoft connection is missing secretArn");
+          }
+
+          const secretString = await deps.getSecretString(connection.secretArn);
+          const oauthConfig = parseMicrosoftOauthSecret(secretString);
+          const providerBusyIntervals = await deps.lookupMicrosoftBusyIntervals({
+            oauthConfig,
+            windowStartIso: searchStartIso,
+            windowEndIso: searchEndIso,
+            fetchImpl: deps.fetchImpl
+          });
+          mergedBusyIntervals.push(...providerBusyIntervals);
+          continue;
+        }
+
         throw new Error(`Unsupported provider for CALENDAR_MODE=connection: ${connection.provider}`);
       }
+
+      busyIntervals = mergedBusyIntervals.sort((left, right) => Date.parse(left.startIso) - Date.parse(right.startIso));
     } else {
       throw new Error(`Unsupported CALENDAR_MODE value: ${calendarMode}`);
     }

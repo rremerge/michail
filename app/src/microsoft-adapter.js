@@ -452,3 +452,63 @@ export async function lookupMicrosoftClientMeetings({
     nonClientBusyIntervals
   };
 }
+
+export async function lookupMicrosoftAdvisorMeetings({
+  oauthConfig,
+  windowStartIso,
+  windowEndIso,
+  advisorEmailHint,
+  fetchImpl
+}) {
+  const accessToken = await exchangeRefreshToken({
+    clientId: oauthConfig.clientId,
+    clientSecret: oauthConfig.clientSecret,
+    refreshToken: oauthConfig.refreshToken,
+    tenantId: oauthConfig.tenantId,
+    fetchImpl
+  });
+
+  const windows = splitBusyWindow(windowStartIso, windowEndIso);
+  const meetingDedup = new Map();
+
+  for (const window of windows) {
+    for (const calendarId of oauthConfig.calendarIds) {
+      const events = await fetchCalendarViewEvents({
+        accessToken,
+        calendarId,
+        timeMinIso: window.timeMinIso,
+        timeMaxIso: window.timeMaxIso,
+        fetchImpl
+      });
+
+      for (const event of events) {
+        if (!event || event.isCancelled === true || !isBusyEvent(event)) {
+          continue;
+        }
+
+        const startIso = parseGraphDateTime(event.start);
+        const endIso = parseGraphDateTime(event.end);
+        if (!startIso || !endIso || Date.parse(endIso) <= Date.parse(startIso)) {
+          continue;
+        }
+
+        const meeting = {
+          eventId: String(event.id ?? ""),
+          calendarId,
+          startIso,
+          endIso,
+          title: normalizeMeetingTitle(event.subject),
+          advisorResponseStatus: deriveAdvisorResponseStatus(event, advisorEmailHint)
+        };
+        const key = `${meeting.eventId}|${meeting.startIso}|${meeting.endIso}|${meeting.calendarId}`;
+        if (!meetingDedup.has(key)) {
+          meetingDedup.set(key, meeting);
+        }
+      }
+    }
+  }
+
+  const meetings = Array.from(meetingDedup.values());
+  meetings.sort((left, right) => Date.parse(left.startIso) - Date.parse(right.startIso));
+  return meetings;
+}

@@ -66,6 +66,8 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 1. System shall connect to multiple Google and Microsoft calendar accounts.
 2. System shall calculate unified busy/free availability across connected accounts without persisting calendar event content after task completion.
 3. System shall support configurable "advising days" (default currently Tuesday/Wednesday, user-editable).
+4. When an advisor has multiple connected calendar connections, the system shall query all active connected calendar connections for each availability computation (email suggestion flow and web availability view).
+5. For each connected calendar connection, when multiple `calendar_ids` are configured, the system shall query all configured `calendar_ids` and merge busy windows before computing slot suggestions or rendering availability.
 
 ### FR-3 Slot Recommendation
 1. System shall suggest multiple candidate slots ranked by fit.
@@ -241,6 +243,14 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 7. Onboarding hints shall automatically hide once their corresponding conditions are no longer true.
 8. Each onboarding hint shall include a direct action link that opens the relevant workspace area so the advisor can complete the setup step without manually searching the portal.
 
+### FR-25 Advisor Calendar Self-View
+1. Advisor portal shall provide a direct action to open an advisor calendar view that aggregates all connected calendars.
+2. Advisor calendar self-view shall query all active connected calendar connections for the advisor.
+3. For each connected calendar connection, advisor calendar self-view shall query all configured `calendar_ids`.
+4. Advisor calendar self-view shall render full meeting detail (meeting title, time, and advisor response status) for busy slots, unlike privacy-masked client view.
+5. Advisor calendar self-view shall support week navigation while preserving advisor timezone rendering.
+6. If no calendars are connected, advisor calendar self-view shall show a clear setup state with guidance to connect a calendar.
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -368,6 +378,8 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 31. Given an email response includes suggested slots and an availability link, when the client opens that link, then the page defaults to the week containing the first suggested slot.
 32. Given advisor opens the portal workspace, when clients and connections are loaded, then the `Clients & Access` card shows up to 3 client snippets with inline quick search and the page shows onboarding hints only for unmet setup prerequisites.
 33. Given an onboarding hint is shown, when advisor clicks its action link, then the portal opens the relevant panel (for example `Connections` or `Clients & Access`) and focuses the related input/control.
+34. Given an advisor has multiple connected calendar connections and each connection may include multiple `calendar_ids`, when availability is computed for email responses or the client web availability page, then the system queries all connected connections and all configured `calendar_ids` within each connection and returns results based on the merged busy set.
+35. Given advisor opens the advisor calendar self-view from the portal, when one or more calendars are connected, then the page shows merged busy slots with full meeting details from all connected connections and all configured `calendar_ids`.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
@@ -413,3 +425,5 @@ Some advisors are also keen to host data and lamdba functions on their own AWS a
 The advisor would also like the LLM based agent not to sound too robotic. For instance if multiple time windows are suggested, it is not common for a human to say tell me the option number you like. The agent should also always suggest cross checking the link for available times.  
 
 The advisor would love to advertise this product to other advisors that have similar needs. He would love for this application to have a landing page that he can send potential future advisors to login and create their own agent. The landing page should tell them why this is a great service and ask them to login using google to initiate their own agent.
+
+The advisor has integrated multiple calendars and needs to see them all together the way his clients can see when the agent sends them a link. It would be great if the advisor can click somewhere on the portal and see his calendar with all meeting details.

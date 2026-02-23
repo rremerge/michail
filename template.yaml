@@ -678,6 +678,12 @@ Resources:
             ApiId: !Ref SpikeApi
             Method: GET
             Path: /advisor
+        AdvisorCalendarView:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /advisor/calendar
         AdvisorConnectionsList:
           Type: HttpApi
           Properties:

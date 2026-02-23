@@ -258,6 +258,77 @@ function normalizeMeetingTitle(summary) {
   return value.length > 0 ? value : "Client meeting";
 }
 
+async function fetchAllCalendarMeetings({
+  accessToken,
+  calendarId,
+  timeMinIso,
+  timeMaxIso,
+  advisorEmailHint,
+  fetchImpl
+}) {
+  const fetchFn = fetchImpl ?? fetch;
+  const meetings = [];
+  let pageToken = null;
+
+  do {
+    const url = new URL(
+      `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`
+    );
+    url.searchParams.set("timeMin", timeMinIso);
+    url.searchParams.set("timeMax", timeMaxIso);
+    url.searchParams.set("singleEvents", "true");
+    url.searchParams.set("orderBy", "startTime");
+    url.searchParams.set("showDeleted", "false");
+    url.searchParams.set("maxResults", "2500");
+    url.searchParams.set(
+      "fields",
+      "items(id,summary,start,end,status,transparency,attendees(email,responseStatus,self),organizer(email,self)),nextPageToken"
+    );
+    if (pageToken) {
+      url.searchParams.set("pageToken", pageToken);
+    }
+
+    const response = await fetchFn(url.toString(), {
+      method: "GET",
+      headers: {
+        authorization: `Bearer ${accessToken}`
+      }
+    });
+
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(`Google events request failed (${response.status}): ${message}`);
+    }
+
+    const payload = await response.json();
+    const events = Array.isArray(payload.items) ? payload.items : [];
+    for (const event of events) {
+      if (!event || event.status === "cancelled" || event.transparency === "transparent") {
+        continue;
+      }
+
+      const startIso = normalizeEventDateTime(event.start);
+      const endIso = normalizeEventDateTime(event.end);
+      if (!startIso || !endIso || Date.parse(endIso) <= Date.parse(startIso)) {
+        continue;
+      }
+
+      meetings.push({
+        eventId: String(event.id ?? ""),
+        calendarId,
+        startIso,
+        endIso,
+        title: normalizeMeetingTitle(event.summary),
+        advisorResponseStatus: deriveAdvisorResponseStatus(event, advisorEmailHint)
+      });
+    }
+
+    pageToken = payload.nextPageToken ?? null;
+  } while (pageToken);
+
+  return meetings;
+}
+
 async function fetchCalendarEvents({
   accessToken,
   calendarId,
@@ -445,4 +516,44 @@ export async function lookupGoogleBusyIntervals({
 
   intervals.sort((a, b) => Date.parse(a.startIso) - Date.parse(b.startIso));
   return intervals;
+}
+
+export async function lookupGoogleAdvisorMeetings({
+  oauthConfig,
+  windowStartIso,
+  windowEndIso,
+  advisorEmailHint,
+  fetchImpl
+}) {
+  const accessToken = await exchangeRefreshToken({
+    clientId: oauthConfig.clientId,
+    clientSecret: oauthConfig.clientSecret,
+    refreshToken: oauthConfig.refreshToken,
+    fetchImpl
+  });
+
+  const meetingDedup = new Map();
+  const windows = splitBusyWindow(windowStartIso, windowEndIso);
+  for (const window of windows) {
+    for (const calendarId of oauthConfig.calendarIds) {
+      const meetings = await fetchAllCalendarMeetings({
+        accessToken,
+        calendarId,
+        timeMinIso: window.timeMinIso,
+        timeMaxIso: window.timeMaxIso,
+        advisorEmailHint,
+        fetchImpl
+      });
+      for (const meeting of meetings) {
+        const key = `${meeting.eventId}|${meeting.startIso}|${meeting.endIso}|${meeting.calendarId}`;
+        if (!meetingDedup.has(key)) {
+          meetingDedup.set(key, meeting);
+        }
+      }
+    }
+  }
+
+  const advisorMeetings = Array.from(meetingDedup.values());
+  advisorMeetings.sort((left, right) => Date.parse(left.startIso) - Date.parse(right.startIso));
+  return advisorMeetings;
 }

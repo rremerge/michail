@@ -4,8 +4,14 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRuntimeDeps } from "./runtime-deps.js";
 import { DateTime, Interval } from "luxon";
-import { parseGoogleOauthSecret, lookupGoogleBusyIntervals, lookupGoogleClientMeetings } from "./google-adapter.js";
 import {
+  parseGoogleOauthSecret,
+  lookupGoogleAdvisorMeetings,
+  lookupGoogleBusyIntervals,
+  lookupGoogleClientMeetings
+} from "./google-adapter.js";
+import {
+  lookupMicrosoftAdvisorMeetings,
   lookupMicrosoftBusyIntervals,
   lookupMicrosoftClientMeetings,
   parseMicrosoftOauthSecret
@@ -1050,6 +1056,34 @@ function hasBusyOutsideClientMeetings({
   return false;
 }
 
+function hasOverlappingClientMeetings({ slotStartMs, slotEndMs, clientMeetings }) {
+  const clippedClientIntervals = [];
+  for (const meeting of clientMeetings) {
+    const clipped = clipRangeToSlot(meeting.startMs, meeting.endMs, slotStartMs, slotEndMs);
+    if (clipped) {
+      clippedClientIntervals.push(clipped);
+    }
+  }
+
+  if (clippedClientIntervals.length < 2) {
+    return false;
+  }
+
+  clippedClientIntervals.sort((left, right) => left[0] - right[0] || left[1] - right[1]);
+  let activeEnd = clippedClientIntervals[0][1];
+  for (let index = 1; index < clippedClientIntervals.length; index += 1) {
+    const [startMs, endMs] = clippedClientIntervals[index];
+    if (startMs < activeEnd) {
+      return true;
+    }
+    if (endMs > activeEnd) {
+      activeEnd = endMs;
+    }
+  }
+
+  return false;
+}
+
 function buildAvailabilityCalendarModel({
   busyIntervalsUtc,
   clientMeetingsUtc,
@@ -1196,8 +1230,16 @@ function buildAvailabilityCalendarModel({
         advisorResponseStatus: meeting.advisorResponseStatus
       }));
       const hasClientMeeting = meetingDetails.length > 0;
+      const hasMeetingConflict = hasClientMeeting
+        ? hasOverlappingClientMeetings({
+            slotStartMs,
+            slotEndMs,
+            clientMeetings: meetingsInSlot
+          })
+        : false;
       const hasOverlap = hasClientMeeting
-        ? hasBusyOutsideClientMeetings({
+        ? hasMeetingConflict ||
+          hasBusyOutsideClientMeetings({
             slotStartMs,
             slotEndMs,
             busyIntervals: busyInSlot,
@@ -1510,13 +1552,17 @@ function buildAvailabilityPage({
         <p class="carousel-status" id="carousel-status" aria-live="polite"></p>`
       : '<section class="empty"><h2>No advising windows configured</h2><p>No calendar columns were generated for the configured advising days.</p></section>';
 
-  const encodedToken = encodeURIComponent(token);
+  const tokenParam = String(tokenParamName ?? "").trim();
+  const tokenValue = String(token ?? "").trim();
+  const hasNavToken = tokenParam.length > 0 && tokenValue.length > 0;
+  const encodedToken = hasNavToken ? encodeURIComponent(tokenValue) : "";
   const encodedClientReference = clientReference ? encodeURIComponent(clientReference) : "";
   const clientReferenceQuery = encodedClientReference ? `&for=${encodedClientReference}` : "";
+  const navPrefix = hasNavToken ? `${tokenParam}=${encodedToken}&` : "";
   const previousWeekOffset = weekOffset - 1;
   const nextWeekOffset = weekOffset + 1;
-  const previousHref = `?${tokenParamName}=${encodedToken}&weekOffset=${previousWeekOffset}${clientReferenceQuery}`;
-  const nextHref = `?${tokenParamName}=${encodedToken}&weekOffset=${nextWeekOffset}${clientReferenceQuery}`;
+  const previousHref = `?${navPrefix}weekOffset=${previousWeekOffset}${clientReferenceQuery}`;
+  const nextHref = `?${navPrefix}weekOffset=${nextWeekOffset}${clientReferenceQuery}`;
   const previousButton =
     previousWeekOffset < -8
       ? '<span class="nav-link disabled" aria-disabled="true">&lt; Previous Week</span>'
@@ -2425,6 +2471,239 @@ function buildAvailabilityPage({
 </html>`;
 }
 
+function buildAdvisorCalendarPage({
+  calendarModel,
+  hostTimezone,
+  weekOffset,
+  windowLabel,
+  advisorDisplayName
+}) {
+  const advisorCellSpanPlan = buildAdvisorCellSpanPlan(calendarModel.rows, calendarModel.days.length);
+  const previousWeekOffset = weekOffset - 1;
+  const nextWeekOffset = weekOffset + 1;
+  const previousButton =
+    previousWeekOffset < -8
+      ? '<span class="nav-link disabled" aria-disabled="true">&lt; Previous Week</span>'
+      : `<a class="nav-link" href="?weekOffset=${previousWeekOffset}">&lt; Previous Week</a>`;
+  const nextButton =
+    nextWeekOffset > 52
+      ? '<span class="nav-link disabled" aria-disabled="true">Next Week &gt;</span>'
+      : `<a class="nav-link" href="?weekOffset=${nextWeekOffset}">Next Week &gt;</a>`;
+
+  const dayCards = calendarModel.days
+    .map((day, dayIndex) => {
+      const rowsHtml = calendarModel.rows
+        .map((row, rowIndex) => {
+          const slot = row.cells[dayIndex];
+          const spanPlan = advisorCellSpanPlan[rowIndex]?.[dayIndex] ?? { render: true, rowspan: 1 };
+          if (!spanPlan.render) {
+            return "";
+          }
+
+          const meetingDetails = slot.hasClientMeeting
+            ? `<div class="meeting-list">${slot.clientMeetings
+                .map(
+                  (meeting) =>
+                    `<div class="meeting-item"><span class="meeting-title">${escapeHtml(
+                      meeting.title
+                    )}</span><span class="meeting-state ${escapeHtml(meeting.advisorResponseStatus)}">${formatMeetingStateLabel(
+                      meeting.advisorResponseStatus
+                    )}</span></div>`
+                )
+                .join("")}</div>`
+            : "";
+          const hostTimeLabel =
+            spanPlan.rowspan > 1
+              ? `${slot.hostLabel} - ${calendarModel.rows[rowIndex + spanPlan.rowspan - 1]?.cells?.[dayIndex]?.hostEndLabel ?? slot.hostEndLabel}`
+              : slot.hostLabel;
+          const rowspanAttr = spanPlan.rowspan > 1 ? ` rowspan="${spanPlan.rowspan}"` : "";
+          const slotClasses = [
+            "slot",
+            slot.status,
+            slot.hasClientMeeting ? `client-${slot.clientMeetingState}` : "",
+            slot.hasOverlap ? "client-overlap" : "",
+            spanPlan.rowspan > 1 ? "merged-span" : ""
+          ]
+            .filter(Boolean)
+            .join(" ");
+          const overlapPill = slot.hasOverlap ? '<div class="slot-pill overlap">Potential conflict</div>' : "";
+
+          return `<tr>
+            <td class="${slotClasses}"${rowspanAttr}>
+              <div class="slot-pill ${slot.status}">${slot.status === "open" ? "Open" : "Busy"}</div>
+              ${overlapPill}
+              <div class="slot-host">${escapeHtml(hostTimeLabel)}</div>
+              ${meetingDetails}
+            </td>
+          </tr>`;
+        })
+        .join("");
+
+      return `<section class="day-card">
+        <table class="day-table">
+          <thead>
+            <tr>
+              <th>
+                <div class="weekday">${escapeHtml(day.weekdayLabel)}</div>
+                <div class="date">${escapeHtml(day.dateLabel)}</div>
+              </th>
+            </tr>
+          </thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </section>`;
+    })
+    .join("");
+
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Advisor Calendar</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; color: #111827; background: #f8fafc; }
+      main { max-width: 1320px; margin: 0 auto; }
+      .brand-header {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 6px;
+      }
+      .brand-header .brand-spacer { grid-column: 1; }
+      .brand-header .page-title { grid-column: 2; margin: 0; text-align: center; }
+      .brand-header .brand-logo { grid-column: 3; justify-self: end; }
+      .brand-logo {
+        display: block;
+        height: 61px;
+        width: auto;
+        max-width: 260px;
+        object-fit: contain;
+        background: #ffffff;
+        border: 1px solid #d1d5db;
+        border-radius: 10px;
+        padding: 4px 8px;
+      }
+      .muted { color: #4b5563; margin-top: 0; }
+      .legend { display: flex; align-items: center; justify-content: center; gap: 10px; margin-bottom: 14px; color: #374151; font-size: 14px; flex-wrap: wrap; }
+      .legend-pill { display: inline-block; padding: 3px 8px; border-radius: 999px; font-weight: 600; font-size: 12px; border: 1px solid; }
+      .legend-pill.open { background: #e8f5e9; color: #065f46; border-color: #9dd7a6; }
+      .legend-pill.busy { background: #eceff1; color: #374151; border-color: #cbd5e1; }
+      .legend-pill.client-accepted { background: #dcfce7; color: #166534; border-color: #86efac; }
+      .legend-pill.client-pending { background: #fef9c3; color: #854d0e; border-color: #fde68a; }
+      .legend-pill.overlap { background: #fee2e2; color: #991b1b; border-color: #fecaca; }
+      .week-nav { display: flex; align-items: center; justify-content: space-between; margin: 14px 0; gap: 10px; }
+      .week-range { font-size: 14px; font-weight: 700; color: #0f172a; text-align: center; flex: 1; }
+      .nav-link { text-decoration: none; color: #1d4ed8; font-size: 14px; font-weight: 600; }
+      .nav-link:hover { text-decoration: underline; }
+      .nav-link.disabled { color: #94a3b8; pointer-events: none; }
+      .day-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+      .day-card { background: #fff; border: 1px solid #d1d5db; border-radius: 14px; overflow: hidden; }
+      .day-table { width: 100%; border-collapse: separate; border-spacing: 0; table-layout: fixed; }
+      .day-table th, .day-table td { border-bottom: 1px solid #e2e8f0; padding: 8px; vertical-align: top; }
+      .day-table tr:last-child td { border-bottom: 0; }
+      .day-table thead th { background: #f1f5f9; }
+      .weekday { font-size: 12px; text-transform: uppercase; color: #64748b; letter-spacing: 0.04em; }
+      .date { font-size: 14px; font-weight: 700; color: #0f172a; }
+      .slot { min-height: 56px; background: #ffffff; }
+      .slot.open { background: #f4fbf6; }
+      .slot.busy { background: #f8fafc; }
+      .slot.client-accepted { background: #ecfdf5; }
+      .slot.client-pending { background: #fffbeb; }
+      .slot.client-overlap { box-shadow: inset 0 0 0 2px #fca5a5; }
+      .slot-pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; border: 1px solid; }
+      .slot-pill.open { color: #065f46; background: #dcfce7; border-color: #86efac; }
+      .slot-pill.busy { color: #334155; background: #e2e8f0; border-color: #cbd5e1; }
+      .slot-pill.overlap { color: #991b1b; background: #fee2e2; border-color: #fca5a5; margin-left: 6px; }
+      .slot-host { margin-top: 6px; font-size: 12px; font-weight: 700; color: #0f172a; }
+      .meeting-list { margin-top: 6px; display: flex; flex-direction: column; gap: 4px; }
+      .meeting-item { font-size: 12px; line-height: 1.3; display: flex; flex-direction: column; gap: 2px; padding: 4px 6px; border: 1px solid #d1d5db; border-radius: 6px; background: #ffffff; }
+      .meeting-title { font-weight: 600; color: #0f172a; word-break: break-word; }
+      .meeting-state { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+      .meeting-state.accepted { color: #166534; }
+      .meeting-state.pending { color: #854d0e; }
+      .site-footer { margin-top: 18px; padding-top: 10px; border-top: 1px solid #d1d5db; text-align: center; }
+      .copyright { margin: 0; font-size: 12px; color: #475569; font-weight: 600; }
+      .powered-by { margin: 4px 0 0; font-size: 12px; color: #64748b; }
+      .powered-by.hidden { display: none; }
+      @media (max-width: 768px) {
+        .brand-logo { height: 54px; max-width: 220px; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="brand-header">
+        <span class="brand-spacer" aria-hidden="true"></span>
+        <h1 class="page-title">Advisor Calendar</h1>
+        <img
+          id="brand-logo"
+          class="brand-logo"
+          src="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+          data-default-logo="${escapeHtml(DEFAULT_BRAND_LOGO_DATA_URI)}"
+          alt="LetsConnect.ai logo"
+        />
+      </header>
+      <p class="muted">Combined calendar view for ${escapeHtml(advisorDisplayName || "advisor")} across all connected calendars.</p>
+      <p class="muted">Timezone: <code>${escapeHtml(hostTimezone)}</code></p>
+      <div class="legend">
+        <span class="legend-pill open">Open</span>
+        <span class="legend-pill busy">Busy</span>
+        <span class="legend-pill client-accepted">Accepted</span>
+        <span class="legend-pill client-pending">Pending</span>
+        <span class="legend-pill overlap">Potential conflict</span>
+      </div>
+      <div class="week-nav">
+        ${previousButton}
+        <div class="week-range">${escapeHtml(windowLabel)}</div>
+        ${nextButton}
+      </div>
+      <div class="day-cards">${dayCards}</div>
+      <footer class="site-footer">
+        <p class="copyright">${escapeHtml(BRAND_COPYRIGHT_NOTICE)}</p>
+        <p id="powered-by" class="powered-by hidden">${escapeHtml(BRAND_POWERED_BY_NOTICE)}</p>
+      </footer>
+    </main>
+  </body>
+</html>`;
+}
+
+function buildAdvisorCalendarUnavailablePage({ advisorDisplayName }) {
+  return `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Advisor Calendar</title>
+    <style>
+      body { font-family: Arial, sans-serif; margin: 24px; color: #111827; background: #f8fafc; }
+      main { max-width: 860px; margin: 0 auto; }
+      .card { background: #fff; border: 1px solid #d1d5db; border-radius: 14px; padding: 18px; }
+      h1 { margin: 0 0 8px; }
+      p { margin: 8px 0; color: #4b5563; }
+      a { color: #1d4ed8; font-weight: 600; text-decoration: none; }
+      a:hover { text-decoration: underline; }
+      .site-footer { margin-top: 18px; padding-top: 10px; border-top: 1px solid #d1d5db; text-align: center; }
+      .copyright { margin: 0; font-size: 12px; color: #475569; font-weight: 600; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="card">
+        <h1>Advisor Calendar</h1>
+        <p>No connected calendars were found for ${escapeHtml(advisorDisplayName || "this advisor")}.</p>
+        <p>Connect at least one calendar from the advisor portal before opening this view.</p>
+        <p><a href="./advisor">Return to Advisor Portal</a></p>
+      </section>
+      <footer class="site-footer">
+        <p class="copyright">${escapeHtml(BRAND_COPYRIGHT_NOTICE)}</p>
+      </footer>
+    </main>
+  </body>
+</html>`;
+}
+
 function availabilityErrorPage(message) {
   return htmlResponse(
     403,
@@ -2441,8 +2720,31 @@ async function lookupAvailabilityContext({
   microsoftOauthSecretArn,
   searchStartIso,
   searchEndIso,
-  clientEmail
+  clientEmail,
+  includeAllMeetings = false
 }) {
+  const sortByUpdatedAtDesc = (connections) =>
+    [...connections].sort((left, right) => String(right?.updatedAt ?? "").localeCompare(String(left?.updatedAt ?? "")));
+
+  const getConnectedConnections = async () => {
+    let connections = [];
+    if (typeof deps.listConnections === "function") {
+      connections = await deps.listConnections(connectionsTableName, advisorId);
+    } else if (typeof deps.getPrimaryConnection === "function") {
+      // Backward-compatible path for tests/older dependency contracts.
+      const primaryConnection = await deps.getPrimaryConnection(connectionsTableName, advisorId);
+      connections = primaryConnection ? [primaryConnection] : [];
+    } else {
+      throw new Error("Connection listing capability is required for CALENDAR_MODE=connection");
+    }
+
+    return sortByUpdatedAtDesc(
+      (Array.isArray(connections) ? connections : []).filter(
+        (connection) => String(connection?.status ?? "").toLowerCase() === "connected"
+      )
+    );
+  };
+
   const lookupWithOauthConfig = async ({ provider, oauthConfig, advisorEmailHint }) => {
     const busyIntervals = await deps.lookupBusyIntervals({
       provider,
@@ -2454,7 +2756,21 @@ async function lookupAvailabilityContext({
 
     let clientMeetings = [];
     let nonClientBusyIntervals = [];
-    if (clientEmail && typeof deps.lookupClientMeetings === "function") {
+    if (includeAllMeetings && typeof deps.lookupAdvisorMeetings === "function") {
+      try {
+        const advisorMeetings = await deps.lookupAdvisorMeetings({
+          provider,
+          oauthConfig,
+          windowStartIso: searchStartIso,
+          windowEndIso: searchEndIso,
+          advisorEmailHint,
+          fetchImpl: deps.fetchImpl
+        });
+        clientMeetings = Array.isArray(advisorMeetings) ? advisorMeetings : [];
+      } catch {
+        clientMeetings = [];
+      }
+    } else if (clientEmail && typeof deps.lookupClientMeetings === "function") {
       try {
         const clientMeetingOverlay = await deps.lookupClientMeetings({
           provider,
@@ -2519,8 +2835,8 @@ async function lookupAvailabilityContext({
       throw new Error("CONNECTIONS_TABLE_NAME is required for CALENDAR_MODE=connection");
     }
 
-    const connection = await deps.getPrimaryConnection(connectionsTableName, advisorId);
-    if (!connection) {
+    const connectedConnections = await getConnectedConnections();
+    if (connectedConnections.length === 0) {
       return {
         busyIntervals: [],
         clientMeetings: [],
@@ -2528,43 +2844,61 @@ async function lookupAvailabilityContext({
       };
     }
 
-    if (connection.provider === "mock") {
-      return {
-        busyIntervals: [],
-        clientMeetings: [],
-        nonClientBusyIntervals: []
-      };
-    }
+    const mergedBusyIntervals = [];
+    const mergedClientMeetings = [];
+    const mergedNonClientBusyIntervals = [];
 
-    if (connection.provider === "google") {
-      if (!connection.secretArn) {
-        throw new Error("Google connection is missing secretArn");
+    for (const connection of connectedConnections) {
+      if (connection.provider === "mock") {
+        continue;
       }
 
-      const secretString = await deps.getSecretString(connection.secretArn);
-      const oauthConfig = parseGoogleOauthSecret(secretString);
-      return lookupWithOauthConfig({
-        provider: "google",
-        oauthConfig,
-        advisorEmailHint: connection.accountEmail
-      });
-    }
+      if (connection.provider === "google") {
+        if (!connection.secretArn) {
+          throw new Error("Google connection is missing secretArn");
+        }
 
-    if (connection.provider === "microsoft") {
-      if (!connection.secretArn) {
-        throw new Error("Microsoft connection is missing secretArn");
+        const secretString = await deps.getSecretString(connection.secretArn);
+        const oauthConfig = parseGoogleOauthSecret(secretString);
+        const context = await lookupWithOauthConfig({
+          provider: "google",
+          oauthConfig,
+          advisorEmailHint: connection.accountEmail
+        });
+        mergedBusyIntervals.push(...context.busyIntervals);
+        mergedClientMeetings.push(...context.clientMeetings);
+        mergedNonClientBusyIntervals.push(...context.nonClientBusyIntervals);
+        continue;
       }
 
-      const secretString = await deps.getSecretString(connection.secretArn);
-      const oauthConfig = parseMicrosoftOauthSecret(secretString);
-      return lookupWithOauthConfig({
-        provider: "microsoft",
-        oauthConfig,
-        advisorEmailHint: connection.accountEmail
-      });
+      if (connection.provider === "microsoft") {
+        if (!connection.secretArn) {
+          throw new Error("Microsoft connection is missing secretArn");
+        }
+
+        const secretString = await deps.getSecretString(connection.secretArn);
+        const oauthConfig = parseMicrosoftOauthSecret(secretString);
+        const context = await lookupWithOauthConfig({
+          provider: "microsoft",
+          oauthConfig,
+          advisorEmailHint: connection.accountEmail
+        });
+        mergedBusyIntervals.push(...context.busyIntervals);
+        mergedClientMeetings.push(...context.clientMeetings);
+        mergedNonClientBusyIntervals.push(...context.nonClientBusyIntervals);
+        continue;
+      }
+
+      throw new Error(`Unsupported provider for availability lookup: ${connection.provider}`);
     }
 
-    throw new Error(`Unsupported provider for availability lookup: ${connection.provider}`);
+    return {
+      busyIntervals: mergedBusyIntervals.sort((left, right) => Date.parse(left.startIso) - Date.parse(right.startIso)),
+      clientMeetings: mergedClientMeetings.sort((left, right) => Date.parse(left.startIso) - Date.parse(right.startIso)),
+      nonClientBusyIntervals: mergedNonClientBusyIntervals.sort(
+        (left, right) => Date.parse(left.startIso) - Date.parse(right.startIso)
+      )
+    };
   }
 
   throw new Error(`Unsupported CALENDAR_MODE value: ${calendarMode}`);
@@ -3067,6 +3401,7 @@ function buildAdvisorPage() {
       }
       .sidebar-actions { margin-top: 10px; display: flex; justify-content: center; }
       .portal-main-header { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
+      .portal-main-actions { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
       .advisor-header-title { margin: 0; font-size: 28px; color: var(--ink-900); letter-spacing: 0.01em; }
       .advisor-header-meta { margin: 4px 0 0; color: var(--ink-600); font-size: 13px; }
       .card {
@@ -3093,6 +3428,16 @@ function buildAdvisorPage() {
         background: #f5f9ff;
         border-color: #bfd2e8;
       }
+      .primary-button {
+        background: linear-gradient(180deg, #1d4ed8, #1e40af);
+        border-color: #1e3a8a;
+        color: #ffffff;
+      }
+      .primary-button:hover {
+        background: linear-gradient(180deg, #1e40af, #1e3a8a);
+        border-color: #1e3a8a;
+      }
+      .primary-button strong { font-weight: 800; }
       input, select {
         padding: 8px 10px;
         margin-right: 8px;
@@ -3334,7 +3679,10 @@ function buildAdvisorPage() {
         <h1 id="advisorHeaderName" class="advisor-header-title">Advisor</h1>
         <p id="advisorHeaderMeta" class="advisor-header-meta">Loading advisor profile…</p>
       </div>
-      <button id="refreshPortalDataTop" type="button">Refresh Data</button>
+      <div class="portal-main-actions">
+        <button id="openAdvisorCalendarViewTop" type="button" class="primary-button"><strong>Open Advisor Calendar</strong></button>
+        <button id="refreshPortalDataTop" type="button">Refresh Data</button>
+      </div>
     </header>
 
     <section id="workspaceHintsCard" class="card workspace-hints hidden">
@@ -3478,6 +3826,7 @@ function buildAdvisorPage() {
         <div class="row inline-controls connection-actions">
           <button id="googleConnect">Connect Google (Sign In)</button>
           <button id="microsoftConnect">Connect Microsoft (Sign In)</button>
+          <button id="openAdvisorCalendarView">Open Advisor Calendar</button>
           <button id="refreshPortalData">Refresh Data</button>
         </div>
         <p class="muted connection-actions-note">Google/Microsoft flows require app credentials configured in backend secrets.</p>
@@ -5210,6 +5559,31 @@ function buildAdvisorPage() {
         window.location.href = './advisor/api/connections/microsoft/start';
       });
 
+      function openAdvisorCalendarView() {
+        const targetUrl = './advisor/calendar?weekOffset=0';
+        const openedWindow = window.open(targetUrl, '_blank');
+        if (openedWindow) {
+          try {
+            openedWindow.opener = null;
+          } catch (_error) {
+            // Ignore cross-window hardening errors.
+          }
+          if (typeof openedWindow.focus === 'function') {
+            openedWindow.focus();
+          }
+        }
+      }
+
+      const openAdvisorCalendarViewButton = document.getElementById('openAdvisorCalendarView');
+      if (openAdvisorCalendarViewButton) {
+        openAdvisorCalendarViewButton.addEventListener('click', openAdvisorCalendarView);
+      }
+
+      const openAdvisorCalendarViewTopButton = document.getElementById('openAdvisorCalendarViewTop');
+      if (openAdvisorCalendarViewTopButton) {
+        openAdvisorCalendarViewTopButton.addEventListener('click', openAdvisorCalendarView);
+      }
+
       document.getElementById('logout').addEventListener('click', async () => {
         await fetch('./advisor/logout', { method: 'POST' });
         window.location.href = './advisor';
@@ -5440,6 +5814,12 @@ export function createPortalHandler(overrides = {}) {
         return lookupMicrosoftClientMeetings(args);
       }
       return lookupGoogleClientMeetings(args);
+    },
+    lookupAdvisorMeetings: ({ provider = "google", ...args }) => {
+      if (provider === "microsoft") {
+        return lookupMicrosoftAdvisorMeetings(args);
+      }
+      return lookupGoogleAdvisorMeetings(args);
     },
     ...overrides
   };
@@ -5720,6 +6100,98 @@ export function createPortalHandler(overrides = {}) {
           clientReference: linkClientReference,
           browserGoogleClientId,
           compareUiEnabled: availabilityCompareUiEnabled
+        })
+      );
+    }
+
+    if (method === "GET" && rawPath === "/advisor/calendar") {
+      let advisorCalendarTimezone = hostTimezone;
+      let advisorDisplayName = deriveAdvisorPreferredNameFromEmail(advisorEmail, advisorId);
+
+      if (advisorSettingsTableName && typeof deps.getAdvisorSettings === "function") {
+        try {
+          const advisorSettings = await deps.getAdvisorSettings(advisorSettingsTableName, advisorId);
+          advisorCalendarTimezone = normalizeTimezone(advisorSettings?.timezone, hostTimezone);
+          const preferredName = normalizeAdvisorPreferredName(advisorSettings?.preferredName);
+          if (preferredName) {
+            advisorDisplayName = preferredName;
+          }
+        } catch {
+          advisorCalendarTimezone = hostTimezone;
+        }
+      }
+
+      if (calendarMode === "connection" && connectionsTableName && typeof deps.listConnections === "function") {
+        const connections = await deps.listConnections(connectionsTableName, advisorId);
+        const connectedConnections = (Array.isArray(connections) ? connections : []).filter(
+          (connection) => String(connection?.status ?? "").toLowerCase() === "connected"
+        );
+        if (connectedConnections.length === 0) {
+          return htmlResponse(200, buildAdvisorCalendarUnavailablePage({ advisorDisplayName }));
+        }
+      }
+
+      const weekOffset = parseWeekOffset(event.queryStringParameters);
+      const nowMs = Date.now();
+      const baseWeekStartLocal = DateTime.fromMillis(nowMs, { zone: advisorCalendarTimezone }).startOf("week");
+      const searchStartLocal = baseWeekStartLocal.plus({ weeks: weekOffset });
+      const searchEndLocal = searchStartLocal.plus({ days: AVAILABILITY_VIEW_DAYS });
+      const searchStartIso = searchStartLocal.toUTC().toISO();
+      const searchEndIso = searchEndLocal.toUTC().toISO();
+      const windowEndLabelLocal = searchEndLocal.minus({ days: 1 });
+      const windowLabel = `${searchStartLocal.toFormat("MMM dd, yyyy")} - ${windowEndLabelLocal.toFormat(
+        "MMM dd, yyyy"
+      )}`;
+
+      let availabilityContext;
+      try {
+        availabilityContext = await lookupAvailabilityContext({
+          deps,
+          calendarMode,
+          connectionsTableName,
+          advisorId,
+          googleOauthSecretArn,
+          microsoftOauthSecretArn,
+          searchStartIso,
+          searchEndIso,
+          clientEmail: "",
+          includeAllMeetings: true
+        });
+      } catch (error) {
+        return serverError(`advisor calendar lookup failed: ${error.message}`);
+      }
+
+      const calendarModel = buildAvailabilityCalendarModel({
+        busyIntervalsUtc: availabilityContext.busyIntervals,
+        clientMeetingsUtc: availabilityContext.clientMeetings,
+        nonClientBusyIntervalsUtc: availabilityContext.nonClientBusyIntervals,
+        hostTimezone: advisorCalendarTimezone,
+        advisingDays,
+        searchStartIso,
+        searchEndIso,
+        workdayStartHour,
+        workdayEndHour: normalizedWorkdayEndHour,
+        slotMinutes: availabilitySlotMinutes,
+        requestedDurationMinutes: availabilitySlotMinutes,
+        maxCells: availabilityViewMaxSlots
+      });
+
+      return htmlResponse(
+        200,
+        buildAvailabilityPage({
+          calendarModel,
+          hostTimezone: advisorCalendarTimezone,
+          windowStartIso: searchStartIso,
+          windowEndIso: searchEndIso,
+          expiresAtMs: Date.now() + 7 * 24 * 60 * 60 * 1000,
+          tokenParamName: "",
+          token: "",
+          weekOffset,
+          windowLabel,
+          clientDisplayName: advisorDisplayName,
+          clientReference: "",
+          browserGoogleClientId: "",
+          compareUiEnabled: false
         })
       );
     }
