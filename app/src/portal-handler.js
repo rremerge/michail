@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 import { createRuntimeDeps } from "./runtime-deps.js";
 import { DateTime, Interval } from "luxon";
 import { parseGoogleOauthSecret, lookupGoogleBusyIntervals, lookupGoogleClientMeetings } from "./google-adapter.js";
+import {
+  lookupMicrosoftBusyIntervals,
+  lookupMicrosoftClientMeetings,
+  parseMicrosoftOauthSecret
+} from "./microsoft-adapter.js";
 import { parseAvailabilityLinkSecret, validateAvailabilityLinkToken } from "./availability-link.js";
 import {
   isClientAccessRestricted,
@@ -528,6 +533,25 @@ function parseGoogleAppSecret(secretString) {
   return { clientId, clientSecret };
 }
 
+function parseMicrosoftAppSecret(secretString) {
+  const parsed = JSON.parse(secretString);
+  const clientId = String(parsed.client_id ?? "").trim();
+  const clientSecret = String(parsed.client_secret ?? "").trim();
+  const tenantId = String(parsed.tenant_id ?? "common")
+    .trim()
+    .toLowerCase() || "common";
+
+  if (!clientId || !clientSecret) {
+    throw new Error("Microsoft OAuth app secret is missing client_id or client_secret");
+  }
+
+  if (!/^[a-z0-9.-]+$/.test(tenantId)) {
+    throw new Error("Microsoft OAuth app secret has invalid tenant_id");
+  }
+
+  return { clientId, clientSecret, tenantId };
+}
+
 function parsePortalAuthSecret(secretString) {
   const parsed = JSON.parse(secretString);
   const username = String(parsed.username ?? "").trim();
@@ -591,7 +615,8 @@ function shouldProtectPath(rawPath) {
   return ![
     "/advisor/auth/google/start",
     "/advisor/auth/google/callback",
-    "/advisor/api/connections/google/callback"
+    "/advisor/api/connections/google/callback",
+    "/advisor/api/connections/microsoft/callback"
   ].includes(rawPath);
 }
 
@@ -2413,12 +2438,14 @@ async function lookupAvailabilityContext({
   connectionsTableName,
   advisorId,
   googleOauthSecretArn,
+  microsoftOauthSecretArn,
   searchStartIso,
   searchEndIso,
   clientEmail
 }) {
-  const lookupWithOauthConfig = async ({ oauthConfig, advisorEmailHint }) => {
+  const lookupWithOauthConfig = async ({ provider, oauthConfig, advisorEmailHint }) => {
     const busyIntervals = await deps.lookupBusyIntervals({
+      provider,
       oauthConfig,
       windowStartIso: searchStartIso,
       windowEndIso: searchEndIso,
@@ -2430,6 +2457,7 @@ async function lookupAvailabilityContext({
     if (clientEmail && typeof deps.lookupClientMeetings === "function") {
       try {
         const clientMeetingOverlay = await deps.lookupClientMeetings({
+          provider,
           oauthConfig,
           windowStartIso: searchStartIso,
           windowEndIso: searchEndIso,
@@ -2473,7 +2501,17 @@ async function lookupAvailabilityContext({
 
     const secretString = await deps.getSecretString(googleOauthSecretArn);
     const oauthConfig = parseGoogleOauthSecret(secretString);
-    return lookupWithOauthConfig({ oauthConfig });
+    return lookupWithOauthConfig({ provider: "google", oauthConfig });
+  }
+
+  if (calendarMode === "microsoft") {
+    if (!microsoftOauthSecretArn) {
+      throw new Error("MICROSOFT_OAUTH_SECRET_ARN is required for CALENDAR_MODE=microsoft");
+    }
+
+    const secretString = await deps.getSecretString(microsoftOauthSecretArn);
+    const oauthConfig = parseMicrosoftOauthSecret(secretString);
+    return lookupWithOauthConfig({ provider: "microsoft", oauthConfig });
   }
 
   if (calendarMode === "connection") {
@@ -2506,6 +2544,21 @@ async function lookupAvailabilityContext({
       const secretString = await deps.getSecretString(connection.secretArn);
       const oauthConfig = parseGoogleOauthSecret(secretString);
       return lookupWithOauthConfig({
+        provider: "google",
+        oauthConfig,
+        advisorEmailHint: connection.accountEmail
+      });
+    }
+
+    if (connection.provider === "microsoft") {
+      if (!connection.secretArn) {
+        throw new Error("Microsoft connection is missing secretArn");
+      }
+
+      const secretString = await deps.getSecretString(connection.secretArn);
+      const oauthConfig = parseMicrosoftOauthSecret(secretString);
+      return lookupWithOauthConfig({
+        provider: "microsoft",
         oauthConfig,
         advisorEmailHint: connection.accountEmail
       });
@@ -3153,11 +3206,11 @@ function buildAdvisorPage() {
       <div id="statusBanner" style="display:none"></div>
       <p class="muted">Add calendars for availability checks without manually editing AWS secrets, then manage them below.</p>
       <div class="row inline-controls connection-actions">
-        <button id="addMock">Add Mock Calendar (Test)</button>
         <button id="googleConnect">Connect Google (Sign In)</button>
+        <button id="microsoftConnect">Connect Microsoft (Sign In)</button>
         <button id="refreshPortalData">Refresh Data</button>
       </div>
-      <p class="muted connection-actions-note">Google flow requires app credentials configured in backend secret.</p>
+      <p class="muted connection-actions-note">Google/Microsoft flows require app credentials configured in backend secrets.</p>
       <h3 class="section-subtitle">Current Connections</h3>
       <table>
         <thead>
@@ -4191,11 +4244,6 @@ function buildAdvisorPage() {
         renderClientsTableRows();
       }
 
-      document.getElementById('addMock').addEventListener('click', async () => {
-        await fetch('./advisor/api/connections/mock', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({}) });
-        await loadConnections();
-      });
-
       document.getElementById('refreshPortalData').addEventListener('click', async () => {
         await Promise.all([
           loadConnections(),
@@ -4296,6 +4344,10 @@ function buildAdvisorPage() {
         window.location.href = './advisor/api/connections/google/start';
       });
 
+      document.getElementById('microsoftConnect').addEventListener('click', () => {
+        window.location.href = './advisor/api/connections/microsoft/start';
+      });
+
       document.getElementById('logout').addEventListener('click', async () => {
         await fetch('./advisor/logout', { method: 'POST' });
         window.location.href = './advisor';
@@ -4394,7 +4446,16 @@ function redirectAdvisorWithError(event, message) {
   return redirectResponse(location);
 }
 
-async function exchangeCodeForTokens({ clientId, clientSecret, code, redirectUri, fetchImpl }) {
+async function exchangeCodeForTokens({
+  tokenEndpoint,
+  providerLabel,
+  clientId,
+  clientSecret,
+  code,
+  redirectUri,
+  scope,
+  fetchImpl
+}) {
   const fetchFn = fetchImpl ?? fetch;
   const form = new URLSearchParams({
     code,
@@ -4403,8 +4464,11 @@ async function exchangeCodeForTokens({ clientId, clientSecret, code, redirectUri
     redirect_uri: redirectUri,
     grant_type: "authorization_code"
   });
+  if (scope) {
+    form.set("scope", scope);
+  }
 
-  const response = await fetchFn("https://oauth2.googleapis.com/token", {
+  const response = await fetchFn(tokenEndpoint, {
     method: "POST",
     headers: {
       "content-type": "application/x-www-form-urlencoded"
@@ -4414,10 +4478,46 @@ async function exchangeCodeForTokens({ clientId, clientSecret, code, redirectUri
 
   if (!response.ok) {
     const message = await response.text();
-    throw new Error(`Google code exchange failed (${response.status}): ${message}`);
+    throw new Error(`${providerLabel} code exchange failed (${response.status}): ${message}`);
   }
 
   return response.json();
+}
+
+function buildMicrosoftTokenEndpoint(tenantId) {
+  return `https://login.microsoftonline.com/${encodeURIComponent(tenantId)}/oauth2/v2.0/token`;
+}
+
+async function exchangeGoogleCodeForTokens({ clientId, clientSecret, code, redirectUri, fetchImpl }) {
+  return exchangeCodeForTokens({
+    tokenEndpoint: "https://oauth2.googleapis.com/token",
+    providerLabel: "Google",
+    clientId,
+    clientSecret,
+    code,
+    redirectUri,
+    fetchImpl
+  });
+}
+
+async function exchangeMicrosoftCodeForTokens({
+  clientId,
+  clientSecret,
+  tenantId,
+  code,
+  redirectUri,
+  fetchImpl
+}) {
+  return exchangeCodeForTokens({
+    tokenEndpoint: buildMicrosoftTokenEndpoint(tenantId),
+    providerLabel: "Microsoft",
+    clientId,
+    clientSecret,
+    code,
+    redirectUri,
+    scope: "openid profile email offline_access User.Read Calendars.Read",
+    fetchImpl
+  });
 }
 
 async function fetchGoogleUserProfile(accessToken, fetchImpl) {
@@ -4436,12 +4536,43 @@ async function fetchGoogleUserProfile(accessToken, fetchImpl) {
   return response.json();
 }
 
+async function fetchMicrosoftUserProfile(accessToken, fetchImpl) {
+  const fetchFn = fetchImpl ?? fetch;
+  const response = await fetchFn("https://graph.microsoft.com/v1.0/me?$select=mail,userPrincipalName,displayName", {
+    method: "GET",
+    headers: {
+      authorization: `Bearer ${accessToken}`
+    }
+  });
+
+  if (!response.ok) {
+    return { email: null };
+  }
+
+  const payload = await response.json();
+  const email = String(payload.mail ?? payload.userPrincipalName ?? "").trim();
+  return {
+    email: email || null,
+    displayName: String(payload.displayName ?? "").trim() || null
+  };
+}
+
 export function createPortalHandler(overrides = {}) {
   const runtimeDeps = createRuntimeDeps();
   const deps = {
     ...runtimeDeps,
-    lookupBusyIntervals: lookupGoogleBusyIntervals,
-    lookupClientMeetings: lookupGoogleClientMeetings,
+    lookupBusyIntervals: ({ provider = "google", ...args }) => {
+      if (provider === "microsoft") {
+        return lookupMicrosoftBusyIntervals(args);
+      }
+      return lookupGoogleBusyIntervals(args);
+    },
+    lookupClientMeetings: ({ provider = "google", ...args }) => {
+      if (provider === "microsoft") {
+        return lookupMicrosoftClientMeetings(args);
+      }
+      return lookupGoogleClientMeetings(args);
+    },
     ...overrides
   };
 
@@ -4464,10 +4595,12 @@ export function createPortalHandler(overrides = {}) {
     const traceTableName = process.env.TRACE_TABLE_NAME;
     const oauthStateTableName = process.env.OAUTH_STATE_TABLE_NAME;
     const googleAppSecretArn = process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
+    const microsoftAppSecretArn = process.env.MICROSOFT_OAUTH_APP_SECRET_ARN;
     const sessionSecretArn = process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
     const availabilityLinkSecretArn = process.env.AVAILABILITY_LINK_SECRET_ARN;
     const availabilityLinkTableName = process.env.AVAILABILITY_LINK_TABLE_NAME;
     const googleOauthSecretArn = process.env.GOOGLE_OAUTH_SECRET_ARN;
+    const microsoftOauthSecretArn = process.env.MICROSOFT_OAUTH_SECRET_ARN;
     const policyPresetsTableName = process.env.POLICY_PRESETS_TABLE_NAME;
     const advisorSettingsTableName = process.env.ADVISOR_SETTINGS_TABLE_NAME;
     const defaultAgentEmailDomain = normalizeAgentEmailDomain(process.env.DEFAULT_AGENT_EMAIL_DOMAIN);
@@ -4649,6 +4782,7 @@ export function createPortalHandler(overrides = {}) {
           connectionsTableName,
           advisorId: effectiveAvailabilityAdvisorId,
           googleOauthSecretArn,
+          microsoftOauthSecretArn,
           searchStartIso,
           searchEndIso,
           clientEmail: normalizedLinkClientEmail
@@ -4795,7 +4929,7 @@ export function createPortalHandler(overrides = {}) {
       }
 
       const redirectUri = `${getBaseUrl(event)}/advisor/auth/google/callback`;
-      const tokenPayload = await exchangeCodeForTokens({
+      const tokenPayload = await exchangeGoogleCodeForTokens({
         clientId: appSecret.clientId,
         clientSecret: appSecret.clientSecret,
         code,
@@ -5828,6 +5962,7 @@ export function createPortalHandler(overrides = {}) {
       await deps.putOauthState(oauthStateTableName, state, {
         advisorId,
         purpose: "calendar_connection",
+        provider: "google",
         createdAt: new Date(nowMs).toISOString(),
         expiresAt: Math.floor((nowMs + 15 * 60 * 1000) / 1000)
       });
@@ -5861,7 +5996,11 @@ export function createPortalHandler(overrides = {}) {
       }
 
       const stateItem = await deps.getOauthState(oauthStateTableName, state);
-      if (!stateItem || stateItem.purpose !== "calendar_connection") {
+      if (
+        !stateItem ||
+        stateItem.purpose !== "calendar_connection" ||
+        (stateItem.provider && stateItem.provider !== "google")
+      ) {
         return badRequest("Invalid or expired OAuth state");
       }
       const oauthAdvisorId = normalizeAdvisorId(stateItem.advisorId, advisorId);
@@ -5882,7 +6021,7 @@ export function createPortalHandler(overrides = {}) {
 
       const redirectUri = `${getBaseUrl(event)}/advisor/api/connections/google/callback`;
 
-      const tokenPayload = await exchangeCodeForTokens({
+      const tokenPayload = await exchangeGoogleCodeForTokens({
         clientId: appSecret.clientId,
         clientSecret: appSecret.clientSecret,
         code,
@@ -5924,6 +6063,142 @@ export function createPortalHandler(overrides = {}) {
       });
 
       return redirectResponse(`${getBaseUrl(event)}/advisor?connected=google`);
+    }
+
+    if ((method === "POST" || method === "GET") && rawPath === "/advisor/api/connections/microsoft/start") {
+      if (!oauthStateTableName) {
+        if (method === "GET") {
+          return redirectAdvisorWithError(event, "OAUTH_STATE_TABLE_NAME is required");
+        }
+
+        return serverError("OAUTH_STATE_TABLE_NAME is required");
+      }
+
+      if (!microsoftAppSecretArn) {
+        if (method === "GET") {
+          return redirectAdvisorWithError(event, "Microsoft OAuth app is not configured in this environment yet.");
+        }
+
+        return badRequest("Microsoft OAuth app is not configured in this environment yet.");
+      }
+
+      let appSecret;
+      try {
+        appSecret = parseMicrosoftAppSecret(await deps.getSecretString(microsoftAppSecretArn));
+      } catch (error) {
+        if (method === "GET") {
+          return redirectAdvisorWithError(event, error.message);
+        }
+
+        return badRequest(error.message);
+      }
+
+      const state = crypto.randomUUID();
+      const nowMs = Date.now();
+      await deps.putOauthState(oauthStateTableName, state, {
+        advisorId,
+        purpose: "calendar_connection",
+        provider: "microsoft",
+        createdAt: new Date(nowMs).toISOString(),
+        expiresAt: Math.floor((nowMs + 15 * 60 * 1000) / 1000)
+      });
+
+      const redirectUri = `${getBaseUrl(event)}/advisor/api/connections/microsoft/callback`;
+      const authUrl = new URL(
+        `https://login.microsoftonline.com/${encodeURIComponent(appSecret.tenantId)}/oauth2/v2.0/authorize`
+      );
+      authUrl.searchParams.set("client_id", appSecret.clientId);
+      authUrl.searchParams.set("redirect_uri", redirectUri);
+      authUrl.searchParams.set("response_type", "code");
+      authUrl.searchParams.set("response_mode", "query");
+      authUrl.searchParams.set("scope", "openid profile email offline_access User.Read Calendars.Read");
+      authUrl.searchParams.set("prompt", "select_account");
+      authUrl.searchParams.set("state", state);
+      return redirectResponse(authUrl.toString());
+    }
+
+    if (method === "GET" && rawPath === "/advisor/api/connections/microsoft/callback") {
+      if (!oauthStateTableName) {
+        return serverError("OAUTH_STATE_TABLE_NAME is required");
+      }
+
+      if (!connectionsTableName) {
+        return serverError("CONNECTIONS_TABLE_NAME is required");
+      }
+
+      const code = event.queryStringParameters?.code;
+      const state = event.queryStringParameters?.state;
+      if (!code || !state) {
+        return badRequest("Missing OAuth callback code/state");
+      }
+
+      const stateItem = await deps.getOauthState(oauthStateTableName, state);
+      if (
+        !stateItem ||
+        stateItem.purpose !== "calendar_connection" ||
+        stateItem.provider !== "microsoft"
+      ) {
+        return badRequest("Invalid or expired OAuth state");
+      }
+      const oauthAdvisorId = normalizeAdvisorId(stateItem.advisorId, advisorId);
+      await deps.deleteOauthState(oauthStateTableName, state);
+
+      if (!microsoftAppSecretArn) {
+        return badRequest("Microsoft OAuth app is not configured in this environment yet.");
+      }
+
+      let appSecret;
+      try {
+        appSecret = parseMicrosoftAppSecret(await deps.getSecretString(microsoftAppSecretArn));
+      } catch (error) {
+        return badRequest(error.message);
+      }
+
+      const redirectUri = `${getBaseUrl(event)}/advisor/api/connections/microsoft/callback`;
+      const tokenPayload = await exchangeMicrosoftCodeForTokens({
+        clientId: appSecret.clientId,
+        clientSecret: appSecret.clientSecret,
+        tenantId: appSecret.tenantId,
+        code,
+        redirectUri,
+        fetchImpl: deps.fetchImpl
+      });
+
+      if (!tokenPayload.refresh_token) {
+        return badRequest("Microsoft did not return refresh_token. Reconnect and ensure consent prompt is granted.");
+      }
+
+      const profile = tokenPayload.access_token
+        ? await fetchMicrosoftUserProfile(tokenPayload.access_token, deps.fetchImpl)
+        : { email: null };
+
+      const nowIso = new Date().toISOString();
+      const connectionId = `microsoft-${crypto.randomUUID()}`;
+      const secretName = `/${appName}/${stage}/${oauthAdvisorId}/connections/${connectionId}`;
+      const secretArn = await deps.createSecret(
+        secretName,
+        JSON.stringify({
+          client_id: appSecret.clientId,
+          client_secret: appSecret.clientSecret,
+          tenant_id: appSecret.tenantId,
+          refresh_token: tokenPayload.refresh_token,
+          calendar_ids: ["primary"]
+        })
+      );
+
+      await deps.putConnection(connectionsTableName, {
+        advisorId: oauthAdvisorId,
+        connectionId,
+        provider: "microsoft",
+        accountEmail: profile.email ?? "unknown@microsoft",
+        status: "connected",
+        isPrimary: true,
+        secretArn,
+        createdAt: nowIso,
+        updatedAt: nowIso
+      });
+
+      return redirectResponse(`${getBaseUrl(event)}/advisor?connected=microsoft`);
     }
 
     if (method === "DELETE" && rawPath.startsWith("/advisor/api/connections/")) {

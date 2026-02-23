@@ -39,6 +39,9 @@ test("advisor portal home serves html", async () => {
     assert.match(response.body, /Advisor Identity/);
     assert.match(response.body, /AI Settings/);
     assert.match(response.body, /id="portalBrandLogo"/);
+    assert.match(response.body, /Connect Google \(Sign In\)/);
+    assert.match(response.body, /Connect Microsoft \(Sign In\)/);
+    assert.equal(response.body.includes("Add Mock Calendar"), false);
     assert.match(response.body, /Copyright \(C\) 2026\. RR Emerge LLC/);
   } finally {
     if (previousConnectionsTable === undefined) {
@@ -1843,6 +1846,176 @@ test("advisor portal google callback persists calendar connection for advisor fr
   }
 });
 
+test("advisor portal microsoft start redirects browser to Microsoft login", async () => {
+  let capturedState = null;
+  const handler = createPortalHandler({
+    async getSecretString() {
+      return JSON.stringify({
+        client_id: "microsoft-client-id",
+        client_secret: "microsoft-client-secret",
+        tenant_id: "common"
+      });
+    },
+    async putOauthState(_tableName, state) {
+      capturedState = state;
+    }
+  });
+
+  const previousOauthStateTable = process.env.OAUTH_STATE_TABLE_NAME;
+  const previousMicrosoftAppSecretArn = process.env.MICROSOFT_OAUTH_APP_SECRET_ARN;
+
+  process.env.OAUTH_STATE_TABLE_NAME = "OAuthStateTable";
+  process.env.MICROSOFT_OAUTH_APP_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft-app";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        domainName: "xytaxmumc3.execute-api.us-east-1.amazonaws.com",
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/api/connections/microsoft/start"
+    });
+
+    assert.equal(response.statusCode, 302);
+    assert.ok(
+      response.headers.location.startsWith("https://login.microsoftonline.com/common/oauth2/v2.0/authorize")
+    );
+
+    const redirectUrl = new URL(response.headers.location);
+    assert.equal(redirectUrl.searchParams.get("client_id"), "microsoft-client-id");
+    assert.equal(
+      redirectUrl.searchParams.get("redirect_uri"),
+      "https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev/advisor/api/connections/microsoft/callback"
+    );
+    assert.equal(redirectUrl.searchParams.get("response_type"), "code");
+    assert.equal(redirectUrl.searchParams.get("response_mode"), "query");
+    assert.match(redirectUrl.searchParams.get("scope"), /Calendars\.Read/);
+    assert.equal(redirectUrl.searchParams.get("state"), capturedState);
+    assert.ok(capturedState);
+  } finally {
+    if (previousOauthStateTable === undefined) {
+      delete process.env.OAUTH_STATE_TABLE_NAME;
+    } else {
+      process.env.OAUTH_STATE_TABLE_NAME = previousOauthStateTable;
+    }
+
+    if (previousMicrosoftAppSecretArn === undefined) {
+      delete process.env.MICROSOFT_OAUTH_APP_SECRET_ARN;
+    } else {
+      process.env.MICROSOFT_OAUTH_APP_SECRET_ARN = previousMicrosoftAppSecretArn;
+    }
+  }
+});
+
+test("advisor portal microsoft callback persists calendar connection for advisor from oauth state", async () => {
+  let capturedSecretName = null;
+  let savedConnection = null;
+  const handler = createPortalHandler({
+    async getOauthState() {
+      return {
+        advisorId: "lalita@rremerge.com",
+        purpose: "calendar_connection",
+        provider: "microsoft"
+      };
+    },
+    async deleteOauthState() {},
+    async getSecretString(secretArn) {
+      assert.equal(secretArn, "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft-app");
+      return JSON.stringify({
+        client_id: "microsoft-client-id",
+        client_secret: "microsoft-client-secret",
+        tenant_id: "common"
+      });
+    },
+    async createSecret(secretName, secretValue) {
+      capturedSecretName = secretName;
+      assert.match(secretValue, /refresh_token/);
+      assert.match(secretValue, /tenant_id/);
+      return `arn:aws:secretsmanager:us-east-1:111111111111:secret:${encodeURIComponent(secretName)}`;
+    },
+    async putConnection(_tableName, item) {
+      savedConnection = item;
+    },
+    fetchImpl: async (url) => {
+      if (url === "https://login.microsoftonline.com/common/oauth2/v2.0/token") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              access_token: "ms-access-token",
+              refresh_token: "ms-refresh-token"
+            };
+          }
+        };
+      }
+
+      if (url.startsWith("https://graph.microsoft.com/v1.0/me")) {
+        return {
+          ok: true,
+          async json() {
+            return {
+              mail: "lalita@outlook.com",
+              userPrincipalName: "lalita@outlook.com"
+            };
+          }
+        };
+      }
+
+      throw new Error(`unexpected fetch url: ${url}`);
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    OAUTH_STATE_TABLE_NAME: process.env.OAUTH_STATE_TABLE_NAME,
+    CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
+    MICROSOFT_OAUTH_APP_SECRET_ARN: process.env.MICROSOFT_OAUTH_APP_SECRET_ARN,
+    ADVISOR_ID: process.env.ADVISOR_ID
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.OAUTH_STATE_TABLE_NAME = "OAuthStateTable";
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.MICROSOFT_OAUTH_APP_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft-app";
+  process.env.ADVISOR_ID = "manoj";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        code: "oauth-code",
+        state: "oauth-state"
+      },
+      requestContext: {
+        domainName: "xytaxmumc3.execute-api.us-east-1.amazonaws.com",
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/api/connections/microsoft/callback"
+    });
+
+    assert.equal(response.statusCode, 302);
+    assert.equal(
+      response.headers.location,
+      "https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev/advisor?connected=microsoft"
+    );
+    assert.ok(capturedSecretName);
+    assert.match(capturedSecretName, /\/lalita@rremerge\.com\/connections\//);
+    assert.ok(savedConnection);
+    assert.equal(savedConnection.advisorId, "lalita@rremerge.com");
+    assert.equal(savedConnection.provider, "microsoft");
+    assert.equal(savedConnection.accountEmail, "lalita@outlook.com");
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
 test("advisor portal trace lookup returns metadata and diagnosis", async () => {
   const requestId = "123e4567-e89b-12d3-a456-426614174000";
   const handler = createPortalHandler({
@@ -2098,6 +2271,104 @@ test("availability page renders open slots for valid short token", async () => {
     );
     assert.match(response.body, /Availability for/);
     assert.match(response.body, /Tito Needa/);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("availability page supports microsoft primary connection in CALENDAR_MODE=connection", async () => {
+  const tokenId = "microsofttoken123";
+  const nowMs = Date.now();
+  const lookupCalls = [];
+  const handler = createPortalHandler({
+    async getAvailabilityLink() {
+      return {
+        tokenId,
+        advisorId: "manoj",
+        clientDisplayName: "Tito Needa",
+        clientReference: "tito-needa",
+        durationMinutes: 30,
+        expiresAtMs: nowMs + 60 * 60 * 1000
+      };
+    },
+    async getPrimaryConnection() {
+      return {
+        provider: "microsoft",
+        status: "connected",
+        isPrimary: true,
+        accountEmail: "advisor@outlook.com",
+        secretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft-connection"
+      };
+    },
+    async getSecretString(secretArn) {
+      assert.equal(secretArn, "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft-connection");
+      return JSON.stringify({
+        client_id: "ms-client-id",
+        client_secret: "ms-client-secret",
+        refresh_token: "ms-refresh-token",
+        tenant_id: "common",
+        calendar_ids: ["primary"]
+      });
+    },
+    async lookupBusyIntervals(args) {
+      lookupCalls.push(args);
+      return [
+        {
+          startIso: "2026-03-03T17:00:00.000Z",
+          endIso: "2026-03-03T17:30:00.000Z",
+          calendarId: "primary"
+        }
+      ];
+    },
+    async lookupClientMeetings(args) {
+      lookupCalls.push(args);
+      return {
+        clientMeetings: [],
+        nonClientBusyIntervals: []
+      };
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
+    CALENDAR_MODE: process.env.CALENDAR_MODE,
+    HOST_TIMEZONE: process.env.HOST_TIMEZONE,
+    ADVISING_DAYS: process.env.ADVISING_DAYS,
+    SEARCH_DAYS: process.env.SEARCH_DAYS
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.CALENDAR_MODE = "connection";
+  process.env.HOST_TIMEZONE = "America/Los_Angeles";
+  process.env.ADVISING_DAYS = "Tue,Wed";
+  process.env.SEARCH_DAYS = "7";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        t: tokenId
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/availability"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(lookupCalls.length > 0, true);
+    assert.equal(lookupCalls[0].provider, "microsoft");
+    assert.match(response.body, />Busy</);
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {

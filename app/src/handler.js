@@ -3,6 +3,7 @@ import { DateTime } from "luxon";
 import { parseSchedulingRequest } from "./intent-parser.js";
 import { generateCandidateSlots } from "./slot-generator.js";
 import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adapter.js";
+import { parseMicrosoftOauthSecret, lookupMicrosoftBusyIntervals } from "./microsoft-adapter.js";
 import {
   analyzePromptInjectionRiskWithOpenAi,
   assessPromptInjectionRisk,
@@ -2206,6 +2207,20 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         windowEndIso: searchEndIso,
         fetchImpl: deps.fetchImpl
       });
+    } else if (calendarMode === "microsoft") {
+      const secretArn = env.MICROSOFT_OAUTH_SECRET_ARN;
+      if (!secretArn) {
+        throw new Error("MICROSOFT_OAUTH_SECRET_ARN is required for CALENDAR_MODE=microsoft");
+      }
+
+      const secretString = await deps.getSecretString(secretArn);
+      const oauthConfig = parseMicrosoftOauthSecret(secretString);
+      busyIntervals = await deps.lookupMicrosoftBusyIntervals({
+        oauthConfig,
+        windowStartIso: searchStartIso,
+        windowEndIso: searchEndIso,
+        fetchImpl: deps.fetchImpl
+      });
     } else if (calendarMode === "connection") {
       const connectionsTableName = env.CONNECTIONS_TABLE_NAME;
       if (!connectionsTableName) {
@@ -2228,6 +2243,19 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         const secretString = await deps.getSecretString(connection.secretArn);
         const oauthConfig = parseGoogleOauthSecret(secretString);
         busyIntervals = await deps.lookupBusyIntervals({
+          oauthConfig,
+          windowStartIso: searchStartIso,
+          windowEndIso: searchEndIso,
+          fetchImpl: deps.fetchImpl
+        });
+      } else if (connection.provider === "microsoft") {
+        if (!connection.secretArn) {
+          throw new Error("Microsoft connection is missing secretArn");
+        }
+
+        const secretString = await deps.getSecretString(connection.secretArn);
+        const oauthConfig = parseMicrosoftOauthSecret(secretString);
+        busyIntervals = await deps.lookupMicrosoftBusyIntervals({
           oauthConfig,
           windowStartIso: searchStartIso,
           windowEndIso: searchEndIso,
@@ -2695,6 +2723,7 @@ export function createHandler(overrides = {}) {
   const deps = {
     ...runtimeDeps,
     lookupBusyIntervals: lookupGoogleBusyIntervals,
+    lookupMicrosoftBusyIntervals,
     draftResponseWithLlm: draftResponseWithOpenAi,
     extractSchedulingIntentWithLlm: extractSchedulingIntentWithOpenAi,
     analyzePromptInjectionRiskWithLlm: analyzePromptInjectionRiskWithOpenAi,

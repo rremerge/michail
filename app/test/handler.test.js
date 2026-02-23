@@ -2013,6 +2013,67 @@ test("processSchedulingEmail uses primary connection in CALENDAR_MODE=connection
   assert.equal(traceItems[0].calendarMode, "connection");
 });
 
+test("processSchedulingEmail supports microsoft provider in CALENDAR_MODE=connection", async () => {
+  const traceItems = [];
+  const microsoftLookupCalls = [];
+  const deps = {
+    async getPrimaryConnection(tableName, advisorId) {
+      assert.equal(tableName, "ConnectionsTable");
+      assert.equal(advisorId, "manoj");
+      return {
+        provider: "microsoft",
+        status: "connected",
+        isPrimary: true,
+        secretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft",
+        updatedAt: "2026-03-03T00:00:00Z"
+      };
+    },
+    async getSecretString(secretArn) {
+      assert.equal(secretArn, "arn:aws:secretsmanager:us-east-1:111111111111:secret:microsoft");
+      return JSON.stringify({
+        client_id: "ms-client-id",
+        client_secret: "ms-client-secret",
+        refresh_token: "ms-refresh-token",
+        tenant_id: "common",
+        calendar_ids: ["primary"]
+      });
+    },
+    async lookupBusyIntervals() {
+      throw new Error("google lookup should not be used for microsoft provider");
+    },
+    async lookupMicrosoftBusyIntervals(args) {
+      microsoftLookupCalls.push(args);
+      return [];
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    CALENDAR_MODE: "connection",
+    CONNECTIONS_TABLE_NAME: "ConnectionsTable",
+    ADVISOR_ID: "manoj"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Chat"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(microsoftLookupCalls.length, 1);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].calendarMode, "connection");
+});
+
 test("processSchedulingEmail forwards to advisor and sends client hold when no calendar is connected", async () => {
   const sentMessages = [];
   const traceItems = [];
