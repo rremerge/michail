@@ -3489,6 +3489,31 @@ function buildAdvisorLandingPage({ googleLoginUrl }) {
         text-align: center;
         font-size: 13px;
       }
+      .secure-browser-warning {
+        margin-top: 10px;
+        border: 1px solid #f8d7da;
+        border-radius: 10px;
+        background: #fff4f5;
+        color: #8b1d2c;
+        font-size: 12px;
+        line-height: 1.45;
+        padding: 10px 12px;
+      }
+      .secure-browser-warning strong {
+        display: block;
+        font-size: 12px;
+        margin-bottom: 4px;
+      }
+      .cta.cta-disabled,
+      .cta.cta-disabled:hover,
+      .cta.cta-disabled:active {
+        background: linear-gradient(180deg, #98adc5, #8095ad);
+        border-color: #7a8ea5;
+        box-shadow: none;
+        cursor: not-allowed;
+        transform: none;
+        filter: none;
+      }
       .right {
         position: relative;
         background:
@@ -3618,11 +3643,48 @@ function buildAdvisorLandingPage({ googleLoginUrl }) {
               <a class="cta" href="${safeGoogleLoginUrl}" id="landingGoogleSignIn">Login with Google</a>
             </div>
             <p class="note">First login creates your advisor account and default agent settings.</p>
+            <div id="secureBrowserWarning" class="secure-browser-warning" hidden>
+              <strong>Use Safari or Chrome to sign in</strong>
+              Google blocks sign-in from some in-app browsers (error <code>disallowed_useragent</code>).
+              Open this page in Safari/Chrome and retry.
+            </div>
           </aside>
         </div>
       </section>
       <p class="copyright-global">${escapeHtml(BRAND_COPYRIGHT_NOTICE)}</p>
     </main>
+    <script>
+      (function enforceSecureBrowserForGoogleAuth() {
+        const googleButton = document.getElementById("landingGoogleSignIn");
+        const warningBox = document.getElementById("secureBrowserWarning");
+        if (!googleButton || !warningBox || typeof navigator === "undefined") {
+          return;
+        }
+
+        const ua = String(navigator.userAgent || "");
+        const isIOS = /iPhone|iPad|iPod/i.test(ua);
+        const isAndroid = /Android/i.test(ua);
+        const hasKnownInAppMarker =
+          /(FBAN|FBAV|FBIOS|FB_IAB|FB4A|Instagram|Line\\/|MicroMessenger|LinkedInApp|Snapchat|TikTok|wv\\)|;\\s*wv\\b|GSA|GoogleApp|MiuiBrowser|YaBrowserLite|Telegram|Slack|Discord)/i.test(
+            ua
+          );
+        const isLikelyEmbeddedIOS = isIOS && !/Safari/i.test(ua);
+        const isLikelyEmbeddedAndroid =
+          isAndroid && !/(Chrome\\/|Firefox\\/|EdgA\\/|OPR\\/|SamsungBrowser\\/)/i.test(ua);
+
+        if (!hasKnownInAppMarker && !isLikelyEmbeddedIOS && !isLikelyEmbeddedAndroid) {
+          return;
+        }
+
+        googleButton.classList.add("cta-disabled");
+        googleButton.setAttribute("aria-disabled", "true");
+        warningBox.hidden = false;
+        googleButton.addEventListener("click", (event) => {
+          event.preventDefault();
+          warningBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
+        });
+      })();
+    </script>
   </body>
 </html>`;
 }

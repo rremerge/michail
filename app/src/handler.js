@@ -251,6 +251,34 @@ function hasBookingIntent({ subject, body, normalizedRequestedWindows }) {
   return true;
 }
 
+function hasSpecificBookingCandidate({ normalizedRequestedWindows, durationMinutes }) {
+  if (!Array.isArray(normalizedRequestedWindows) || normalizedRequestedWindows.length === 0) {
+    return false;
+  }
+
+  // Broad windows (for example month/week/day ranges) should not auto-book.
+  if (normalizedRequestedWindows.length > 3) {
+    return false;
+  }
+
+  const normalizedDurationMinutes = Math.max(15, Number.parseInt(durationMinutes ?? 30, 10) || 30);
+  const maxWindowMinutes = Math.max(normalizedDurationMinutes * 4, 120);
+  for (const window of normalizedRequestedWindows) {
+    const startMs = Date.parse(window?.startIso);
+    const endMs = Date.parse(window?.endIso);
+    if (Number.isNaN(startMs) || Number.isNaN(endMs) || endMs <= startMs) {
+      return false;
+    }
+
+    const spanMinutes = (endMs - startMs) / (60 * 1000);
+    if (spanMinutes > maxWindowMinutes) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function buildBookingIntentTraceFields({
   bookingIntentSource,
   llmBookingIntent,
@@ -304,7 +332,7 @@ function extractLatestReplyText(bodyText) {
 
   const nonQuotedLines = lines.filter((line) => !String(line ?? "").trim().startsWith(">"));
   const nonQuotedText = nonQuotedLines.join("\n").trim();
-  return nonQuotedText || normalizedBody;
+  return nonQuotedText;
 }
 
 function extractQuotedThreadContext(bodyText) {
@@ -1610,8 +1638,13 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const { bodyText, bodySource } = await resolveInboundEmailBody({ payload, env, deps });
   const latestReplyText = extractLatestReplyText(bodyText);
   const quotedThreadContext = extractQuotedThreadContext(bodyText);
-  const intentInputBodyText = latestReplyText || bodyText;
-  const intentInputMode = latestReplyText && latestReplyText !== bodyText ? "latest_reply" : "full_body";
+  const quotedOnlyReply = !latestReplyText && Boolean(quotedThreadContext);
+  const intentInputBodyText = quotedOnlyReply ? "" : latestReplyText || bodyText;
+  const intentInputMode = quotedOnlyReply
+    ? "quoted_only"
+    : latestReplyText && latestReplyText !== bodyText
+      ? "latest_reply"
+      : "full_body";
   const intentInputLength = intentInputBodyText.length;
 
   const advisorContext = await resolveAdvisorContext({ payload, env, deps });
@@ -2587,13 +2620,15 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   let availabilityLinkStatus = "pending";
   let bookingStatus = "not_requested";
   let inviteRecipients = [];
+  const bookingCandidateSpecific = hasSpecificBookingCandidate({
+    normalizedRequestedWindows,
+    durationMinutes: parsed.durationMinutes
+  });
   const deterministicBookingRequested = hasBookingIntent({
     subject: payload.subject,
     body: intentInputBodyText,
     normalizedRequestedWindows
-  });
-  const bookingCandidateAvailable =
-    Array.isArray(normalizedRequestedWindows) && normalizedRequestedWindows.length > 0;
+  }) && bookingCandidateSpecific;
   const hasHighConfidenceLlmBookingIntent =
     typeof llmBookingIntent === "boolean" &&
     Number.isFinite(bookingIntentConfidenceThreshold) &&
@@ -2601,7 +2636,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   let bookingRequested = deterministicBookingRequested;
   if (intentExtractionMode === "llm_hybrid" && intentLlmStatus === "ok") {
     if (hasHighConfidenceLlmBookingIntent) {
-      bookingRequested = bookingCandidateAvailable ? llmBookingIntent : false;
+      bookingRequested = bookingCandidateSpecific ? llmBookingIntent : false;
       bookingIntentSource = "llm";
     } else {
       bookingRequested = deterministicBookingRequested;

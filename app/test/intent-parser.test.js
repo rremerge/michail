@@ -152,3 +152,23 @@ test("parseSchedulingRequest derives reversed month-week phrasing", () => {
     assert.equal(start.hour, 13);
   }
 });
+
+test("parseSchedulingRequest ignores busy first-week clause and handles wrapped second-week phrasing", () => {
+  const parsed = parseSchedulingRequest({
+    fromEmail: "a@b.com",
+    subject: "Re: hang out soon",
+    body: "actually i am busy first week of april. Can we find some time in the second\nweek of april , ideally in the afternoon?",
+    referenceIso: "2026-02-24T03:50:48Z",
+    fallbackTimezone: "America/Los_Angeles"
+  });
+
+  assert.equal(parsed.requestedWindows.length > 0, true);
+  for (const window of parsed.requestedWindows) {
+    const start = DateTime.fromISO(window.startIso);
+    const end = DateTime.fromISO(window.endIso);
+    assert.equal(start.month, 4);
+    assert.equal(start.day >= 8 && start.day <= 14, true);
+    assert.equal(start.hour, 13);
+    assert.equal(end.hour, 17);
+  }
+});

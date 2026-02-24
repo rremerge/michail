@@ -99,6 +99,8 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 1. System shall create confirmed meetings on the selected calendar account.
 2. System shall send confirmation details and invitation artifacts.
 3. System shall log booking decisions and rationale for auditability without storing email content or calendar event content.
+4. System shall auto-book only when booking intent is clear and the extracted requested window is specific (for example a concrete slot or narrow range); broad ranges (for example "in April", "next week") shall produce suggestions without immediate booking.
+5. Quoted-only thread replies with no new unquoted client/advisor text shall not be treated as fresh booking confirmation.
 
 ### FR-9 LLM Provider Abstraction
 1. System shall use GPT-5 as default provider for reasoning and response generation.
@@ -409,6 +411,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 37. Given advisor-domain restrictions are configured, when an advisor signs in with Google using a non-allowed email domain, then access is denied and no advisor account/session is created.
 38. Given an advisor CCs the agent on an existing email thread with a client, when the agent sends suggested times, then the response is delivered to all non-agent thread participants.
 39. Given the same CC thread reaches booking confirmation, when the agent sends the calendar invite, then invite recipients include all non-agent thread participants and the advisor invite identity.
+40. Given a thread message contains only quoted prior content and no new unquoted reply text, when processed, then the agent does not auto-book and instead continues normal suggestion/clarification flow.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.

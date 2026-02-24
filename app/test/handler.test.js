@@ -1200,6 +1200,122 @@ test("processSchedulingEmail does not auto-book when no explicit time window is 
   assert.equal(sentResponseMessages.length, 1);
 });
 
+test("processSchedulingEmail does not auto-book for broad window even with invite keywords", async () => {
+  const traceItems = [];
+  const deps = {
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    }
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "calendar invite",
+      body: "Please send a calendar invite sometime in April."
+    },
+    env: {
+      ...baseEnv,
+      SEARCH_DAYS: "120"
+    },
+    deps,
+    now: () => Date.parse("2026-02-24T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "not_requested");
+  assert.equal(traceItems[0].bookingStatus, "not_requested");
+});
+
+test("processSchedulingEmail honors second-week afternoon when first week is marked busy", async () => {
+  const deps = {
+    async writeTrace() {}
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "titoneeda@gmail.com",
+      toEmail: "miitb.agent@agent.letsconnect.ai",
+      subject: "Re: hang out soon",
+      body: "actually i am busy first week of april. Can we find some time in the second\nweek of april , ideally in the afternoon?"
+    },
+    env: {
+      ...baseEnv,
+      SEARCH_DAYS: "120"
+    },
+    deps,
+    now: () => Date.parse("2026-02-24T03:50:48Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "not_requested");
+  assert.equal(response.suggestionCount > 0, true);
+
+  const firstSuggestion = response.suggestions[0];
+  const firstStart = DateTime.fromISO(firstSuggestion.startIsoUtc, { zone: "utc" }).setZone("America/Los_Angeles");
+  assert.equal(firstStart.month, 4);
+  assert.equal(firstStart.day >= 8 && firstStart.day <= 14, true);
+  assert.equal(firstStart.hour >= 13 && firstStart.hour < 17, true);
+});
+
+test("processSchedulingEmail does not auto-book quoted-only thread content", async () => {
+  const traceItems = [];
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm() {
+      return {
+        requestedWindows: [],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.3,
+        bookingIntent: null,
+        bookingIntentConfidence: 0.4
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "120"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "titoneeda@gmail.com",
+      toEmails: ["manojapte@iitbombay.org", "miitb.agent@agent.letsconnect.ai"],
+      subject: "Re: lets meet",
+      body: [
+        "> hi tito,",
+        "> I am ccing my calendar agent to find some time for us to meet in april.",
+        "> Miitb will suggest some times, please pick a time that works for you and",
+        "> Miitb will send a calendar invite.",
+        "> Thanks",
+        "> manj"
+      ].join("\n")
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-02-24T03:21:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "not_requested");
+  assert.equal(traceItems[0].intentInputMode, "quoted_only");
+  assert.equal(traceItems[0].bookingStatus, "not_requested");
+});
+
 test("processSchedulingEmail auto-books for affirmative confirmation when a specific slot is extracted", async () => {
   const traceItems = [];
   const deps = {

@@ -106,6 +106,9 @@ test("advisor landing page serves marketing copy and google sign-in CTA", async 
   assert.match(response.headers["content-type"], /text\/html/);
   assert.match(response.body, /Turn inbound scheduling email into confirmed meetings\./);
   assert.match(response.body, /Login with Google/);
+  assert.match(response.body, /secureBrowserWarning/);
+  assert.match(response.body, /disallowed_useragent/);
+  assert.match(response.body, /enforceSecureBrowserForGoogleAuth/);
   assert.match(
     response.body,
     /https:\/\/xytaxmumc3\.execute-api\.us-east-1\.amazonaws\.com\/dev\/advisor\/auth\/google\/start\?returnTo=%2Fadvisor/

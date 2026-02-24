@@ -17,6 +17,11 @@ const MONTH_WEEK_PATTERN =
 const TIME_RANGE_PATTERN =
   /\b(?:between|from)?\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:-|to|and)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i;
 const DAYPART_PATTERN = /\b(early morning|late morning|morning|afternoon|late afternoon|evening|night|noon|lunch)\b/i;
+const BUSY_EXCLUSION_PATTERN =
+  /\b(?:busy|booked|unavailable|occupied|tied\s+up|out\s+of\s+office|ooo|travel(?:ing|ling)?)\b/i;
+const NEGATED_BUSY_PATTERN = /\b(?:not|no\s+longer)\s+(?:busy|booked|unavailable|occupied|tied\s+up)\b/i;
+const POSITIVE_AVAILABILITY_PATTERN =
+  /\b(?:available|free|open|works?|can\s+do|can\s+make|can\s+meet|find\s+some\s+time)\b/i;
 
 const WEEKDAY_TO_NUMBER = {
   mon: 1,
@@ -77,6 +82,36 @@ function normalizeWhitespace(value) {
   return String(value ?? "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function splitIntentClauses(subject, body) {
+  const merged = normalizeWhitespace(`${subject}. ${body}`);
+  if (!merged) {
+    return [];
+  }
+
+  return merged
+    .split(/[.;!?]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function isAvailabilityExclusionClause(clause) {
+  const normalized = normalizeWhitespace(clause).toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+
+  if (NEGATED_BUSY_PATTERN.test(normalized)) {
+    return false;
+  }
+
+  // If a clause is explicitly availability-positive, do not suppress it.
+  if (POSITIVE_AVAILABILITY_PATTERN.test(normalized)) {
+    return false;
+  }
+
+  return BUSY_EXCLUSION_PATTERN.test(normalized);
 }
 
 function canonicalizeWeekday(rawValue) {
@@ -635,11 +670,7 @@ function applyMinutesToDate(date, minuteOfDay) {
 }
 
 function parseNaturalLanguageRequestedWindows({ subject, body, timezone, referenceIso }) {
-  const merged = `${subject}\n${body}`;
-  const clauses = merged
-    .split(/[\n.;]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const clauses = splitIntentClauses(subject, body);
   if (clauses.length === 0) {
     return [];
   }
@@ -648,6 +679,10 @@ function parseNaturalLanguageRequestedWindows({ subject, body, timezone, referen
   const windows = [];
 
   for (const clause of clauses) {
+    if (isAvailabilityExclusionClause(clause)) {
+      continue;
+    }
+
     const descriptors = extractDateDescriptors(clause);
     if (descriptors.length === 0) {
       continue;
@@ -689,11 +724,7 @@ function parseNaturalLanguageRequestedWindows({ subject, body, timezone, referen
 }
 
 function parseBroadNaturalLanguageRequestedWindows({ subject, body, timezone, referenceIso }) {
-  const merged = `${subject}\n${body}`;
-  const clauses = merged
-    .split(/[\n.;]+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const clauses = splitIntentClauses(subject, body);
   if (clauses.length === 0) {
     return [];
   }
@@ -702,6 +733,10 @@ function parseBroadNaturalLanguageRequestedWindows({ subject, body, timezone, re
   const windows = [];
 
   for (const clause of clauses) {
+    if (isAvailabilityExclusionClause(clause)) {
+      continue;
+    }
+
     const weekOfMonthSpans = parseWeekOfMonthSpans(clause, referenceDate);
     const monthOnlySpans = weekOfMonthSpans.length > 0 ? [] : parseMonthOnlySpans(clause, referenceDate);
     const spans = [...weekOfMonthSpans, ...monthOnlySpans];
