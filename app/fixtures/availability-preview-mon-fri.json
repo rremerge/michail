@@ -1,7 +1,7 @@
 {
   "name": "representative-policy-mon-fri",
   "advisor": {
-    "id": "manoj",
+    "id": "advisor-preview",
     "timezone": "America/Los_Angeles",
     "advisingDays": ["Mon", "Tue", "Wed", "Thu", "Fri"],
     "workdayStartHour": 9,

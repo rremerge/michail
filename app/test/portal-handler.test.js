@@ -630,6 +630,7 @@ test("advisor auth callback seeds advisor settings defaults from google login", 
     assert.equal(settingsWrites.length, 1);
     assert.equal(settingsWrites[0].advisorId, "manoj@rremerge.com");
     assert.equal(settingsWrites[0].agentEmail, "manoj.agent@agent.letsconnect.ai");
+    assert.equal(settingsWrites[0].agentName, "Manoj");
     assert.equal(settingsWrites[0].inviteEmail, "manoj@rremerge.com");
     assert.equal(settingsWrites[0].preferredName, "Manoj Apte");
     assert.equal(settingsWrites[0].timezone, "America/Los_Angeles");
@@ -750,6 +751,7 @@ test("advisor auth callback resolves default agent email collisions", async () =
     assert.deepEqual(checkedAgentEmails, ["manoj.agent@agent.letsconnect.ai", "manoj.agent.1@agent.letsconnect.ai"]);
     assert.equal(settingsWrites.length, 1);
     assert.equal(settingsWrites[0].agentEmail, "manoj.agent.1@agent.letsconnect.ai");
+    assert.equal(settingsWrites[0].agentName, "Manoj");
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {
@@ -1490,6 +1492,8 @@ test("advisor portal settings api returns and updates advisor profile settings",
   const writes = [];
   let stored = {
     advisorId: "manoj",
+    agentEmail: "manoj.agent@agent.letsconnect.ai",
+    agentName: "Miitb",
     inviteEmail: "manoj@rremerge.com",
     preferredName: "Manoj",
     timezone: "America/Los_Angeles",
@@ -1530,6 +1534,8 @@ test("advisor portal settings api returns and updates advisor profile settings",
 
     assert.equal(getResponse.statusCode, 200);
     const getPayload = JSON.parse(getResponse.body);
+    assert.equal(getPayload.settings.agentEmail, "manoj.agent@agent.letsconnect.ai");
+    assert.equal(getPayload.settings.agentName, "Miitb");
     assert.equal(getPayload.settings.inviteEmail, "manoj@rremerge.com");
     assert.equal(getPayload.settings.preferredName, "Manoj");
     assert.equal(getPayload.settings.timezone, "America/Los_Angeles");
@@ -1544,6 +1550,7 @@ test("advisor portal settings api returns and updates advisor profile settings",
       },
       rawPath: "/dev/advisor/api/settings",
       body: JSON.stringify({
+        agentName: "Miitb Assistant",
         inviteEmail: "advisor@newdomain.com",
         preferredName: "Manoj Apte",
         timezone: "America/New_York"
@@ -1552,6 +1559,7 @@ test("advisor portal settings api returns and updates advisor profile settings",
 
     assert.equal(patchResponse.statusCode, 200);
     assert.equal(writes.length, 1);
+    assert.equal(writes[0].agentName, "Miitb Assistant");
     assert.equal(writes[0].inviteEmail, "advisor@newdomain.com");
     assert.equal(writes[0].preferredName, "Manoj Apte");
     assert.equal(writes[0].timezone, "America/New_York");
@@ -1760,6 +1768,59 @@ test("advisor portal settings api validates timezone values", async () => {
     assert.equal(response.statusCode, 400);
     const payload = JSON.parse(response.body);
     assert.match(payload.error, /valid IANA timezone/);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
+test("advisor portal settings api validates agentName values", async () => {
+  const handler = createPortalHandler({
+    async getAdvisorSettings() {
+      return {
+        advisorId: "manoj",
+        agentEmail: "manoj.agent@agent.letsconnect.ai",
+        agentName: "Miitb",
+        inviteEmail: "manoj@rremerge.com",
+        preferredName: "Manoj",
+        timezone: "America/Los_Angeles"
+      };
+    },
+    async putAdvisorSettings() {
+      throw new Error("putAdvisorSettings should not be called for invalid agentName");
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_SETTINGS_TABLE_NAME: process.env.ADVISOR_SETTINGS_TABLE_NAME,
+    ADVISOR_ID: process.env.ADVISOR_ID
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_SETTINGS_TABLE_NAME = "AdvisorSettingsTable";
+  process.env.ADVISOR_ID = "manoj";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        stage: "dev",
+        http: { method: "PATCH" }
+      },
+      rawPath: "/dev/advisor/api/settings",
+      body: JSON.stringify({
+        agentName: "   "
+      })
+    });
+
+    assert.equal(response.statusCode, 400);
+    const payload = JSON.parse(response.body);
+    assert.match(payload.error, /agentName must not be empty/);
   } finally {
     for (const [key, value] of Object.entries(previousValues)) {
       if (value === undefined) {

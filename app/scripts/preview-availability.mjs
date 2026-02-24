@@ -230,7 +230,7 @@ async function main() {
   const fixture = JSON.parse(fixtureText);
 
   const advisorTimezone = fixture.advisor?.timezone ?? "America/Los_Angeles";
-  const advisorId = fixture.advisor?.id ?? "manoj";
+  const advisorId = fixture.advisor?.id ?? "advisor-preview";
   const advisingDays = Array.isArray(fixture.advisor?.advisingDays) ? fixture.advisor.advisingDays : ["Tue", "Wed"];
   const workdayStartHour = Number.parseInt(String(fixture.advisor?.workdayStartHour ?? "9"), 10);
   const workdayEndHour = Number.parseInt(String(fixture.advisor?.workdayEndHour ?? "17"), 10);
@@ -297,14 +297,14 @@ async function main() {
           status: "connected",
           isPrimary: true,
           accountEmail: fixture.advisor?.calendarAccountEmail ?? "advisor@example.com",
-          secretArn: "arn:preview:secret"
+          secretArn: "preview-secret-ref"
         };
       },
       async getSecretString() {
         return JSON.stringify({
-          client_id: "preview-client-id",
-          client_secret: "preview-client-secret",
-          refresh_token: "preview-refresh-token",
+          client_id: "placeholder",
+          client_secret: "placeholder",
+          refresh_token: "placeholder",
           calendar_ids: ["primary"]
         });
       },

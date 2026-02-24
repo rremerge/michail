@@ -56,6 +56,16 @@ const EXPLICIT_BOOKING_INTENT_KEYWORDS =
 const AFFIRMATIVE_BOOKING_INTENT_KEYWORDS =
   /\b(works|great|perfect|excellent|sounds good|looks good|yes|yep|yeah|ok|okay|lets do it|let's do it)\b/i;
 const NEGATIVE_BOOKING_INTENT_KEYWORDS = /\b(not|cannot|can't|won't|do not|don't)\b/i;
+const AGENT_NARRATION_ACTION_KEYWORDS =
+  /\b(?:will|can|should|could)\b[\s\S]{0,40}\b(?:suggest|share|send|propose|find|follow up|respond)\b/i;
+const AGENT_REFERENCE_STOPWORDS = new Set([
+  "agent",
+  "assistant",
+  "calendar",
+  "calendar agent",
+  "scheduler",
+  "ai"
+]);
 const PROMPT_GUARD_ALLOWED_MODES = new Set(["off", "heuristic", "llm", "heuristic_llm"]);
 const QUOTED_THREAD_BOUNDARY_PATTERNS = [
   /^on .+wrote:\s*$/i,
@@ -225,12 +235,117 @@ function normalizeRequestedWindowsToUtc(requestedWindows) {
     .filter(Boolean);
 }
 
-function hasBookingIntent({ subject, body, normalizedRequestedWindows }) {
+function normalizeAgentReferenceTerm(value) {
+  return String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .slice(0, 64);
+}
+
+function deriveReferenceTermsFromEmail(email) {
+  const normalizedEmail = normalizeEmailAddress(email);
+  if (!normalizedEmail || !normalizedEmail.includes("@")) {
+    return [];
+  }
+
+  const [localPart] = normalizedEmail.split("@");
+  const normalizedLocalPart = String(localPart ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalizedLocalPart) {
+    return [];
+  }
+
+  const terms = [normalizedLocalPart];
+  const spaced = normalizeAgentReferenceTerm(normalizedLocalPart);
+  if (spaced) {
+    terms.push(spaced);
+    if (spaced.endsWith(" agent")) {
+      terms.push(spaced.slice(0, -" agent".length));
+    }
+  }
+
+  return terms.filter(Boolean);
+}
+
+function deriveAgentReferenceTerms({
+  agentDisplayName,
+  configuredAgentEmail,
+  senderEmail,
+  inboundAgentEmail
+}) {
+  const terms = new Set();
+
+  const addTerm = (rawValue) => {
+    const normalized = normalizeAgentReferenceTerm(rawValue);
+    if (!normalized || normalized.length < 3 || AGENT_REFERENCE_STOPWORDS.has(normalized)) {
+      return;
+    }
+    terms.add(normalized);
+  };
+
+  addTerm(agentDisplayName);
+
+  for (const emailValue of [configuredAgentEmail, senderEmail, inboundAgentEmail]) {
+    for (const term of deriveReferenceTermsFromEmail(emailValue)) {
+      addTerm(term);
+    }
+  }
+
+  return [...terms];
+}
+
+function lineMentionsAgentReference(line, agentReferenceTerms) {
+  const normalizedLine = String(line ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+  if (!normalizedLine) {
+    return false;
+  }
+
+  for (const term of agentReferenceTerms) {
+    if (!term) {
+      continue;
+    }
+    if (normalizedLine.includes(term)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+function hasAgentNarrationBookingContext({ mergedText, agentReferenceTerms }) {
+  if (!Array.isArray(agentReferenceTerms) || agentReferenceTerms.length === 0) {
+    return false;
+  }
+
+  const lines = String(mergedText ?? "")
+    .replace(/\r\n/g, "\n")
+    .split("\n");
+
+  return lines.some(
+    (line) =>
+      lineMentionsAgentReference(line, agentReferenceTerms) &&
+      AGENT_NARRATION_ACTION_KEYWORDS.test(line)
+  );
+}
+
+function hasBookingIntent({ subject, body, normalizedRequestedWindows, agentReferenceTerms = [] }) {
   if (!Array.isArray(normalizedRequestedWindows) || normalizedRequestedWindows.length === 0) {
     return false;
   }
 
   const merged = `${String(subject ?? "")}\n${String(body ?? "")}`;
+  if (hasAgentNarrationBookingContext({ mergedText: merged, agentReferenceTerms })) {
+    return false;
+  }
+
   if (EXPLICIT_BOOKING_INTENT_KEYWORDS.test(merged)) {
     return true;
   }
@@ -502,7 +617,7 @@ function buildCalendarInviteMessage({
   selectedSlot,
   hostTimezone,
   clientTimezone,
-  advisorDisplayName,
+  agentDisplayName,
   senderEmail,
   attendeeEmails,
   requestId,
@@ -532,7 +647,7 @@ function buildCalendarInviteMessage({
     summary: safeTitle,
     description: safeDescription,
     organizerEmail: senderEmail,
-    organizerName: advisorDisplayName,
+    organizerName: String(agentDisplayName ?? "").trim() || "Agent",
     attendeeEmails
   });
 
@@ -724,32 +839,51 @@ function deriveClientDisplayName(rawFromEmail, normalizedFromEmail) {
   return titleCaseWords(localPart).slice(0, 64);
 }
 
-function deriveAdvisorDisplayName(rawAdvisorDisplayName, advisorId) {
-  const explicitName = String(rawAdvisorDisplayName ?? "")
+function deriveDisplayNameFromEmail(emailValue) {
+  const normalizedEmail = normalizeEmailAddress(emailValue);
+  if (!normalizedEmail || !normalizedEmail.includes("@")) {
+    return "";
+  }
+
+  const rawLocalPart = normalizedEmail.split("@")[0];
+  const canonicalLocalPart = rawLocalPart.replace(/[._-]agent(?:[._-]\d+)?$/i, "");
+  const localPart = String(canonicalLocalPart || rawLocalPart)
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!localPart) {
+    return "";
+  }
+
+  return titleCaseWords(localPart).slice(0, 64);
+}
+
+function deriveAgentDisplayName(rawAgentDisplayName, { configuredAgentEmail, senderEmail, inboundAgentEmail } = {}) {
+  const explicitName = String(rawAgentDisplayName ?? "")
     .replace(/\s+/g, " ")
     .trim();
   if (explicitName) {
     return explicitName.slice(0, 64);
   }
 
-  const advisorIdValue = String(advisorId ?? "")
-    .replace(/[._-]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!advisorIdValue) {
-    return "Advisor";
+  for (const emailCandidate of [configuredAgentEmail, inboundAgentEmail, senderEmail]) {
+    const derived = deriveDisplayNameFromEmail(emailCandidate);
+    if (derived) {
+      return derived;
+    }
   }
 
-  return titleCaseWords(advisorIdValue).slice(0, 64);
+  return "Agent";
 }
 
 function ensurePersonalizedGreetingAndSignature({
   responseMessage,
   clientDisplayName,
+  agentDisplayName,
   advisorDisplayName
 }) {
   const greetingName = String(clientDisplayName ?? "").trim() || "there";
-  const signoffName = String(advisorDisplayName ?? "").trim() || "Advisor";
+  const signoffName = String(agentDisplayName ?? advisorDisplayName ?? "").trim() || "Agent";
   const greetingLine = `Hi ${greetingName},`;
 
   const rawBody = String(responseMessage.bodyText ?? "").replace(/\r\n/g, "\n");
@@ -1726,8 +1860,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const workdayEndHour = parseIntEnv(env.WORKDAY_END_HOUR, 17);
   const responseMode = (env.RESPONSE_MODE ?? "log").toLowerCase();
   const calendarMode = (env.CALENDAR_MODE ?? "mock").toLowerCase();
-  const senderEmail =
-    normalizeEmailAddress(advisorSettings?.agentEmail) || normalizeEmailAddress(env.SENDER_EMAIL);
+  const configuredAgentEmail = normalizeEmailAddress(advisorSettings?.agentEmail);
+  const senderEmail = configuredAgentEmail || normalizeEmailAddress(env.SENDER_EMAIL);
   const threadParticipantEmails = collectThreadParticipantEmails({
     payload,
     fromEmail,
@@ -1735,10 +1869,20 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     senderEmail
   });
   const inviteSenderEmail = senderEmail || inboundAgentEmail || "agent@agent.letsconnect.ai";
-  const advisorDisplayName = deriveAdvisorDisplayName(
-    String(advisorSettings?.preferredName ?? "").trim() || env.ADVISOR_DISPLAY_NAME,
-    advisorId
+  const agentDisplayName = deriveAgentDisplayName(
+    advisorSettings?.agentName ?? env.AGENT_DISPLAY_NAME,
+    {
+      configuredAgentEmail,
+      senderEmail,
+      inboundAgentEmail
+    }
   );
+  const agentReferenceTerms = deriveAgentReferenceTerms({
+    agentDisplayName,
+    configuredAgentEmail,
+    senderEmail,
+    inboundAgentEmail
+  });
   const advisorInviteEmailOverride = normalizeEmailAddress(advisorSettings?.inviteEmail || env.ADVISOR_INVITE_EMAIL);
   const advisorNotificationEmail = normalizeEmailAddress(
     advisorInviteEmailOverride || advisorSettings?.advisorEmail || env.ADVISOR_EMAIL || senderEmail
@@ -1892,7 +2036,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     const deniedMessage = ensurePersonalizedGreetingAndSignature({
       responseMessage: buildAccessDeniedResponseMessage(),
       clientDisplayName,
-      advisorDisplayName
+      agentDisplayName
     });
     let deliveryStatus = "logged";
     if (responseMode === "send" && senderEmail) {
@@ -2036,7 +2180,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       responseMessage = ensurePersonalizedGreetingAndSignature({
         responseMessage,
         clientDisplayName,
-        advisorDisplayName
+        agentDisplayName
       });
 
       let deliveryStatus = "logged";
@@ -2174,6 +2318,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         openAiConfig,
         subject: payload.subject ?? "",
         body: intentInputBodyText,
+        agentDisplayName,
+        agentIdentityHints: agentReferenceTerms,
         hostTimezone,
         referenceNowIso: startedAtIso,
         fetchImpl: deps.fetchImpl,
@@ -2211,6 +2357,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
               latestReplyText: intentInputBodyText,
               quotedThreadContext
             }),
+            agentDisplayName,
+            agentIdentityHints: agentReferenceTerms,
             hostTimezone,
             referenceNowIso: startedAtIso,
             fetchImpl: deps.fetchImpl,
@@ -2269,6 +2417,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
             openAiConfig,
             subject: payload.subject ?? "",
             body: intentInputBodyText,
+            agentDisplayName,
+            agentIdentityHints: agentReferenceTerms,
             hostTimezone,
             referenceNowIso: startedAtIso,
             fetchImpl: deps.fetchImpl,
@@ -2463,7 +2613,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         const clientHoldMessage = ensurePersonalizedGreetingAndSignature({
           responseMessage: buildCalendarConnectionRequiredClientHoldMessage(payload.subject),
           clientDisplayName,
-          advisorDisplayName
+          agentDisplayName
         });
         await deps.sendResponseEmail({
           senderEmail,
@@ -2627,7 +2777,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const deterministicBookingRequested = hasBookingIntent({
     subject: payload.subject,
     body: intentInputBodyText,
-    normalizedRequestedWindows
+    normalizedRequestedWindows,
+    agentReferenceTerms
   }) && bookingCandidateSpecific;
   const hasHighConfidenceLlmBookingIntent =
     typeof llmBookingIntent === "boolean" &&
@@ -2658,7 +2809,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         selectedSlot: suggestions[0],
         hostTimezone,
         clientTimezone: parsed.clientTimezone,
-        advisorDisplayName,
+        agentDisplayName,
         senderEmail: inviteSenderEmail,
         attendeeEmails: inviteRecipients,
         requestId,
@@ -2761,7 +2912,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   responseMessage = ensurePersonalizedGreetingAndSignature({
     responseMessage,
     clientDisplayName,
-    advisorDisplayName
+    agentDisplayName
   });
 
   let deliveryStatus = "logged";

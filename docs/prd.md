@@ -187,13 +187,16 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 2. Advisor portal shall provide UI/API for advisor to view and update `advisorInviteEmail`, `preferredName`, and `timezone` without redeploying infrastructure.
 3. Email-agent booking and response generation shall use advisor profile settings as effective defaults:
    - invite recipient for advisor copy = `advisorInviteEmail`
-   - signature/display name = `preferredName`
+   - agent email sender identity = `agentEmail`
+   - agent signature/display name = `agentName`
+   - advisor human display name (portal/workspace context) = `preferredName`
    - advisor scheduling/rendering timezone = `timezone`
 4. If advisor profile settings are missing or partially configured, system shall apply deterministic fallback order:
    - `advisorInviteEmail`: advisor profile setting -> configured environment default -> connection/account fallback
    - `preferredName`: advisor profile setting -> configured environment display name -> advisor id derived label
+   - `agentName`: advisor profile setting -> `agentEmail` local-part-derived label -> `Agent`
    - `timezone`: advisor profile setting -> configured environment timezone -> `America/Los_Angeles`
-5. Advisor profile updates shall be validated (`inviteEmail` RFC-like email format, `timezone` valid IANA zone, non-empty `preferredName`) before persistence.
+5. Advisor profile updates shall be validated (`inviteEmail` RFC-like email format, `timezone` valid IANA zone, non-empty `preferredName`, non-empty `agentName`) before persistence.
 
 ### FR-21 Multi-Advisor Tenancy and Agent Alias Routing
 1. The deployed agent service shall support concurrent use by multiple advisors from the same cloud deployment.
@@ -209,6 +212,8 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 8. If inbound destination alias does not map to a known advisor, system shall blackhole the request (no client response) and record a suppressed trace with admission reason `unknown_agent_alias`; no advisor fallback is allowed.
 9. Strict multi-tenant mode shall be enabled in deployed environments; runtime routing must not fall back to single-tenant `ADVISOR_ID` defaults for inbound email or authenticated advisor portal flows.
 10. Legacy single-tenant fallback behavior is out of scope and shall not be implemented in production paths.
+11. Advisor settings shall include configurable `agentName` separate from `agentEmail`; this value represents the agent persona shown to clients in email signatures and invite organizer label.
+12. Intent extraction/booking detection shall include `agentName` (and known alias forms from `agentEmail`) as trusted parsing hints so references such as "Miitb will suggest times" are interpreted as agent mention context rather than implicit booking confirmation.
 
 ### FR-22 Client Admission Control and Unknown-Sender Blackhole
 1. The agent shall respond only to:
@@ -412,6 +417,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 38. Given an advisor CCs the agent on an existing email thread with a client, when the agent sends suggested times, then the response is delivered to all non-agent thread participants.
 39. Given the same CC thread reaches booking confirmation, when the agent sends the calendar invite, then invite recipients include all non-agent thread participants and the advisor invite identity.
 40. Given a thread message contains only quoted prior content and no new unquoted reply text, when processed, then the agent does not auto-book and instead continues normal suggestion/clarification flow.
+41. Given advisor configures `agentName`, when the agent sends replies/invites, then signature and organizer label use `agentName` (not advisor `preferredName`), and thread phrases that mention the agent identity are treated as context rather than automatic booking intent.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
@@ -463,3 +469,5 @@ The advisor has integrated multiple calendars and needs to see them all together
 Some organizations may want to limit the domain name used by advisors for their advisor login. The application should support configuration to allow advisor login/onboarding only for explicitly allowed advisor email domains.
 
 The advisor wants to be able to simply CC their agent when they are in an email conversation with their client. For example, the advisor my cc the agent and say "Thanks I am ccing my calendar agent to find some time next week". The agent should reply to everyone on the thread with date and time suggestions, that way everyone is aware of the entire conversation. When an invite is sent it should be sent to everyone on that email thread. 
+
+When the agent replies to an email it should use its own name in the sign-off and not the advisor name. In addition to configurable agent email address, the advisor should be able to configure an agent name. The agent should also use this configured name to recognize when it is being referred to in an email thread.

@@ -1,7 +1,7 @@
 {
   "name": "representative-default",
   "advisor": {
-    "id": "manoj",
+    "id": "advisor-preview",
     "timezone": "America/Los_Angeles",
     "advisingDays": ["Tue", "Wed"],
     "workdayStartHour": 9,

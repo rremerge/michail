@@ -303,6 +303,32 @@ function normalizeAdvisorPreferredName(value) {
   return normalized;
 }
 
+function normalizeAgentName(value) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 64);
+}
+
+function deriveAgentNameFromAgentEmail(agentEmail) {
+  const normalized = normalizeAdvisorEmail(agentEmail);
+  if (!normalized || !normalized.includes("@")) {
+    return "Agent";
+  }
+
+  const rawLocalPart = normalized.split("@")[0];
+  const canonicalLocalPart = rawLocalPart.replace(/[._-]agent(?:[._-]\d+)?$/i, "");
+  const localPart = String(canonicalLocalPart || rawLocalPart)
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!localPart) {
+    return "Agent";
+  }
+
+  return titleCaseWords(localPart).slice(0, 64);
+}
+
 function deriveAdvisorPreferredNameFromEmail(email, advisorId = "advisor") {
   const localPart = String(email ?? "")
     .split("@")[0]
@@ -366,12 +392,14 @@ function normalizeAdvisorSettingsRecord({
         domain: fallbackAgentEmailDomain
       })
   );
+  const agentName = normalizeAgentName(settings?.agentName ?? deriveAgentNameFromAgentEmail(agentEmail));
   const nowIso = new Date().toISOString();
 
   return {
     advisorId: normalizedAdvisorId,
     advisorEmail,
     agentEmail,
+    agentName: agentName || deriveAgentNameFromAgentEmail(agentEmail),
     inviteEmail,
     preferredName: preferredName || deriveAdvisorPreferredNameFromEmail(inviteEmail || advisorEmail, normalizedAdvisorId),
     timezone,
@@ -4268,6 +4296,10 @@ function buildAdvisorPage() {
                 <input id="advisorAgentEmail" type="email" placeholder="advisor.agent@agent.letsconnect.ai" />
               </div>
               <div>
+                <label for="advisorAgentName">Agent Name</label>
+                <input id="advisorAgentName" type="text" placeholder="Miitb" maxlength="64" />
+              </div>
+              <div>
                 <label for="advisorInviteEmail">Advisor Invite Email</label>
                 <input id="advisorInviteEmail" type="email" placeholder="advisor@example.com" />
               </div>
@@ -4992,6 +5024,10 @@ function buildAdvisorPage() {
         const inviteEmail = String(resolvedSettings.inviteEmail || '').trim();
         const timezone = String(resolvedSettings.timezone || '').trim();
         const agentEmail = String(resolvedSettings.agentEmail || '').trim();
+        const agentName = String(resolvedSettings.agentName || '').trim();
+        if (agentName) {
+          metaParts.push('Agent: ' + agentName);
+        }
         if (inviteEmail) {
           metaParts.push(inviteEmail);
         }
@@ -5008,6 +5044,7 @@ function buildAdvisorPage() {
       function readAdvisorSettingsInputs() {
         const payload = {
           agentEmail: String(document.getElementById('advisorAgentEmail')?.value || '').trim(),
+          agentName: String(document.getElementById('advisorAgentName')?.value || '').trim(),
           inviteEmail: String(document.getElementById('advisorInviteEmail')?.value || '').trim(),
           preferredName: String(document.getElementById('advisorPreferredName')?.value || '').trim(),
           timezone: String(document.getElementById('advisorTimezone')?.value || '').trim(),
@@ -5042,6 +5079,7 @@ function buildAdvisorPage() {
         latestAdvisorSettings = settings;
         updateAdvisorHeader(settings);
         const agentEmailInput = document.getElementById('advisorAgentEmail');
+        const agentNameInput = document.getElementById('advisorAgentName');
         const inviteEmailInput = document.getElementById('advisorInviteEmail');
         const preferredNameInput = document.getElementById('advisorPreferredName');
         const timezoneInput = document.getElementById('advisorTimezone');
@@ -5054,6 +5092,9 @@ function buildAdvisorPage() {
 
         if (agentEmailInput) {
           agentEmailInput.value = settings.agentEmail || '';
+        }
+        if (agentNameInput) {
+          agentNameInput.value = settings.agentName || '';
         }
         if (inviteEmailInput) {
           inviteEmailInput.value = settings.inviteEmail || '';
@@ -5107,6 +5148,7 @@ function buildAdvisorPage() {
         latestAdvisorSettings = updated;
         updateAdvisorHeader(updated);
         const agentEmailInput = document.getElementById('advisorAgentEmail');
+        const agentNameInput = document.getElementById('advisorAgentName');
         const inviteEmailInput = document.getElementById('advisorInviteEmail');
         const preferredNameInput = document.getElementById('advisorPreferredName');
         const timezoneInput = document.getElementById('advisorTimezone');
@@ -5119,6 +5161,9 @@ function buildAdvisorPage() {
 
         if (agentEmailInput) {
           agentEmailInput.value = updated.agentEmail || '';
+        }
+        if (agentNameInput) {
+          agentNameInput.value = updated.agentName || '';
         }
         if (inviteEmailInput) {
           inviteEmailInput.value = updated.inviteEmail || '';
@@ -6668,6 +6713,7 @@ export function createPortalHandler(overrides = {}) {
               ...existingSettings,
               advisorEmail: existingSettings?.advisorEmail || loginEmail,
               agentEmail: seededAgentEmail || defaultAgentEmail,
+              agentName: existingSettings?.agentName || deriveAgentNameFromAgentEmail(seededAgentEmail || defaultAgentEmail),
               inviteEmail: existingSettings?.inviteEmail || loginEmail,
               preferredName: existingSettings?.preferredName || derivedPreferredName,
               timezone: existingSettings?.timezone || DEFAULT_ADVISOR_TIMEZONE
@@ -6683,6 +6729,7 @@ export function createPortalHandler(overrides = {}) {
             !existingSettings ||
             String(existingSettings.advisorEmail ?? "") !== nextSettings.advisorEmail ||
             String(existingSettings.agentEmail ?? "") !== nextSettings.agentEmail ||
+            String(existingSettings.agentName ?? "") !== nextSettings.agentName ||
             String(existingSettings.inviteEmail ?? "") !== nextSettings.inviteEmail ||
             String(existingSettings.preferredName ?? "") !== nextSettings.preferredName ||
             String(existingSettings.timezone ?? "") !== nextSettings.timezone;
@@ -6794,6 +6841,7 @@ export function createPortalHandler(overrides = {}) {
         settings: {
           advisorEmail: normalizedSettings.advisorEmail,
           agentEmail: normalizedSettings.agentEmail,
+          agentName: normalizedSettings.agentName,
           inviteEmail: normalizedSettings.inviteEmail,
           preferredName: normalizedSettings.preferredName,
           timezone: normalizedSettings.timezone,
@@ -6821,6 +6869,7 @@ export function createPortalHandler(overrides = {}) {
       }
 
       const hasAgentEmail = Object.prototype.hasOwnProperty.call(body, "agentEmail");
+      const hasAgentName = Object.prototype.hasOwnProperty.call(body, "agentName");
       const hasInviteEmail = Object.prototype.hasOwnProperty.call(body, "inviteEmail");
       const hasPreferredName = Object.prototype.hasOwnProperty.call(body, "preferredName");
       const hasTimezone = Object.prototype.hasOwnProperty.call(body, "timezone");
@@ -6832,6 +6881,7 @@ export function createPortalHandler(overrides = {}) {
       const hasClearAdvisorLlmApiKey = Object.prototype.hasOwnProperty.call(body, "clearAdvisorLlmApiKey");
       if (
         !hasAgentEmail &&
+        !hasAgentName &&
         !hasInviteEmail &&
         !hasPreferredName &&
         !hasTimezone &&
@@ -6843,7 +6893,7 @@ export function createPortalHandler(overrides = {}) {
         !hasClearAdvisorLlmApiKey
       ) {
         return badRequest(
-          "At least one setting field is required: agentEmail, inviteEmail, preferredName, timezone, llmKeyMode, llmProvider, llmModel, llmEndpoint, llmApiKey, clearAdvisorLlmApiKey"
+          "At least one setting field is required: agentEmail, agentName, inviteEmail, preferredName, timezone, llmKeyMode, llmProvider, llmModel, llmEndpoint, llmApiKey, clearAdvisorLlmApiKey"
         );
       }
 
@@ -6888,6 +6938,14 @@ export function createPortalHandler(overrides = {}) {
         }
 
         mergedSettings.agentEmail = normalizedAgentEmail;
+      }
+
+      if (hasAgentName) {
+        const agentName = normalizeAgentName(body.agentName);
+        if (!agentName) {
+          return badRequest("agentName must not be empty");
+        }
+        mergedSettings.agentName = agentName;
       }
 
       if (hasInviteEmail) {
@@ -7038,6 +7096,7 @@ export function createPortalHandler(overrides = {}) {
         settings: {
           advisorEmail: normalizedSettings.advisorEmail,
           agentEmail: normalizedSettings.agentEmail,
+          agentName: normalizedSettings.agentName,
           inviteEmail: normalizedSettings.inviteEmail,
           preferredName: normalizedSettings.preferredName,
           timezone: normalizedSettings.timezone,

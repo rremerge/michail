@@ -5,12 +5,12 @@
       "label": "New Advisor",
       "subtitle": "Fresh account, onboarding in progress",
       "advisor": {
-        "name": "Manoj Apte",
-        "email": "manojapteindia@gmail.com",
-        "agentEmail": "manoj.agent@agent.letsconnect.ai",
+        "name": "Advisor One",
+        "email": "advisor.one@example.com",
+        "agentEmail": "advisorone.agent@agent.letsconnect.ai",
         "timezone": "America/Los_Angeles",
         "plan": "Starter",
-        "preferredName": "Manoj",
+        "preferredName": "Advisor",
         "brandingMode": "default",
         "advisorLogoName": "",
         "advisorLogoSrc": ""
@@ -66,14 +66,14 @@
       "label": "Small Practice",
       "subtitle": "Early steady usage with mixed client policies",
       "advisor": {
-        "name": "Manoj Apte",
-        "email": "manojapteindia@gmail.com",
-        "agentEmail": "manoj.agent@agent.letsconnect.ai",
+        "name": "Advisor One",
+        "email": "advisor.one@example.com",
+        "agentEmail": "advisorone.agent@agent.letsconnect.ai",
         "timezone": "America/Los_Angeles",
         "plan": "Growth",
-        "preferredName": "Manoj",
+        "preferredName": "Advisor",
         "brandingMode": "co-branded",
-        "advisorLogoName": "Manoj Advisory mark",
+        "advisorLogoName": "Advisor One mark",
         "advisorLogoSrc": "../app/assets/letsconnect-logo.png"
       },
       "overview": {
@@ -94,14 +94,14 @@
       "connections": [
         {
           "provider": "google",
-          "account": "manojapteindia@gmail.com",
+          "account": "advisor.one@example.com",
           "status": "connected",
           "primary": true,
           "updatedAt": "2026-02-22T00:21:00Z"
         },
         {
           "provider": "microsoft",
-          "account": "manoj@outlook.com",
+          "account": "advisor.outlook@example.com",
           "status": "connected",
           "primary": false,
           "updatedAt": "2026-02-22T01:05:00Z"
@@ -114,8 +114,8 @@
       ],
       "clients": [
         {
-          "name": "Tito Needa",
-          "email": "titoneeda@gmail.com",
+          "name": "Client One",
+          "email": "client.one@gmail.com",
           "state": "active",
           "policyId": "default",
           "firstSeen": "2026-02-01",
@@ -124,8 +124,8 @@
           "webCount": 19
         },
         {
-          "name": "Lalita Sharma",
-          "email": "lalita@rremerge.com",
+          "name": "Client Two",
+          "email": "client.two@sampleco.com",
           "state": "active",
           "policyId": "founders",
           "firstSeen": "2026-02-05",
@@ -193,12 +193,12 @@
       "label": "Scaled Practice",
       "subtitle": "High-volume advisor with large client directory",
       "advisor": {
-        "name": "Manoj Apte",
-        "email": "manojapteindia@gmail.com",
-        "agentEmail": "manoj.agent@agent.letsconnect.ai",
+        "name": "Advisor One",
+        "email": "advisor.one@example.com",
+        "agentEmail": "advisorone.agent@agent.letsconnect.ai",
         "timezone": "America/Los_Angeles",
         "plan": "Pro",
-        "preferredName": "Manoj",
+        "preferredName": "Advisor",
         "brandingMode": "co-branded",
         "advisorLogoName": "RR Emerge Advisors",
         "advisorLogoSrc": "../app/assets/letsconnect-logo.png"
@@ -221,28 +221,28 @@
       "connections": [
         {
           "provider": "google",
-          "account": "manojapteindia@gmail.com",
+          "account": "advisor.one@example.com",
           "status": "connected",
           "primary": true,
           "updatedAt": "2026-02-21T23:54:00Z"
         },
         {
           "provider": "google",
-          "account": "manojapte@gmail.com",
+          "account": "advisor.alt@example.com",
           "status": "connected",
           "primary": false,
           "updatedAt": "2026-02-20T19:11:00Z"
         },
         {
           "provider": "microsoft",
-          "account": "manoj@rremerge.com",
+          "account": "advisor.team@example.com",
           "status": "connected",
           "primary": false,
           "updatedAt": "2026-02-20T18:44:00Z"
         },
         {
           "provider": "microsoft",
-          "account": "manoj@outlook.com",
+          "account": "advisor.outlook@example.com",
           "status": "connected",
           "primary": false,
           "updatedAt": "2026-02-19T21:02:00Z"
@@ -353,12 +353,12 @@
       "label": "Warning State",
       "subtitle": "Operational risk state for incident review",
       "advisor": {
-        "name": "Manoj Apte",
-        "email": "manojapteindia@gmail.com",
-        "agentEmail": "manoj.agent@agent.letsconnect.ai",
+        "name": "Advisor One",
+        "email": "advisor.one@example.com",
+        "agentEmail": "advisorone.agent@agent.letsconnect.ai",
         "timezone": "America/Los_Angeles",
         "plan": "Growth",
-        "preferredName": "Manoj",
+        "preferredName": "Advisor",
         "brandingMode": "default",
         "advisorLogoName": "",
         "advisorLogoSrc": ""
@@ -386,14 +386,14 @@
       "connections": [
         {
           "provider": "google",
-          "account": "manojapteindia@gmail.com",
+          "account": "advisor.one@example.com",
           "status": "connected",
           "primary": true,
           "updatedAt": "2026-02-22T00:02:00Z"
         },
         {
           "provider": "microsoft",
-          "account": "manoj@outlook.com",
+          "account": "advisor.outlook@example.com",
           "status": "error",
           "primary": false,
           "updatedAt": "2026-02-21T23:58:00Z"
@@ -406,8 +406,8 @@
       ],
       "clients": [
         {
-          "name": "Tito Needa",
-          "email": "titoneeda@gmail.com",
+          "name": "Client One",
+          "email": "client.one@gmail.com",
           "state": "active",
           "policyId": "default",
           "firstSeen": "2026-01-01",

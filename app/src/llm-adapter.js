@@ -501,6 +501,8 @@ export async function extractSchedulingIntentWithOpenAi({
   openAiConfig,
   subject,
   body,
+  agentDisplayName = "",
+  agentIdentityHints = [],
   hostTimezone,
   referenceNowIso,
   retryPolicy = "default",
@@ -541,7 +543,16 @@ export async function extractSchedulingIntentWithOpenAi({
       trustedContext: {
         hostTimezone,
         referenceNowIso,
-        retryPolicy: retryPolicyValue
+        retryPolicy: retryPolicyValue,
+        agentIdentity: {
+          displayName: String(agentDisplayName ?? "").trim() || null,
+          aliases: Array.isArray(agentIdentityHints)
+            ? agentIdentityHints
+                .map((value) => String(value ?? "").trim())
+                .filter(Boolean)
+                .slice(0, 8)
+            : []
+        }
       },
       guidance: guidance.length > 0 ? guidance : undefined,
       untrustedEmail: {

@@ -900,6 +900,7 @@ test("processSchedulingEmail uses advisor settings for invite recipient and sign
       assert.equal(agentEmail, "manoj.agent@agent.letsconnect.ai");
       return {
         advisorId: "manoj",
+        agentName: "Miitb",
         inviteEmail: "advisor-login@example.com",
         preferredName: "Manoj Apte",
         timezone: "America/New_York"
@@ -910,6 +911,7 @@ test("processSchedulingEmail uses advisor settings for invite recipient and sign
       assert.equal(advisorId, "manoj");
       return {
         advisorId,
+        agentName: "Miitb",
         inviteEmail: "advisor-login@example.com",
         preferredName: "Manoj Apte",
         timezone: "America/New_York"
@@ -949,7 +951,7 @@ test("processSchedulingEmail uses advisor settings for invite recipient and sign
   assert.equal(response.bookingStatus, "invite_sent");
   assert.equal(sentInviteMessages.length, 1);
   assert.deepEqual(sentInviteMessages[0].toEmails.sort(), ["advisor-login@example.com", "client@example.com"]);
-  assert.match(sentInviteMessages[0].bodyText, /Best regards,\nManoj Apte/);
+  assert.match(sentInviteMessages[0].bodyText, /Best regards,\nMiitb/);
   assert.equal(traceItems.length, 1);
   assert.equal(traceItems[0].bookingStatus, "invite_sent");
 });
@@ -1225,6 +1227,42 @@ test("processSchedulingEmail does not auto-book for broad window even with invit
   assert.equal(result.http.statusCode, 200);
   const response = JSON.parse(result.http.body);
   assert.equal(response.bookingStatus, "not_requested");
+  assert.equal(traceItems[0].bookingStatus, "not_requested");
+});
+
+test("processSchedulingEmail treats agent mention narrative as context, not booking intent", async () => {
+  const traceItems = [];
+  const deps = {
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    }
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      toEmail: "miitb.agent@agent.letsconnect.ai",
+      subject: "Re: lets meet",
+      body: [
+        "Hi Tito,",
+        "I am ccing Miitb to find some time next week.",
+        "Miitb will suggest times and send a calendar invite once we pick one.",
+        "Could we look at Wednesday 2pm?"
+      ].join("\n")
+    },
+    env: {
+      ...baseEnv,
+      RESPONSE_MODE: "log"
+    },
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "not_requested");
+  assert.equal(response.suggestionCount > 0, true);
+  assert.equal(traceItems.length, 1);
   assert.equal(traceItems[0].bookingStatus, "not_requested");
 });
 
