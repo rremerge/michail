@@ -392,6 +392,90 @@ test("processSchedulingEmail retries intent extraction with thread context for t
   assert.equal(traceItems[0].intentSource, "llm");
 });
 
+test("processSchedulingEmail retries thread context when latest reply is ambiguous for booking intent", async () => {
+  const traceItems = [];
+  const extractionCalls = [];
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm(args) {
+      extractionCalls.push(args);
+      if (extractionCalls.length === 1) {
+        return {
+          requestedWindows: [
+            {
+              startIso: "2026-05-01T16:30:00.000Z",
+              endIso: "2026-05-01T17:00:00.000Z"
+            }
+          ],
+          clientTimezone: "America/Los_Angeles",
+          confidence: 0.73,
+          bookingIntent: null,
+          bookingIntentConfidence: 0.3
+        };
+      }
+
+      return {
+        requestedWindows: [
+          {
+            startIso: "2026-05-13T17:00:00.000Z",
+            endIso: "2026-05-13T17:30:00.000Z"
+          }
+        ],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.9,
+        bookingIntent: true,
+        bookingIntentConfidence: 0.95
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "120"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Re: meet in may",
+      body: [
+        "lets grab 10am",
+        "",
+        "On Tue, Feb 23, 2026 at 6:05 PM Advisor <advisor@example.com> wrote:",
+        "> Option 1: Tue May 12 at 9:30 AM",
+        "> Option 2: Wed May 13 at 10:00 AM"
+      ].join("\n")
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-02-24T02:14:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(extractionCalls.length, 2);
+  assert.equal(extractionCalls[0].retryPolicy, undefined);
+  assert.equal(extractionCalls[1].retryPolicy, "thread_context");
+  assert.match(extractionCalls[1].body, /LATEST_CLIENT_REPLY:/);
+  assert.match(extractionCalls[1].body, /Option 2: Wed May 13 at 10:00 AM/);
+
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "invite_logged");
+  assert.equal(traceItems[0].bookingIntentSource, "llm");
+  assert.equal(traceItems[0].bookingIntentLlmValue, "true");
+  assert.equal(traceItems[0].intentLlmRetryUsed, true);
+});
+
 test("processSchedulingEmail retries intent extraction with broad window policy when first pass is empty", async () => {
   const traceItems = [];
   const extractionCalls = [];

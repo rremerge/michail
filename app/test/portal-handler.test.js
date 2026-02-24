@@ -114,6 +114,26 @@ test("advisor landing page serves marketing copy and google sign-in CTA", async 
   assert.match(response.body, /Copyright \(C\) 2026\. RR Emerge LLC/);
 });
 
+test("advisor landing page on custom domain omits stage prefix in google sign-in url", async () => {
+  const handler = createPortalHandler();
+
+  const response = await handler({
+    requestContext: {
+      domainName: "portal.agent.letsconnect.ai",
+      stage: "prod",
+      http: { method: "GET" }
+    },
+    rawPath: "/"
+  });
+
+  assert.equal(response.statusCode, 200);
+  assert.match(
+    response.body,
+    /https:\/\/portal\.agent\.letsconnect\.ai\/advisor\/auth\/google\/start\?returnTo=%2Fadvisor/
+  );
+  assert.doesNotMatch(response.body, /portal\.agent\.letsconnect\.ai\/prod\/advisor\/auth\/google\/start/);
+});
+
 test("advisor landing page remains public when google oauth auth mode is enabled", async () => {
   const handler = createPortalHandler({
     async getSecretString() {
@@ -318,6 +338,59 @@ test("advisor portal redirects to Google login when google_oauth auth is enabled
     assert.equal(
       response.headers.location,
       "https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev/advisor/auth/google/start?returnTo=%2Fadvisor"
+    );
+  } finally {
+    if (previousConnectionsTable === undefined) {
+      delete process.env.CONNECTIONS_TABLE_NAME;
+    } else {
+      process.env.CONNECTIONS_TABLE_NAME = previousConnectionsTable;
+    }
+
+    if (previousAuthMode === undefined) {
+      delete process.env.ADVISOR_PORTAL_AUTH_MODE;
+    } else {
+      process.env.ADVISOR_PORTAL_AUTH_MODE = previousAuthMode;
+    }
+
+    if (previousSessionSecretArn === undefined) {
+      delete process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
+    } else {
+      process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN = previousSessionSecretArn;
+    }
+  }
+});
+
+test("advisor portal redirects to Google login without stage prefix on custom domain", async () => {
+  const handler = createPortalHandler({
+    async getSecretString() {
+      return JSON.stringify({
+        signing_key: "test-signing-key"
+      });
+    }
+  });
+
+  const previousConnectionsTable = process.env.CONNECTIONS_TABLE_NAME;
+  const previousAuthMode = process.env.ADVISOR_PORTAL_AUTH_MODE;
+  const previousSessionSecretArn = process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
+
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "google_oauth";
+  process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:portal-session";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        domainName: "portal.agent.letsconnect.ai",
+        stage: "prod",
+        http: { method: "GET" }
+      },
+      rawPath: "/advisor"
+    });
+
+    assert.equal(response.statusCode, 302);
+    assert.equal(
+      response.headers.location,
+      "https://portal.agent.letsconnect.ai/advisor/auth/google/start?returnTo=%2Fadvisor"
     );
   } finally {
     if (previousConnectionsTable === undefined) {

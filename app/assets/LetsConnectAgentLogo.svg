@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="512" height="512" viewBox="0 0 512 512" xmlns="http://www.w3.org/2000/svg">
+
+  <!-- Calendar body -->
+  <rect x="96" y="120" width="320" height="280" rx="40" fill="#1E63B5"/>
+  
+  <!-- Calendar top tabs -->
+  <rect x="170" y="80" width="40" height="80" rx="20" fill="#1E63B5"/>
+  <rect x="302" y="80" width="40" height="80" rx="20" fill="#1E63B5"/>
+
+  <!-- Calendar inner area -->
+  <rect x="120" y="160" width="272" height="220" rx="24" fill="white"/>
+
+  <!-- Faint day boxes -->
+  <g fill="#E6EEF7">
+    <rect x="150" y="190" width="40" height="40" rx="8"/>
+    <rect x="210" y="190" width="40" height="40" rx="8"/>
+    <rect x="270" y="190" width="40" height="40" rx="8"/>
+    <rect x="330" y="190" width="40" height="40" rx="8"/>
+
+    <rect x="150" y="250" width="40" height="40" rx="8"/>
+    <rect x="210" y="250" width="40" height="40" rx="8"/>
+    <rect x="270" y="250" width="40" height="40" rx="8"/>
+    <rect x="330" y="250" width="40" height="40" rx="8"/>
+  </g>
+
+  <!-- Large Checkmark -->
+  <path d="M210 290 L250 330 L330 230" 
+        stroke="#1E63B5" stroke-width="28" 
+        fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- Speech bubble -->
+  <rect x="80" y="300" width="160" height="100" rx="28" fill="#1E63B5"/>
+  <polygon points="180,400 210,400 180,430" fill="#1E63B5"/>
+
+  <!-- Chat dots -->
+  <circle cx="120" cy="350" r="8" fill="white"/>
+  <circle cx="150" cy="350" r="8" fill="white"/>
+  <circle cx="180" cy="350" r="8" fill="white"/>
+
+</svg>

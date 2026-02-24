@@ -259,6 +259,14 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 5. Landing page shall be compatible with strict multi-tenant onboarding: first-time advisor login must continue to create advisor-scoped profile/settings under existing tenancy logic.
 6. Landing page shall follow product branding requirements (default letsconnect.ai logo and legal footer notice).
 
+### FR-27 Advisor Onboarding Domain Restrictions (Configurable)
+1. System shall support an optional configuration `advisorAllowedDomains` (list of normalized email domains) to restrict advisor Google-login onboarding.
+2. When `advisorAllowedDomains` is configured, advisor portal login/onboarding shall be allowed only if the authenticated advisor email domain is in the configured allowlist.
+3. Domain validation shall occur during advisor authentication callback before advisor profile/session creation.
+4. If advisor domain is not allowed, system shall deny portal access and show a clear policy message; no advisor onboarding records shall be created.
+5. When `advisorAllowedDomains` is empty or unset, onboarding shall allow any advisor domain (current open-onboarding behavior).
+6. Domain-restriction configuration shall be deploy-time and/or settings-driven without requiring code changes, and shall be tenant-safe in multi-advisor mode.
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -390,6 +398,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 34. Given an advisor has multiple connected calendar connections and each connection may include multiple `calendar_ids`, when availability is computed for email responses or the client web availability page, then the system queries all connected connections and all configured `calendar_ids` within each connection and returns results based on the merged busy set.
 35. Given advisor opens the advisor calendar self-view from the portal, when one or more calendars are connected, then the page shows merged busy slots with full meeting details from all connected connections and all configured `calendar_ids`.
 36. Given a prospective advisor opens the root product URL, when the landing page loads, then it presents service-value messaging and a Google sign-in CTA that routes to advisor onboarding and returns the advisor to `/advisor` after successful login.
+37. Given advisor-domain restrictions are configured, when an advisor signs in with Google using a non-allowed email domain, then access is denied and no advisor account/session is created.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
@@ -437,3 +446,5 @@ The advisor would also like the LLM based agent not to sound too robotic. For in
 The advisor would love to advertise this product to other advisors that have similar needs. He would love for this application to have a landing page that he can send potential future advisors to login and create their own agent. The landing page should tell them why this is a great service and ask them to login using google to initiate their own agent.
 
 The advisor has integrated multiple calendars and needs to see them all together the way his clients can see when the agent sends them a link. It would be great if the advisor can click somewhere on the portal and see his calendar with all meeting details.
+
+Some organizations may want to limit the domain name used by advisors for their advisor login. The application should support configuration to allow advisor login/onboarding only for explicitly allowed advisor email domains.

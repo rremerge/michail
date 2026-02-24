@@ -2125,13 +2125,27 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       });
       accumulateLlmTelemetry(llmUsageAccumulator, llmIntent?.llmTelemetry);
       let mergedLlmIntent = llmIntent;
+      const resolvedBookingIntentConfidenceThreshold = Number.isFinite(bookingIntentConfidenceThreshold)
+        ? bookingIntentConfidenceThreshold
+        : DEFAULT_BOOKING_INTENT_CONFIDENCE_THRESHOLD;
+      const parserRequestedWindowCount = Array.isArray(parserIntent.requestedWindows)
+        ? parserIntent.requestedWindows.length
+        : 0;
+      const llmRequestedWindowCount = Array.isArray(mergedLlmIntent?.requestedWindows)
+        ? mergedLlmIntent.requestedWindows.length
+        : 0;
+      const llmHasBookingDecision = typeof mergedLlmIntent?.bookingIntent === "boolean";
+      const llmBookingConfidence = Number.isFinite(Number(mergedLlmIntent?.bookingIntentConfidence))
+        ? Number(mergedLlmIntent.bookingIntentConfidence)
+        : 0;
+      const parserLooksBroad = parserRequestedWindowCount >= 7;
+      const needsBookingDisambiguation =
+        !llmHasBookingDecision || llmBookingConfidence < resolvedBookingIntentConfidenceThreshold;
       const shouldRetryThreadContext =
         intentInputMode === "latest_reply" &&
         Boolean(quotedThreadContext) &&
-        Array.isArray(parserIntent.requestedWindows) &&
-        parserIntent.requestedWindows.length === 0 &&
-        Array.isArray(mergedLlmIntent?.requestedWindows) &&
-        mergedLlmIntent.requestedWindows.length === 0;
+        ((parserRequestedWindowCount === 0 && llmRequestedWindowCount === 0) ||
+          (parserLooksBroad && needsBookingDisambiguation));
       if (shouldRetryThreadContext) {
         try {
           const threadAwareLlmIntent = await deps.extractSchedulingIntentWithLlm({
@@ -2149,8 +2163,39 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           });
           accumulateLlmTelemetry(llmUsageAccumulator, threadAwareLlmIntent?.llmTelemetry);
           intentLlmRetryUsed = true;
-          if (Array.isArray(threadAwareLlmIntent?.requestedWindows) && threadAwareLlmIntent.requestedWindows.length > 0) {
-            mergedLlmIntent = threadAwareLlmIntent;
+          const threadRequestedWindowCount = Array.isArray(threadAwareLlmIntent?.requestedWindows)
+            ? threadAwareLlmIntent.requestedWindows.length
+            : 0;
+          const threadHasBookingDecision = typeof threadAwareLlmIntent?.bookingIntent === "boolean";
+          const threadBookingConfidence = Number.isFinite(Number(threadAwareLlmIntent?.bookingIntentConfidence))
+            ? Number(threadAwareLlmIntent.bookingIntentConfidence)
+            : 0;
+          const shouldAdoptThreadWindows =
+            threadRequestedWindowCount > 0 &&
+            (llmRequestedWindowCount === 0 || parserLooksBroad || threadRequestedWindowCount < llmRequestedWindowCount);
+          const shouldAdoptThreadBookingIntent =
+            threadHasBookingDecision &&
+            (!llmHasBookingDecision ||
+              threadBookingConfidence > llmBookingConfidence ||
+              (threadBookingConfidence >= resolvedBookingIntentConfidenceThreshold &&
+                llmBookingConfidence < resolvedBookingIntentConfidenceThreshold));
+          if (shouldAdoptThreadWindows || shouldAdoptThreadBookingIntent) {
+            mergedLlmIntent = {
+              ...mergedLlmIntent,
+              requestedWindows: shouldAdoptThreadWindows
+                ? threadAwareLlmIntent.requestedWindows
+                : mergedLlmIntent?.requestedWindows,
+              clientTimezone: threadAwareLlmIntent?.clientTimezone ?? mergedLlmIntent?.clientTimezone ?? null,
+              confidence: Number.isFinite(Number(threadAwareLlmIntent?.confidence))
+                ? Number(threadAwareLlmIntent.confidence)
+                : mergedLlmIntent?.confidence,
+              bookingIntent: shouldAdoptThreadBookingIntent
+                ? threadAwareLlmIntent.bookingIntent
+                : mergedLlmIntent?.bookingIntent,
+              bookingIntentConfidence: shouldAdoptThreadBookingIntent
+                ? threadBookingConfidence
+                : llmBookingConfidence
+            };
           }
         } catch {
           intentLlmRetryUsed = true;

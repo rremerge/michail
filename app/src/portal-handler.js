@@ -592,6 +592,10 @@ function getBaseUrl(event) {
     return `https://${domainName}`;
   }
 
+  if (!/\.execute-api\.[a-z0-9-]+\.amazonaws\.com$/i.test(domainName)) {
+    return `https://${domainName}`;
+  }
+
   return `https://${domainName}/${stage}`;
 }
 
