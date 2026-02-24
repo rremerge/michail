@@ -267,6 +267,14 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 5. When `advisorAllowedDomains` is empty or unset, onboarding shall allow any advisor domain (current open-onboarding behavior).
 6. Domain-restriction configuration shall be deploy-time and/or settings-driven without requiring code changes, and shall be tenant-safe in multi-advisor mode.
 
+### FR-28 Thread-Aware Agent Participation (CC / Reply-All)
+1. When an inbound email thread includes the advisor agent alias in `To` or `CC`, the system shall process the request and compute scheduling suggestions using normal policy and availability rules.
+2. For non-booking suggestion responses, the system shall send one response to all thread participants (sender + non-agent `To/CC` recipients) so thread participants receive the same scheduling context.
+3. For booking flows that generate a calendar invite, the invite shall be sent to all non-agent thread participants and also include the advisor invite identity (`advisorInviteEmail`) if not already present.
+4. Agent/system addresses (for example inbound alias and configured sender identity) shall be excluded from recipient expansion to prevent mail loops.
+5. If no non-agent thread recipients are resolvable, the system shall fall back to replying to the inbound sender.
+6. Thread-recipient expansion shall not change unknown-sender blackhole policy (FR-22) or tenant-routing rules (FR-21).
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -399,6 +407,8 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 35. Given advisor opens the advisor calendar self-view from the portal, when one or more calendars are connected, then the page shows merged busy slots with full meeting details from all connected connections and all configured `calendar_ids`.
 36. Given a prospective advisor opens the root product URL, when the landing page loads, then it presents service-value messaging and a Google sign-in CTA that routes to advisor onboarding and returns the advisor to `/advisor` after successful login.
 37. Given advisor-domain restrictions are configured, when an advisor signs in with Google using a non-allowed email domain, then access is denied and no advisor account/session is created.
+38. Given an advisor CCs the agent on an existing email thread with a client, when the agent sends suggested times, then the response is delivered to all non-agent thread participants.
+39. Given the same CC thread reaches booking confirmation, when the agent sends the calendar invite, then invite recipients include all non-agent thread participants and the advisor invite identity.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
@@ -448,3 +458,5 @@ The advisor would love to advertise this product to other advisors that have sim
 The advisor has integrated multiple calendars and needs to see them all together the way his clients can see when the agent sends them a link. It would be great if the advisor can click somewhere on the portal and see his calendar with all meeting details.
 
 Some organizations may want to limit the domain name used by advisors for their advisor login. The application should support configuration to allow advisor login/onboarding only for explicitly allowed advisor email domains.
+
+The advisor wants to be able to simply CC their agent when they are in an email conversation with their client. For example, the advisor my cc the agent and say "Thanks I am ccing my calendar agent to find some time next week". The agent should reply to everyone on the thread with date and time suggestions, that way everyone is aware of the entire conversation. When an invite is sent it should be sent to everyone on that email thread. 

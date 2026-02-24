@@ -1064,6 +1064,23 @@ function extractDestinationEmails(payload) {
   return [...new Set(candidates)];
 }
 
+function collectThreadParticipantEmails({
+  payload,
+  fromEmail,
+  inboundAgentEmail,
+  senderEmail
+}) {
+  const participants = uniqueEmails([
+    fromEmail,
+    ...extractDestinationEmails(payload)
+  ]);
+  const exclusions = new Set(
+    uniqueEmails([inboundAgentEmail, senderEmail])
+  );
+
+  return participants.filter((email) => !exclusions.has(email));
+}
+
 function collectAdvisorIdentityEmails({
   advisorSettings,
   advisorInviteEmailOverride,
@@ -1678,6 +1695,12 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const calendarMode = (env.CALENDAR_MODE ?? "mock").toLowerCase();
   const senderEmail =
     normalizeEmailAddress(advisorSettings?.agentEmail) || normalizeEmailAddress(env.SENDER_EMAIL);
+  const threadParticipantEmails = collectThreadParticipantEmails({
+    payload,
+    fromEmail,
+    inboundAgentEmail,
+    senderEmail
+  });
   const inviteSenderEmail = senderEmail || inboundAgentEmail || "agent@agent.letsconnect.ai";
   const advisorDisplayName = deriveAdvisorDisplayName(
     String(advisorSettings?.preferredName ?? "").trim() || env.ADVISOR_DISPLAY_NAME,
@@ -2591,7 +2614,10 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       const advisorInviteEmail = normalizeEmailAddress(
         advisorInviteEmailOverride || activeConnection?.accountEmail || env.ADVISOR_EMAIL || senderEmail
       );
-      inviteRecipients = uniqueEmails([fromEmail, advisorInviteEmail]);
+      inviteRecipients = uniqueEmails([
+        ...(threadParticipantEmails.length > 0 ? threadParticipantEmails : [fromEmail]),
+        advisorInviteEmail
+      ]);
       responseMessage = buildCalendarInviteMessage({
         subject: payload.subject,
         selectedSlot: suggestions[0],
@@ -2732,12 +2758,24 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       }
       bookingStatus = "invite_sent";
     } else {
-      await deps.sendResponseEmail({
-        senderEmail,
-        recipientEmail: fromEmail,
-        subject: responseMessage.subject,
-        bodyText: responseMessage.bodyText
-      });
+      const responseRecipients = uniqueEmails(
+        threadParticipantEmails.length > 0 ? threadParticipantEmails : [fromEmail]
+      );
+      if (responseRecipients.length <= 1) {
+        await deps.sendResponseEmail({
+          senderEmail,
+          recipientEmail: responseRecipients[0] ?? fromEmail,
+          subject: responseMessage.subject,
+          bodyText: responseMessage.bodyText
+        });
+      } else {
+        await deps.sendResponseEmail({
+          senderEmail,
+          toEmails: responseRecipients,
+          subject: responseMessage.subject,
+          bodyText: responseMessage.bodyText
+        });
+      }
     }
 
     deliveryStatus = "sent";

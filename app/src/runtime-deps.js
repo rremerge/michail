@@ -552,12 +552,27 @@ export function createRuntimeDeps() {
       );
     },
 
-    async sendResponseEmail({ senderEmail, recipientEmail, subject, bodyText }) {
+    async sendResponseEmail({ senderEmail, recipientEmail, toEmails, subject, bodyText }) {
+      const recipients = Array.isArray(toEmails)
+        ? toEmails
+            .map((item) => String(item ?? "").trim().toLowerCase())
+            .filter((item) => item.includes("@"))
+        : [];
+      if (recipients.length === 0) {
+        const normalizedRecipient = String(recipientEmail ?? "").trim().toLowerCase();
+        if (normalizedRecipient.includes("@")) {
+          recipients.push(normalizedRecipient);
+        }
+      }
+      if (recipients.length === 0) {
+        throw new Error("sendResponseEmail requires at least one recipient");
+      }
+
       await sesClient.send(
         new SendEmailCommand({
           FromEmailAddress: senderEmail,
           Destination: {
-            ToAddresses: [recipientEmail]
+            ToAddresses: recipients
           },
           Content: {
             Simple: {

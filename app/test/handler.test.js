@@ -744,6 +744,49 @@ test("processSchedulingEmail sends email when RESPONSE_MODE=send", async () => {
   assert.match(sentMessages[0].bodyText, /Best regards,\nManoj$/);
 });
 
+test("processSchedulingEmail replies to all non-agent thread participants when advisor CCs agent", async () => {
+  const sentMessages = [];
+
+  const deps = {
+    async getSecretString() {
+      return "";
+    },
+    async writeTrace() {},
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "miitb.agent@agent.letsconnect.ai"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "advisor@example.com",
+      toEmails: ["miitb.agent@agent.letsconnect.ai", "client@example.com"],
+      ccEmails: ["observer@example.com"],
+      subject: "Need times next week",
+      body: "Could we meet Wednesday afternoon? Timezone: America/Los_Angeles"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].senderEmail, "miitb.agent@agent.letsconnect.ai");
+  assert.deepEqual(sentMessages[0].toEmails.sort(), [
+    "advisor@example.com",
+    "client@example.com",
+    "observer@example.com"
+  ]);
+  assert.equal(sentMessages[0].recipientEmail, undefined);
+});
+
 test("processSchedulingEmail sends calendar invite when booking intent is detected", async () => {
   const sentInviteMessages = [];
   const sentResponseMessages = [];
@@ -799,6 +842,52 @@ test("processSchedulingEmail sends calendar invite when booking intent is detect
   assert.equal(traceItems.length, 1);
   assert.equal(traceItems[0].bookingStatus, "invite_sent");
   assert.equal(traceItems[0].availabilityLinkStatus, "not_applicable");
+});
+
+test("processSchedulingEmail sends booking invite to all non-agent thread participants", async () => {
+  const sentInviteMessages = [];
+  const sentResponseMessages = [];
+
+  const deps = {
+    async writeTrace() {},
+    async sendCalendarInviteEmail(message) {
+      sentInviteMessages.push(message);
+    },
+    async sendResponseEmail(message) {
+      sentResponseMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "miitb.agent@agent.letsconnect.ai",
+    ADVISOR_INVITE_EMAIL: "advisor@example.com"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "advisor@example.com",
+      toEmails: ["miitb.agent@agent.letsconnect.ai", "client@example.com"],
+      ccEmails: ["observer@example.com"],
+      subject: "Meeting confirmation",
+      body: "Please book Wednesday between 2pm and 3pm. Timezone: America/Los_Angeles"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-02T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.bookingStatus, "invite_sent");
+  assert.equal(sentInviteMessages.length, 1);
+  assert.equal(sentResponseMessages.length, 0);
+  assert.deepEqual(sentInviteMessages[0].toEmails.sort(), [
+    "advisor@example.com",
+    "client@example.com",
+    "observer@example.com"
+  ]);
 });
 
 test("processSchedulingEmail uses advisor settings for invite recipient and signature defaults", async () => {
