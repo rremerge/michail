@@ -3667,6 +3667,124 @@ test("availability page shows client meeting details with accepted/pending and o
   }
 });
 
+test("availability page treats declined client meetings as open time", async () => {
+  const tokenId = "declinedmeetingtoken";
+  const nowMs = Date.now();
+  const handler = createPortalHandler({
+    async getAvailabilityLink(tableName, suppliedTokenId) {
+      assert.equal(tableName, "AvailabilityLinkTable");
+      assert.equal(suppliedTokenId, tokenId);
+      return {
+        tokenId,
+        advisorId: "manoj",
+        clientId: "tito@example.com",
+        clientEmail: "tito@example.com",
+        clientDisplayName: "Tito",
+        durationMinutes: 30,
+        expiresAtMs: nowMs + 60 * 60 * 1000
+      };
+    },
+    async getSecretString(secretArn) {
+      if (secretArn.endsWith(":secret:google")) {
+        return JSON.stringify({
+          client_id: "google-client-id",
+          client_secret: "google-client-secret",
+          refresh_token: "refresh-token",
+          calendar_ids: ["primary"]
+        });
+      }
+
+      throw new Error(`unexpected secret arn: ${secretArn}`);
+    },
+    async lookupBusyIntervals({ windowStartIso }) {
+      const slotStart = DateTime.fromISO(windowStartIso, { zone: "utc" })
+        .setZone("America/Los_Angeles")
+        .set({ hour: 9, minute: 0, second: 0, millisecond: 0 })
+        .toUTC();
+      return [
+        {
+          startIso: slotStart.toISO(),
+          endIso: slotStart.plus({ minutes: 30 }).toISO(),
+          calendarId: "primary"
+        }
+      ];
+    },
+    async lookupClientMeetings({ clientEmail, windowStartIso }) {
+      assert.equal(clientEmail, "tito@example.com");
+      const slotStart = DateTime.fromISO(windowStartIso, { zone: "utc" })
+        .setZone("America/Los_Angeles")
+        .set({ hour: 9, minute: 0, second: 0, millisecond: 0 })
+        .toUTC();
+      return {
+        clientMeetings: [
+          {
+            eventId: "evt-declined",
+            startIso: slotStart.toISO(),
+            endIso: slotStart.plus({ minutes: 30 }).toISO(),
+            title: "Declined Meeting",
+            advisorResponseStatus: "declined"
+          }
+        ],
+        nonClientBusyIntervals: []
+      };
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_ID: process.env.ADVISOR_ID,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    AVAILABILITY_LINK_TABLE_NAME: process.env.AVAILABILITY_LINK_TABLE_NAME,
+    GOOGLE_OAUTH_APP_SECRET_ARN: process.env.GOOGLE_OAUTH_APP_SECRET_ARN,
+    CALENDAR_MODE: process.env.CALENDAR_MODE,
+    GOOGLE_OAUTH_SECRET_ARN: process.env.GOOGLE_OAUTH_SECRET_ARN,
+    HOST_TIMEZONE: process.env.HOST_TIMEZONE,
+    ADVISING_DAYS: process.env.ADVISING_DAYS,
+    SEARCH_DAYS: process.env.SEARCH_DAYS,
+    WORKDAY_START_HOUR: process.env.WORKDAY_START_HOUR,
+    WORKDAY_END_HOUR: process.env.WORKDAY_END_HOUR,
+    AVAILABILITY_VIEW_SLOT_MINUTES: process.env.AVAILABILITY_VIEW_SLOT_MINUTES
+  };
+
+  process.env.ADVISOR_ID = "manoj";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.AVAILABILITY_LINK_TABLE_NAME = "AvailabilityLinkTable";
+  delete process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
+  process.env.CALENDAR_MODE = "google";
+  process.env.GOOGLE_OAUTH_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:google";
+  process.env.HOST_TIMEZONE = "America/Los_Angeles";
+  process.env.ADVISING_DAYS = "Mon,Tue,Wed,Thu,Fri,Sat,Sun";
+  process.env.SEARCH_DAYS = "7";
+  process.env.WORKDAY_START_HOUR = "9";
+  process.env.WORKDAY_END_HOUR = "10";
+  process.env.AVAILABILITY_VIEW_SLOT_MINUTES = "30";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        t: tokenId
+      },
+      requestContext: {
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/availability"
+    });
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.body.includes("Declined Meeting"), false);
+    assert.equal(response.body.includes("Your meeting (pending)"), false);
+    assert.equal(response.body.includes("data-slot-status=\"busy\""), false);
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
 test("advisor calendar view marks potential conflict when two client meetings overlap", async () => {
   const hostTimezone = "America/Los_Angeles";
   const baseWeekStart = DateTime.fromMillis(Date.now(), { zone: hostTimezone }).startOf("week");

@@ -225,6 +225,16 @@ test("lookupGoogleClientMeetings uses domain matching for non-free email domains
               ]
             },
             {
+              id: "evt-2b",
+              summary: "Declined Client Sync",
+              start: { dateTime: "2026-03-03T18:30:00Z" },
+              end: { dateTime: "2026-03-03T19:00:00Z" },
+              attendees: [
+                { email: "tito@example.com" },
+                { email: "advisor@example.com", self: true, responseStatus: "declined" }
+              ]
+            },
+            {
               id: "evt-3",
               summary: "Internal Meeting",
               start: { dateTime: "2026-03-03T19:00:00Z" },
@@ -262,11 +272,13 @@ test("lookupGoogleClientMeetings uses domain matching for non-free email domains
     fetchImpl: mockFetch
   });
 
-  assert.equal(result.clientMeetings.length, 3);
+  assert.equal(result.clientMeetings.length, 4);
   assert.equal(result.clientMeetings[0].title, "Client Kickoff");
   assert.equal(result.clientMeetings[0].advisorResponseStatus, "accepted");
   assert.equal(result.clientMeetings[1].title, "Same Domain Different User");
-  assert.equal(result.clientMeetings[2].title, "Client Organizer Domain Match");
+  assert.equal(result.clientMeetings[2].title, "Declined Client Sync");
+  assert.equal(result.clientMeetings[2].advisorResponseStatus, "declined");
+  assert.equal(result.clientMeetings[3].title, "Client Organizer Domain Match");
   assert.equal(result.nonClientBusyIntervals.length, 1);
 });
 

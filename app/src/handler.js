@@ -1226,6 +1226,66 @@ function extractDestinationEmails(payload) {
   return [...new Set(candidates)];
 }
 
+function collectRawThreadRecipientAddresses(payload) {
+  const rawRecipients = [];
+  const pushRaw = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        pushRaw(item);
+      }
+      return;
+    }
+
+    const raw = String(value ?? "").trim();
+    if (!raw) {
+      return;
+    }
+
+    for (const token of raw.split(",")) {
+      const candidate = String(token ?? "").trim();
+      if (candidate) {
+        rawRecipients.push(candidate);
+      }
+    }
+  };
+
+  pushRaw(payload?.toEmail);
+  pushRaw(payload?.to);
+  pushRaw(payload?.recipient);
+
+  if (Array.isArray(payload?.toEmails)) {
+    for (const value of payload.toEmails) {
+      pushRaw(value);
+    }
+  }
+
+  if (Array.isArray(payload?.ccEmails)) {
+    for (const value of payload.ccEmails) {
+      pushRaw(value);
+    }
+  }
+
+  if (Array.isArray(payload?.ses?.destination)) {
+    for (const value of payload.ses.destination) {
+      pushRaw(value);
+    }
+  }
+
+  if (Array.isArray(payload?.ses?.mail?.destination)) {
+    for (const value of payload.ses.mail.destination) {
+      pushRaw(value);
+    }
+  }
+
+  if (Array.isArray(payload?.ses?.receipt?.recipients)) {
+    for (const value of payload.ses.receipt.recipients) {
+      pushRaw(value);
+    }
+  }
+
+  return rawRecipients;
+}
+
 function collectThreadParticipantEmails({
   payload,
   fromEmail,
@@ -1264,6 +1324,45 @@ function collectAdvisorIdentityEmails({
       .map((item) => normalizeEmailAddress(item))
       .filter(Boolean)
   );
+}
+
+function resolveSuggestionAddresseeDisplayName({
+  payload,
+  isAdvisorSender,
+  advisorIdentityEmails,
+  inboundAgentEmail,
+  senderEmail,
+  fallbackDisplayName
+}) {
+  const fallback = String(fallbackDisplayName ?? "").trim() || "there";
+  if (!isAdvisorSender) {
+    return fallback;
+  }
+
+  const excludedEmails = new Set([
+    ...advisorIdentityEmails,
+    ...uniqueEmails([inboundAgentEmail, senderEmail])
+  ]);
+  const rawRecipients = collectRawThreadRecipientAddresses(payload);
+  for (const rawRecipient of rawRecipients) {
+    const recipientEmail = normalizeEmailAddress(rawRecipient);
+    if (!recipientEmail || excludedEmails.has(recipientEmail)) {
+      continue;
+    }
+
+    return deriveClientDisplayName(rawRecipient, recipientEmail);
+  }
+
+  const normalizedRecipients = extractDestinationEmails(payload);
+  for (const recipientEmail of normalizedRecipients) {
+    if (!recipientEmail || excludedEmails.has(recipientEmail)) {
+      continue;
+    }
+
+    return deriveClientDisplayName(recipientEmail, recipientEmail);
+  }
+
+  return fallback;
 }
 
 function hashSenderIdentity(normalizedEmail) {
@@ -1877,6 +1976,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       inboundAgentEmail
     }
   );
+  const advisorDisplayName = String(advisorSettings?.preferredName ?? env.ADVISOR_DISPLAY_NAME ?? "").trim();
   const agentReferenceTerms = deriveAgentReferenceTerms({
     agentDisplayName,
     configuredAgentEmail,
@@ -1948,6 +2048,14 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     env
   });
   const isAdvisorSender = advisorIdentityEmails.has(fromEmail);
+  const suggestionAddresseeDisplayName = resolveSuggestionAddresseeDisplayName({
+    payload,
+    isAdvisorSender,
+    advisorIdentityEmails,
+    inboundAgentEmail,
+    senderEmail,
+    fallbackDisplayName: clientDisplayName
+  });
   const accessState = isAdvisorSender
     ? "advisor"
     : normalizeClientAccessState(clientProfile?.accessState, admissionControlEnabled ? "unknown" : "active");
@@ -2868,6 +2976,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           hostTimezone,
           clientTimezone: parsed.clientTimezone,
           originalSubject: payload.subject,
+          advisorDisplayName,
+          agentDisplayName,
           fetchImpl: deps.fetchImpl,
           timeoutMs: llmTimeoutMs
         });
@@ -2911,7 +3021,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
 
   responseMessage = ensurePersonalizedGreetingAndSignature({
     responseMessage,
-    clientDisplayName,
+    clientDisplayName: suggestionAddresseeDisplayName,
     agentDisplayName
   });
 

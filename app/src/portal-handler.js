@@ -1013,7 +1013,13 @@ function normalizeAdvisorResponseStatus(rawStatus) {
   const normalized = String(rawStatus ?? "")
     .trim()
     .toLowerCase();
-  return normalized === "accepted" ? "accepted" : "pending";
+  if (normalized === "accepted") {
+    return "accepted";
+  }
+  if (normalized === "declined") {
+    return "declined";
+  }
+  return "pending";
 }
 
 function normalizeMeetingDisplayTitle(value) {
@@ -1273,7 +1279,13 @@ function buildAvailabilityCalendarModel({
       const slotEndMs = slotEndLocal.toUTC().toMillis();
       const busyInSlot = busyIntervals.filter((busyInterval) => busyInterval.interval.overlaps(intervalUtc));
       const meetingsInSlot = clientMeetings.filter((meeting) => meeting.interval.overlaps(intervalUtc));
-      const meetingDetails = meetingsInSlot.map((meeting) => ({
+      const actionableMeetingsInSlot = meetingsInSlot.filter(
+        (meeting) => meeting.advisorResponseStatus !== "declined"
+      );
+      const declinedMeetingsInSlot = meetingsInSlot.filter(
+        (meeting) => meeting.advisorResponseStatus === "declined"
+      );
+      const meetingDetails = actionableMeetingsInSlot.map((meeting) => ({
         title: meeting.title,
         advisorResponseStatus: meeting.advisorResponseStatus
       }));
@@ -1282,20 +1294,27 @@ function buildAvailabilityCalendarModel({
         ? hasOverlappingClientMeetings({
             slotStartMs,
             slotEndMs,
-            clientMeetings: meetingsInSlot
+            clientMeetings: actionableMeetingsInSlot
           })
         : false;
+      const hasBusyOutsideDeclinedMeetings = hasBusyOutsideClientMeetings({
+        slotStartMs,
+        slotEndMs,
+        busyIntervals: busyInSlot,
+        clientMeetings: declinedMeetingsInSlot,
+        nonClientBusyIntervals
+      });
       const hasOverlap = hasClientMeeting
         ? hasMeetingConflict ||
           hasBusyOutsideClientMeetings({
             slotStartMs,
             slotEndMs,
             busyIntervals: busyInSlot,
-            clientMeetings: meetingsInSlot,
+            clientMeetings: actionableMeetingsInSlot,
             nonClientBusyIntervals
           })
         : false;
-      const isBusy = busyInSlot.length > 0 || hasClientMeeting;
+      const isBusy = hasBusyOutsideDeclinedMeetings || hasClientMeeting;
       const clientMeetingState = hasClientMeeting
         ? meetingDetails.some((meeting) => meeting.advisorResponseStatus === "accepted")
           ? "accepted"
@@ -1376,7 +1395,13 @@ function buildAvailabilityCalendarModel({
 }
 
 function formatMeetingStateLabel(advisorResponseStatus) {
-  return advisorResponseStatus === "accepted" ? "Accepted" : "Pending";
+  if (advisorResponseStatus === "accepted") {
+    return "Accepted";
+  }
+  if (advisorResponseStatus === "declined") {
+    return "Declined";
+  }
+  return "Pending";
 }
 
 function formatDurationMinutes(durationMinutes) {

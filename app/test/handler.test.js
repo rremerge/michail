@@ -760,14 +760,18 @@ test("processSchedulingEmail replies to all non-agent thread participants when a
   const env = {
     ...baseEnv,
     RESPONSE_MODE: "send",
-    SENDER_EMAIL: "miitb.agent@agent.letsconnect.ai"
+    SENDER_EMAIL: "miitb.agent@agent.letsconnect.ai",
+    ADVISOR_EMAIL: "advisor@example.com"
   };
 
   const result = await runSchedulingEmail({
     payload: {
-      fromEmail: "advisor@example.com",
-      toEmails: ["miitb.agent@agent.letsconnect.ai", "client@example.com"],
-      ccEmails: ["observer@example.com"],
+      fromEmail: "Advisor Name <advisor@example.com>",
+      toEmails: [
+        "Miitb Agent <miitb.agent@agent.letsconnect.ai>",
+        "Client Person <client@example.com>"
+      ],
+      ccEmails: ["Observer <observer@example.com>"],
       subject: "Need times next week",
       body: "Could we meet Wednesday afternoon? Timezone: America/Los_Angeles"
     },
@@ -785,6 +789,7 @@ test("processSchedulingEmail replies to all non-agent thread participants when a
     "observer@example.com"
   ]);
   assert.equal(sentMessages[0].recipientEmail, undefined);
+  assert.match(sentMessages[0].bodyText, /^Hi Client Person,/);
 });
 
 test("processSchedulingEmail sends calendar invite when booking intent is detected", async () => {
@@ -888,6 +893,7 @@ test("processSchedulingEmail sends booking invite to all non-agent thread partic
     "client@example.com",
     "observer@example.com"
   ]);
+  assert.match(sentInviteMessages[0].bodyText, /^Hi Client,/);
 });
 
 test("processSchedulingEmail uses advisor settings for invite recipient and signature defaults", async () => {

@@ -282,6 +282,13 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 5. If no non-agent thread recipients are resolvable, the system shall fall back to replying to the inbound sender.
 6. Thread-recipient expansion shall not change unknown-sender blackhole policy (FR-22) or tenant-routing rules (FR-21).
 
+### FR-29 Advisor-Delegated Recipient Addressing and Agent Role Prompting
+1. When the advisor is the inbound sender and includes one or more non-advisor participants in the thread, suggestion responses shall address the primary non-advisor participant rather than greeting the advisor.
+2. Primary non-advisor participant selection shall prefer `To` recipients first, then `CC`, excluding advisor identities and agent/system identities.
+3. If no eligible non-advisor participant is found, the response greeting shall safely fall back to existing sender-based behavior.
+4. LLM draft-response prompting shall explicitly state the agent role as scheduling assistant acting on behalf of the advisor, and shall instruct the model to draft for the participant expected to pick a time.
+5. This behavior shall apply without changing FR-28 recipient-delivery behavior (reply-all to non-agent participants remains intact).
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -358,6 +365,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 14. Unknown-sender admission control with blackhole response policy.
 15. Advisor workspace cards with inline client snippets, quick-search summary, and conditional onboarding hints.
 16. Public advisor acquisition landing page with Google sign-in onboarding CTA.
+17. Advisor-delegated thread responses that greet non-advisor recipients when the advisor CCs the agent.
 
 ## 11. Out of Scope for MVP
 1. LinkedIn integration.
@@ -418,6 +426,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 39. Given the same CC thread reaches booking confirmation, when the agent sends the calendar invite, then invite recipients include all non-agent thread participants and the advisor invite identity.
 40. Given a thread message contains only quoted prior content and no new unquoted reply text, when processed, then the agent does not auto-book and instead continues normal suggestion/clarification flow.
 41. Given advisor configures `agentName`, when the agent sends replies/invites, then signature and organizer label use `agentName` (not advisor `preferredName`), and thread phrases that mention the agent identity are treated as context rather than automatic booking intent.
+42. Given advisor sends an email thread and CCs the agent with a client in `To/CC`, when the agent replies with suggested times, then the greeting addresses the non-advisor participant (not the advisor) while preserving reply-all recipients.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
@@ -471,3 +480,5 @@ Some organizations may want to limit the domain name used by advisors for their 
 The advisor wants to be able to simply CC their agent when they are in an email conversation with their client. For example, the advisor my cc the agent and say "Thanks I am ccing my calendar agent to find some time next week". The agent should reply to everyone on the thread with date and time suggestions, that way everyone is aware of the entire conversation. When an invite is sent it should be sent to everyone on that email thread. 
 
 When the agent replies to an email it should use its own name in the sign-off and not the advisor name. In addition to configurable agent email address, the advisor should be able to configure an agent name. The agent should also use this configured name to recognize when it is being referred to in an email thread.
+
+Frequently an advisor adds the agent into a email conversation and requests some times to be created. Since the agent is working for the advisor, the agent must reply and address the person on the email list that is not the advisor when suggesting time slots. Maybe the agent's LLM needs to be told that its role is to be an scheduling agent for the advisor in its prompt.

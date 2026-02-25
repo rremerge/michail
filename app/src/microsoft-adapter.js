@@ -94,6 +94,9 @@ function normalizeAdvisorResponseStatus(rawStatus) {
   if (normalized === "accepted" || normalized === "organizer") {
     return "accepted";
   }
+  if (normalized === "declined") {
+    return "declined";
+  }
   return "pending";
 }
 

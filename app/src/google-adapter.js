@@ -195,7 +195,13 @@ function normalizeAdvisorResponseStatus(rawStatus) {
   const normalized = String(rawStatus ?? "")
     .trim()
     .toLowerCase();
-  return normalized === "accepted" ? "accepted" : "pending";
+  if (normalized === "accepted") {
+    return "accepted";
+  }
+  if (normalized === "declined") {
+    return "declined";
+  }
+  return "pending";
 }
 
 function deriveAdvisorResponseStatus(event, advisorEmailHint) {

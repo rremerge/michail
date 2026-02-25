@@ -160,6 +160,19 @@ test("lookupMicrosoftClientMeetings uses exact-email matching for gmail clients"
                 { emailAddress: { address: "other@gmail.com" }, status: { response: "accepted" } }
               ],
               organizer: { emailAddress: { address: "advisor@example.com" } }
+            },
+            {
+              id: "event-3",
+              subject: "Declined Exact Client",
+              showAs: "busy",
+              isCancelled: false,
+              start: { dateTime: "2026-03-03T18:30:00Z", timeZone: "UTC" },
+              end: { dateTime: "2026-03-03T19:00:00Z", timeZone: "UTC" },
+              responseStatus: { response: "declined" },
+              attendees: [
+                { emailAddress: { address: "client@gmail.com" }, status: { response: "accepted" } }
+              ],
+              organizer: { emailAddress: { address: "advisor@example.com" } }
             }
           ]
         };
@@ -182,8 +195,10 @@ test("lookupMicrosoftClientMeetings uses exact-email matching for gmail clients"
     fetchImpl: mockFetch
   });
 
-  assert.equal(overlay.clientMeetings.length, 1);
+  assert.equal(overlay.clientMeetings.length, 2);
   assert.equal(overlay.clientMeetings[0].title, "Exact Client");
   assert.equal(overlay.clientMeetings[0].advisorResponseStatus, "accepted");
+  assert.equal(overlay.clientMeetings[1].title, "Declined Exact Client");
+  assert.equal(overlay.clientMeetings[1].advisorResponseStatus, "declined");
   assert.equal(overlay.nonClientBusyIntervals.length, 1);
 });
