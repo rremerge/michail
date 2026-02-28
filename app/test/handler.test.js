@@ -784,6 +784,43 @@ test("processSchedulingEmail sends email when RESPONSE_MODE=send", async () => {
   assert.match(sentMessages[0].bodyText, /Best regards,\nManoj$/);
 });
 
+test("processSchedulingEmail always copies advisor on direct client response when advisor invite email is configured", async () => {
+  const sentMessages = [];
+
+  const deps = {
+    async getSecretString() {
+      return "";
+    },
+    async writeTrace() {},
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "manoj.agent@agent.letsconnect.ai",
+    ADVISOR_INVITE_EMAIL: "advisor@example.com"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Chat this week"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(sentMessages[0].senderEmail, "manoj.agent@agent.letsconnect.ai");
+  assert.deepEqual(sentMessages[0].toEmails.sort(), ["advisor@example.com", "client@example.com"]);
+  assert.equal(sentMessages[0].recipientEmail, undefined);
+});
+
 test("processSchedulingEmail replies to all non-agent thread participants when advisor CCs agent", async () => {
   const sentMessages = [];
 
@@ -938,6 +975,7 @@ test("processSchedulingEmail sends calendar invite when booking intent is detect
   assert.match(invite.bodyText, /Join with Google Meet: https:\/\/meet\.google\.com\/new/);
   assert.match(invite.icsContent, /BEGIN:VCALENDAR/);
   assert.match(invite.icsContent, /METHOD:REQUEST/);
+  assert.match(invite.icsContent, /SUMMARY:Meeting Client\/Manoj/);
   assert.match(invite.icsContent, /LOCATION:Google Meet: https:\/\/meet\.google\.com\/new/);
   assert.match(invite.icsContent, /URL:https:\/\/meet\.google\.com\/new/);
   assert.match(invite.icsContent, /ATTENDEE;CN=client@example.com;RSVP=TRUE:mailto:client@example.com/);
@@ -1115,6 +1153,7 @@ test("processSchedulingEmail uses high-confidence LLM invite subject when bookin
   assert.equal(result.http.statusCode, 200);
   assert.equal(sentInviteMessages.length, 1);
   assert.equal(sentInviteMessages[0].subject, "Q2 Planning Sync");
+  assert.match(sentInviteMessages[0].icsContent, /SUMMARY:Q2 Planning Sync/);
   assert.equal(traceItems.length, 1);
   assert.equal(traceItems[0].inviteSubjectSource, "llm");
 });
@@ -2843,9 +2882,17 @@ test("processSchedulingEmail forwards to advisor and sends client hold when no c
 
   assert.equal(sentMessages.length, 2);
   const advisorMessage = sentMessages.find((item) => item.recipientEmail === "advisor@example.com");
-  const clientMessage = sentMessages.find((item) => item.recipientEmail === "client@example.com");
+  const clientMessage = sentMessages.find(
+    (item) =>
+      item.recipientEmail === "client@example.com" ||
+      (Array.isArray(item.toEmails) && item.toEmails.includes("client@example.com"))
+  );
   assert.ok(advisorMessage);
   assert.ok(clientMessage);
+  assert.deepEqual((clientMessage.toEmails ?? [clientMessage.recipientEmail]).sort(), [
+    "advisor@example.com",
+    "client@example.com"
+  ]);
   assert.equal(advisorMessage.subject, "Can we meet next week?");
   assert.match(advisorMessage.bodyText, /Client: client@example.com/);
   assert.match(clientMessage.bodyText, /temporarily unable to access the advisor calendar/i);

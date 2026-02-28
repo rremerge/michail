@@ -751,7 +751,11 @@ function buildCalendarInviteMessage({
 }) {
   const hostLabel = formatInviteLabel(selectedSlot.startIsoUtc, hostTimezone);
   const clientLabel = clientTimezone ? formatInviteLabel(selectedSlot.startIsoUtc, clientTimezone) : null;
-  const safeTitle = String(inviteTitle ?? DEFAULT_CALENDAR_INVITE_TITLE).trim() || DEFAULT_CALENDAR_INVITE_TITLE;
+  const normalizedSubject = String(subject ?? "").trim();
+  const safeTitle =
+    normalizedSubject ||
+    String(inviteTitle ?? DEFAULT_CALENDAR_INVITE_TITLE).trim() ||
+    DEFAULT_CALENDAR_INVITE_TITLE;
   const normalizedMeetingUrl = String(meetingUrl ?? "").trim();
   const locationLabel = normalizedMeetingUrl ? `Google Meet: ${normalizedMeetingUrl}` : "";
   const safeDescription =
@@ -786,7 +790,7 @@ function buildCalendarInviteMessage({
   });
 
   return {
-    subject: String(subject ?? "").trim() || "Meeting request",
+    subject: normalizedSubject || "Meeting request",
     bodyText: bodyLines.join("\n"),
     icsContent
   };
@@ -1475,6 +1479,47 @@ function collectThreadParticipantEmails({
   );
 
   return participants.filter((email) => !exclusions.has(email));
+}
+
+function includeAdvisorRecipient({ recipients, advisorNotificationEmail, senderEmail }) {
+  const baseRecipients = uniqueEmails(recipients);
+  const advisorRecipient = normalizeEmailAddress(advisorNotificationEmail);
+  const sender = normalizeEmailAddress(senderEmail);
+  if (!advisorRecipient || advisorRecipient === sender) {
+    return baseRecipients;
+  }
+
+  return uniqueEmails([...baseRecipients, advisorRecipient]);
+}
+
+async function sendResponseEmailWithAdvisorCopy({
+  deps,
+  senderEmail,
+  advisorNotificationEmail,
+  recipients,
+  subject,
+  bodyText
+}) {
+  const finalRecipients = includeAdvisorRecipient({
+    recipients,
+    advisorNotificationEmail,
+    senderEmail
+  });
+  if (finalRecipients.length <= 1) {
+    await deps.sendResponseEmail({
+      senderEmail,
+      recipientEmail: finalRecipients[0],
+      subject,
+      bodyText
+    });
+  } else {
+    await deps.sendResponseEmail({
+      senderEmail,
+      toEmails: finalRecipients,
+      subject,
+      bodyText
+    });
+  }
 }
 
 function collectAdvisorIdentityEmails({
@@ -2378,9 +2423,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     });
     let deliveryStatus = "logged";
     if (responseMode === "send" && senderEmail) {
-      await deps.sendResponseEmail({
+      await sendResponseEmailWithAdvisorCopy({
+        deps,
         senderEmail,
-        recipientEmail: fromEmail,
+        advisorNotificationEmail,
+        recipients: [fromEmail],
         subject: threadReplySubject,
         bodyText: deniedMessage.bodyText
       });
@@ -2602,9 +2649,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           return { http: badRequest("SENDER_EMAIL (or advisor agentEmail setting) is required when RESPONSE_MODE=send") };
         }
 
-        await deps.sendResponseEmail({
+        await sendResponseEmailWithAdvisorCopy({
+          deps,
           senderEmail,
-          recipientEmail: fromEmail,
+          advisorNotificationEmail,
+          recipients: [fromEmail],
           subject: threadReplySubject,
           bodyText: responseMessage.bodyText
         });
@@ -3062,9 +3111,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           clientDisplayName,
           agentDisplayName
         });
-        await deps.sendResponseEmail({
+        await sendResponseEmailWithAdvisorCopy({
+          deps,
           senderEmail,
-          recipientEmail: fromEmail,
+          advisorNotificationEmail,
+          recipients: [fromEmail],
           subject: threadReplySubject,
           bodyText: clientHoldMessage.bodyText
         });
@@ -3456,21 +3507,14 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       );
       if (typeof deps.sendResponseEmail === "function") {
         try {
-          if (responseRecipients.length <= 1) {
-            await deps.sendResponseEmail({
-              senderEmail,
-              recipientEmail: responseRecipients[0] ?? fromEmail,
-              subject: bookingConfirmationMessage.subject,
-              bodyText: bookingConfirmationMessage.bodyText
-            });
-          } else {
-            await deps.sendResponseEmail({
-              senderEmail,
-              toEmails: responseRecipients,
-              subject: bookingConfirmationMessage.subject,
-              bodyText: bookingConfirmationMessage.bodyText
-            });
-          }
+          await sendResponseEmailWithAdvisorCopy({
+            deps,
+            senderEmail,
+            advisorNotificationEmail,
+            recipients: responseRecipients,
+            subject: bookingConfirmationMessage.subject,
+            bodyText: bookingConfirmationMessage.bodyText
+          });
           bookingConfirmationStatus = "sent";
         } catch {
           bookingConfirmationStatus = "failed";
@@ -3489,35 +3533,28 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         });
       } else {
         const fallbackRecipients = inviteRecipients.length > 0 ? inviteRecipients : [fromEmail];
-        for (const recipientEmail of fallbackRecipients) {
-          await deps.sendResponseEmail({
-            senderEmail,
-            recipientEmail,
-            subject: responseMessage.subject,
-            bodyText: responseMessage.bodyText
-          });
-        }
+        await sendResponseEmailWithAdvisorCopy({
+          deps,
+          senderEmail,
+          advisorNotificationEmail,
+          recipients: fallbackRecipients,
+          subject: responseMessage.subject,
+          bodyText: responseMessage.bodyText
+        });
       }
       bookingStatus = "invite_sent";
     } else {
       const responseRecipients = uniqueEmails(
         threadParticipantEmails.length > 0 ? threadParticipantEmails : [fromEmail]
       );
-      if (responseRecipients.length <= 1) {
-        await deps.sendResponseEmail({
-          senderEmail,
-          recipientEmail: responseRecipients[0] ?? fromEmail,
-          subject: responseMessage.subject,
-          bodyText: responseMessage.bodyText
-        });
-      } else {
-        await deps.sendResponseEmail({
-          senderEmail,
-          toEmails: responseRecipients,
-          subject: responseMessage.subject,
-          bodyText: responseMessage.bodyText
-        });
-      }
+      await sendResponseEmailWithAdvisorCopy({
+        deps,
+        senderEmail,
+        advisorNotificationEmail,
+        recipients: responseRecipients,
+        subject: responseMessage.subject,
+        bodyText: responseMessage.bodyText
+      });
     }
 
     deliveryStatus = "sent";

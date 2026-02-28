@@ -284,6 +284,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 4. Agent/system addresses (for example inbound alias and configured sender identity) shall be excluded from recipient expansion to prevent mail loops.
 5. If no non-agent thread recipients are resolvable, the system shall fall back to replying to the inbound sender.
 6. Thread-recipient expansion shall not change unknown-sender blackhole policy (FR-22) or tenant-routing rules (FR-21).
+7. For any outbound agent response email (suggestions, clarification, guard fallback, booking confirmation, or calendar-connection hold), the advisor invite identity (`advisorInviteEmail`) shall always be included as a copied recipient when available.
 
 ### FR-29 Advisor-Delegated Recipient Addressing and Agent Role Prompting
 1. When the advisor is the inbound sender and includes one or more non-advisor participants in the thread, suggestion responses shall address the primary non-advisor participant rather than greeting the advisor.
@@ -446,6 +447,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 45. Given booking invite subject generation is attempted, when LLM confidence is below threshold or unavailable, then outbound invite subject falls back to deterministic `Meeting <ClientName>/<AdvisorName>` style.
 46. Given a client or advisor confirms a specific time and auto-booking conditions are met, when the agent processes the request, then it first sends a thread confirmation message and then sends the calendar invite.
 47. Given online-invite link configuration is present, when the agent sends the calendar invite, then the invite body/ICS includes the join URL (Google Meet when configured for that advisor/provider path).
+48. Given the agent sends any outbound response email, when advisor invite identity is configured, then the advisor is always included as a copied recipient on that email.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
@@ -505,3 +507,5 @@ Frequently an advisor adds the agent into a email conversation and requests some
 Advisors usually include the agent on CC for a ongoing mail thread with a client. The context for a meeting gets built up through the mail thread. Then either the advisor or the client ask the agent to find a time on the calendar to discuss further. The context for how long the meeting should be or when it needs to be schedule may not be explicitly stated when they ask the agent because it may have been mentioned earlier in the thread. The agent needs to understand that. The agent should reply only when the email from either the advisor or client directly addresses the agent with its name. When the agent replies, it maybe because the advisor asked it to, or the client did. It should appropriately address the person who asked it to find a calendar time. The agent should keep quiet until it detects that either the client or advisor are asking them to do something by their name. Lastly when the agent sends a meeting invite, it is best to create a subject that is relevant to the conversation (with high confidence from the LLM) or simply put the subject as meeting client name/ advisor name.
 
 When a client confirms a time to the agent. The agent immediatley sends a calendar event. The advisor and client would prefer if they saw a confirmation on the same mail thread thanking them and say that the agent is about to send a calendar invite. Then send the invite and ideally enable a google meet as part of the invite.
+
+When the agent detects it has to respond, then it MUST always cc the advisor on all its responses.
