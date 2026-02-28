@@ -476,6 +476,46 @@ test("processSchedulingEmail retries thread context when latest reply is ambiguo
   assert.equal(traceItems[0].intentLlmRetryUsed, true);
 });
 
+test("processSchedulingEmail adopts duration from earlier thread context when latest reply omits it", async () => {
+  const traceItems = [];
+  const deps = {
+    async getSecretString() {
+      return "";
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    SEARCH_DAYS: "30"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Re: follow up",
+      body: [
+        "Miitb, Wednesday between 2pm and 5pm works.",
+        "",
+        "On Tue, Mar 10, 2026 at 9:00 AM Advisor <advisor@example.com> wrote:",
+        "> Sounds good. Please make this a 90 minute meeting."
+      ].join("\n")
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-09T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.suggestionCount > 0, true);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].durationMinutes, 90);
+});
+
 test("processSchedulingEmail retries intent extraction with broad window policy when first pass is empty", async () => {
   const traceItems = [];
   const extractionCalls = [];
@@ -773,7 +813,7 @@ test("processSchedulingEmail replies to all non-agent thread participants when a
       ],
       ccEmails: ["Observer <observer@example.com>"],
       subject: "Need times next week",
-      body: "Could we meet Wednesday afternoon? Timezone: America/Los_Angeles"
+      body: "Miitb, could you suggest times for Wednesday afternoon? Timezone: America/Los_Angeles"
     },
     env,
     deps,
@@ -792,9 +832,58 @@ test("processSchedulingEmail replies to all non-agent thread participants when a
   assert.match(sentMessages[0].bodyText, /^Hi Client Person,/);
 });
 
+test("processSchedulingEmail keeps quiet in multi-party thread when agent is not explicitly invoked", async () => {
+  const sentMessages = [];
+  const traceItems = [];
+
+  const deps = {
+    async getSecretString() {
+      return "";
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "miitb.agent@agent.letsconnect.ai",
+    ADVISOR_EMAIL: "advisor@example.com"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "Advisor Name <advisor@example.com>",
+      toEmails: [
+        "Miitb Agent <miitb.agent@agent.letsconnect.ai>",
+        "Client Person <client@example.com>"
+      ],
+      subject: "Need times next week",
+      body: "Could we meet Wednesday afternoon? Timezone: America/Los_Angeles"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.deliveryStatus, "suppressed");
+  assert.equal(response.suppressionReason, "agent_not_invoked");
+  assert.equal(sentMessages.length, 0);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].status, "suppressed");
+  assert.equal(traceItems[0].stage, "agent_invocation");
+});
+
 test("processSchedulingEmail sends calendar invite when booking intent is detected", async () => {
   const sentInviteMessages = [];
   const sentResponseMessages = [];
+  const deliverySequence = [];
   const traceItems = [];
 
   const deps = {
@@ -803,9 +892,11 @@ test("processSchedulingEmail sends calendar invite when booking intent is detect
     },
     async sendCalendarInviteEmail(message) {
       sentInviteMessages.push(message);
+      deliverySequence.push("invite");
     },
     async sendResponseEmail(message) {
       sentResponseMessages.push(message);
+      deliverySequence.push("confirmation");
     }
   };
 
@@ -830,22 +921,31 @@ test("processSchedulingEmail sends calendar invite when booking intent is detect
   assert.equal(result.http.statusCode, 200);
   const response = JSON.parse(result.http.body);
   assert.equal(response.bookingStatus, "invite_sent");
+  assert.equal(response.bookingConfirmationStatus, "sent");
   assert.equal(sentInviteMessages.length, 1);
-  assert.equal(sentResponseMessages.length, 0);
+  assert.equal(sentResponseMessages.length, 1);
+  assert.deepEqual(deliverySequence, ["confirmation", "invite"]);
 
   const invite = sentInviteMessages[0];
+  const confirmation = sentResponseMessages[0];
+  assert.equal(confirmation.subject, "Re: Meeting confirmation");
+  assert.match(confirmation.bodyText, /about to send a calendar invite/i);
   assert.equal(invite.senderEmail, "agent@agent.letsconnect.ai");
   assert.deepEqual(invite.toEmails.sort(), ["client@example.com", "manoj@example.com"]);
-  assert.match(invite.subject, /^Calendar invite:/);
+  assert.equal(invite.subject, "Meeting Client/Manoj");
   assert.match(invite.bodyText, /^Hi Client,/);
   assert.match(invite.bodyText, /I have prepared a calendar invite/);
+  assert.match(invite.bodyText, /Join with Google Meet: https:\/\/meet\.google\.com\/new/);
   assert.match(invite.icsContent, /BEGIN:VCALENDAR/);
   assert.match(invite.icsContent, /METHOD:REQUEST/);
+  assert.match(invite.icsContent, /LOCATION:Google Meet: https:\/\/meet\.google\.com\/new/);
+  assert.match(invite.icsContent, /URL:https:\/\/meet\.google\.com\/new/);
   assert.match(invite.icsContent, /ATTENDEE;CN=client@example.com;RSVP=TRUE:mailto:client@example.com/);
   assert.match(invite.icsContent, /ATTENDEE;CN=manoj@example.com;RSVP=TRUE:mailto:manoj@example.com/);
 
   assert.equal(traceItems.length, 1);
   assert.equal(traceItems[0].bookingStatus, "invite_sent");
+  assert.equal(traceItems[0].bookingConfirmationStatus, "sent");
   assert.equal(traceItems[0].availabilityLinkStatus, "not_applicable");
 });
 
@@ -876,7 +976,7 @@ test("processSchedulingEmail sends booking invite to all non-agent thread partic
       toEmails: ["miitb.agent@agent.letsconnect.ai", "client@example.com"],
       ccEmails: ["observer@example.com"],
       subject: "Meeting confirmation",
-      body: "Please book Wednesday between 2pm and 3pm. Timezone: America/Los_Angeles"
+      body: "Miitb, please book Wednesday between 2pm and 3pm. Timezone: America/Los_Angeles"
     },
     env,
     deps,
@@ -886,14 +986,137 @@ test("processSchedulingEmail sends booking invite to all non-agent thread partic
   assert.equal(result.http.statusCode, 200);
   const response = JSON.parse(result.http.body);
   assert.equal(response.bookingStatus, "invite_sent");
+  assert.equal(response.bookingConfirmationStatus, "sent");
   assert.equal(sentInviteMessages.length, 1);
-  assert.equal(sentResponseMessages.length, 0);
+  assert.equal(sentResponseMessages.length, 1);
+  assert.equal(sentResponseMessages[0].subject, "Re: Meeting confirmation");
   assert.deepEqual(sentInviteMessages[0].toEmails.sort(), [
     "advisor@example.com",
     "client@example.com",
     "observer@example.com"
   ]);
   assert.match(sentInviteMessages[0].bodyText, /^Hi Client,/);
+});
+
+test("processSchedulingEmail uses non-advisor target for availability link when advisor invokes agent in-thread", async () => {
+  const sentMessages = [];
+  const savedLinks = [];
+  const deps = {
+    async getAdvisorSettingsByAgentEmail(tableName, agentEmail) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(agentEmail, "michael@agent.letsconnect.ai");
+      return {
+        advisorId: "manoj",
+        advisorEmail: "manoj@rremerge.com",
+        agentEmail: "michael@agent.letsconnect.ai",
+        preferredName: "Manoj",
+        timezone: "America/Los_Angeles"
+      };
+    },
+    async putAvailabilityLink(tableName, item) {
+      assert.equal(tableName, "AvailabilityLinkTable");
+      savedLinks.push(item);
+    },
+    async writeTrace() {},
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "michael@agent.letsconnect.ai",
+    ADVISOR_EMAIL: "manoj@rremerge.com",
+    ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable",
+    AVAILABILITY_LINK_BASE_URL: "https://example.test/availability",
+    AVAILABILITY_LINK_TABLE_NAME: "AvailabilityLinkTable",
+    AVAILABILITY_LINK_TTL_MINUTES: "60"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "Manoj Apte <manoj@rremerge.com>",
+      toEmails: [
+        "\"leya.leydiker@agilebits.com\" <leya.leydiker@agilebits.com>",
+        "michael@agent.letsconnect.ai",
+        "tony.zoght@agilebits.com"
+      ],
+      subject: "time in the second week of april",
+      body: [
+        "hey leya,",
+        "lets chat for an hour in the coming weeks. Michael, please suggest some",
+        "times in the second week of april and send those options to leya.",
+        "Manoj"
+      ].join("\n")
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-02-26T20:37:57Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(sentMessages.length, 1);
+  assert.equal(savedLinks.length, 1);
+  assert.match(sentMessages[0].bodyText, /^Hi Leya Leydiker,/);
+  assert.equal(savedLinks[0].clientEmail, "leya.leydiker@agilebits.com");
+  assert.equal(savedLinks[0].clientId, "leya.leydiker@agilebits.com");
+  assert.equal(savedLinks[0].clientDisplayName.toLowerCase(), "leya leydiker");
+  assert.match(sentMessages[0].bodyText, /for=leya-leydiker/);
+});
+
+test("processSchedulingEmail uses high-confidence LLM invite subject when booking", async () => {
+  const sentInviteMessages = [];
+  const traceItems = [];
+
+  const deps = {
+    async getSecretString(secretArn) {
+      assert.equal(secretArn, "arn:llm-secret");
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async suggestInviteSubjectWithLlm() {
+      return {
+        subject: "Q2 Planning Sync",
+        confidence: 0.92
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendCalendarInviteEmail(message) {
+      sentInviteMessages.push(message);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    ADVISOR_INVITE_EMAIL: "manoj@example.com",
+    LLM_MODE: "openai",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      subject: "Meeting confirmation",
+      body: "Please book Wednesday between 2pm and 3pm. Timezone: America/Los_Angeles"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-02T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(sentInviteMessages.length, 1);
+  assert.equal(sentInviteMessages[0].subject, "Q2 Planning Sync");
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].inviteSubjectSource, "llm");
 });
 
 test("processSchedulingEmail uses advisor settings for invite recipient and signature defaults", async () => {
@@ -1955,7 +2178,7 @@ test("processSchedulingEmail admits recipients when advisor sends email thread",
   const deps = {
     async getAdvisorSettingsByAgentEmail(tableName, agentEmail) {
       assert.equal(tableName, "AdvisorSettingsTable");
-      assert.equal(agentEmail, "agent@agent.letsconnect.ai");
+      assert.equal(agentEmail, "miitb.agent@agent.letsconnect.ai");
       return {
         advisorId: "manoj",
         advisorEmail: "advisor@example.com",
@@ -1991,14 +2214,15 @@ test("processSchedulingEmail admits recipients when advisor sends email thread",
     CLIENT_PROFILES_TABLE_NAME: "ClientProfilesTable",
     ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable",
     ADVISOR_EMAIL: "advisor@example.com",
-    SENDER_EMAIL: "agent@agent.letsconnect.ai"
+    SENDER_EMAIL: "miitb.agent@agent.letsconnect.ai"
   };
 
   const result = await runSchedulingEmail({
     payload: {
       fromEmail: "advisor@example.com",
-      toEmails: ["agent@agent.letsconnect.ai", "newclient@example.com"],
-      subject: "Please add this person and find times"
+      toEmails: ["miitb.agent@agent.letsconnect.ai", "newclient@example.com"],
+      subject: "Please add this person and find times",
+      body: "Miitb, please add this person and find times."
     },
     env,
     deps,
@@ -2015,6 +2239,61 @@ test("processSchedulingEmail admits recipients when advisor sends email thread",
   assert.equal(admittedProfiles[0].admittedBy, "advisor@example.com");
   assert.equal(traceItems.length, 1);
   assert.equal(traceItems[0].status, "completed");
+});
+
+test("processSchedulingEmail ignores quoted-name fragments and admits only valid emails", async () => {
+  const admittedProfiles = [];
+  const deps = {
+    async getAdvisorSettingsByAgentEmail(tableName, agentEmail) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(agentEmail, "agent@agent.letsconnect.ai");
+      return {
+        advisorId: "manoj",
+        advisorEmail: "advisor@example.com",
+        agentEmail
+      };
+    },
+    async getClientProfile() {
+      return null;
+    },
+    async putClientProfile(tableName, item) {
+      assert.equal(tableName, "ClientProfilesTable");
+      admittedProfiles.push(item);
+    },
+    async writeTrace() {},
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    CLIENT_PROFILES_TABLE_NAME: "ClientProfilesTable",
+    ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable",
+    ADVISOR_EMAIL: "advisor@example.com",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "advisor@example.com",
+      toEmails: [
+        "agent@agent.letsconnect.ai",
+        "\"Mueller Lynch, Thomas\" <thomas.mueller-lynch@siemens.com>",
+        "\"Steiner, Gerhard\" <steiner.gerhard@siemens.com>"
+      ],
+      subject: "Find times for this thread"
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(admittedProfiles.length, 2);
+  assert.deepEqual(
+    admittedProfiles.map((item) => item.clientId).sort(),
+    ["steiner.gerhard@siemens.com", "thomas.mueller-lynch@siemens.com"]
+  );
+  assert.equal(admittedProfiles.some((item) => item.clientId.includes("\"")), false);
 });
 
 test("processSchedulingEmail denies blocked client access", async () => {
@@ -2567,7 +2846,7 @@ test("processSchedulingEmail forwards to advisor and sends client hold when no c
   const clientMessage = sentMessages.find((item) => item.recipientEmail === "client@example.com");
   assert.ok(advisorMessage);
   assert.ok(clientMessage);
-  assert.match(advisorMessage.subject, /connect your calendar/i);
+  assert.equal(advisorMessage.subject, "Can we meet next week?");
   assert.match(advisorMessage.bodyText, /Client: client@example.com/);
   assert.match(clientMessage.bodyText, /temporarily unable to access the advisor calendar/i);
   assert.match(clientMessage.bodyText, /^Hi Client Name,/);
@@ -2641,7 +2920,7 @@ test("processSchedulingEmail uses LLM draft when LLM_MODE=openai", async () => {
   const response = JSON.parse(result.http.body);
   assert.equal(response.llmStatus, "ok");
   assert.equal(sentMessages.length, 1);
-  assert.equal(sentMessages[0].subject, "Re: Chat request");
+  assert.equal(sentMessages[0].subject, "Chat");
   assert.match(sentMessages[0].bodyText, /^Hi Client,/);
   assert.match(sentMessages[0].bodyText, /LLM drafted body/);
   assert.match(sentMessages[0].bodyText, /Best regards,\nManoj$/);
@@ -2779,7 +3058,7 @@ test("processSchedulingEmail falls back to template response when LLM draft fail
   const response = JSON.parse(result.http.body);
   assert.equal(response.llmStatus, "fallback");
   assert.equal(sentMessages.length, 1);
-  assert.match(sentMessages[0].subject, /^Re:/);
+  assert.equal(sentMessages[0].subject, "Chat");
   assert.match(sentMessages[0].bodyText, /Thanks for reaching out/);
   assert.equal(traceItems[0].llmStatus, "fallback");
   assert.equal(traceItems[0].llmMode, "openai");

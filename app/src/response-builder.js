@@ -28,9 +28,9 @@ export function buildHumanReadableOptions({
       ? formatInTimezone(suggestion.startIsoUtc, clientTimezone)
       : null;
 
-    lines.push(`${index + 1}. ${hostLabel} (${hostTimezone})`);
+    lines.push(`- ${hostLabel} (${hostTimezone})`);
     if (clientLabel) {
-      lines.push(`   Your timezone: ${clientLabel} (${clientTimezone})`);
+      lines.push(`  Your timezone: ${clientLabel} (${clientTimezone})`);
     }
   }
 
@@ -50,7 +50,7 @@ export function buildClientResponse({
     lines.push("I could not find open slots in the requested window.");
     lines.push("Please share a wider time range and I will send alternatives.");
   } else {
-    lines.push(`I found ${suggestions.length} option(s):`);
+    lines.push("I found these times that could work:");
     lines.push("");
     lines.push(
       buildHumanReadableOptions({
@@ -62,7 +62,7 @@ export function buildClientResponse({
   }
 
   lines.push("");
-  lines.push("If any option works, reply with the option number.");
+  lines.push("Please let me know which time works best for you, or suggest another time.");
 
   return {
     subject: `Re: ${subject || "Meeting request"}`,

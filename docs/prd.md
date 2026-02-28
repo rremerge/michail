@@ -101,6 +101,9 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 3. System shall log booking decisions and rationale for auditability without storing email content or calendar event content.
 4. System shall auto-book only when booking intent is clear and the extracted requested window is specific (for example a concrete slot or narrow range); broad ranges (for example "in April", "next week") shall produce suggestions without immediate booking.
 5. Quoted-only thread replies with no new unquoted client/advisor text shall not be treated as fresh booking confirmation.
+6. When booking intent is confirmed, the system shall first send a confirmation message on the same email thread acknowledging the chosen time and indicating that a calendar invite will be sent next.
+7. After sending the booking confirmation message, the system shall send the calendar invite artifact to intended recipients.
+8. For online meetings, the invite shall include a meeting-join URL when configured; for Google-based workflows, the system should include a Google Meet link when available by configuration or provider-specific default.
 
 ### FR-9 LLM Provider Abstraction
 1. System shall use GPT-5 as default provider for reasoning and response generation.
@@ -289,6 +292,16 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 4. LLM draft-response prompting shall explicitly state the agent role as scheduling assistant acting on behalf of the advisor, and shall instruct the model to draft for the participant expected to pick a time.
 5. This behavior shall apply without changing FR-28 recipient-delivery behavior (reply-all to non-agent participants remains intact).
 
+### FR-30 Explicit Agent Invocation, Thread-Context Continuity, and Invite Subject Quality
+1. In multi-party email threads where the agent alias remains on `To/CC`, the agent shall respond only when the latest unquoted message explicitly invokes the agent by its configured `agentName` (or recognized alias term) and includes scheduling-action intent.
+2. If explicit invocation is not detected in the latest unquoted message for a multi-party thread, the system shall keep silent (no response to thread participants) and record metadata-only suppression trace (`agent_not_invoked`).
+3. In direct one-to-agent email flows (single human participant), existing scheduling behavior may continue without explicit-name invocation.
+4. When the agent responds after an explicit invocation, greeting/personalization shall address the message sender who requested the scheduling action (advisor or client), while preserving FR-28 reply-all recipient delivery.
+5. When latest unquoted message lacks explicit timing/duration details, the agent shall use earlier thread context as supplemental input for intent extraction before falling back to defaults.
+6. For booking invites, the system shall attempt to generate a conversation-relevant invite subject using LLM output only when invite-subject confidence meets threshold.
+7. If invite-subject confidence is below threshold or LLM invite-subject generation fails, the system shall deterministically fall back to `Meeting <ClientName>/<AdvisorName>` (or equivalent safe fallback when one name is unavailable).
+8. Invite-subject generation shall not change existing prompt-injection safeguards: only sanitized untrusted text may be supplied to the model and no raw thread content shall be persisted.
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -366,6 +379,7 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 15. Advisor workspace cards with inline client snippets, quick-search summary, and conditional onboarding hints.
 16. Public advisor acquisition landing page with Google sign-in onboarding CTA.
 17. Advisor-delegated thread responses that greet non-advisor recipients when the advisor CCs the agent.
+18. Explicit-invocation controls for CC-style threads, thread-context continuity for implicit scheduling constraints, and confidence-gated invite-subject generation.
 
 ## 11. Out of Scope for MVP
 1. LinkedIn integration.
@@ -427,6 +441,11 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 40. Given a thread message contains only quoted prior content and no new unquoted reply text, when processed, then the agent does not auto-book and instead continues normal suggestion/clarification flow.
 41. Given advisor configures `agentName`, when the agent sends replies/invites, then signature and organizer label use `agentName` (not advisor `preferredName`), and thread phrases that mention the agent identity are treated as context rather than automatic booking intent.
 42. Given advisor sends an email thread and CCs the agent with a client in `To/CC`, when the agent replies with suggested times, then the greeting addresses the non-advisor participant (not the advisor) while preserving reply-all recipients.
+43. Given a multi-party thread where the agent is in `To/CC` but latest unquoted message does not explicitly invoke the agent by configured name/alias, when processed, then the agent sends no response and records suppression reason `agent_not_invoked`.
+44. Given an explicit agent invocation in latest unquoted message and scheduling constraints are only in earlier thread content, when processed, then request interpretation uses thread context to recover missing timing/duration constraints before defaulting.
+45. Given booking invite subject generation is attempted, when LLM confidence is below threshold or unavailable, then outbound invite subject falls back to deterministic `Meeting <ClientName>/<AdvisorName>` style.
+46. Given a client or advisor confirms a specific time and auto-booking conditions are met, when the agent processes the request, then it first sends a thread confirmation message and then sends the calendar invite.
+47. Given online-invite link configuration is present, when the agent sends the calendar invite, then the invite body/ICS includes the join URL (Google Meet when configured for that advisor/provider path).
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
@@ -482,3 +501,7 @@ The advisor wants to be able to simply CC their agent when they are in an email 
 When the agent replies to an email it should use its own name in the sign-off and not the advisor name. In addition to configurable agent email address, the advisor should be able to configure an agent name. The agent should also use this configured name to recognize when it is being referred to in an email thread.
 
 Frequently an advisor adds the agent into a email conversation and requests some times to be created. Since the agent is working for the advisor, the agent must reply and address the person on the email list that is not the advisor when suggesting time slots. Maybe the agent's LLM needs to be told that its role is to be an scheduling agent for the advisor in its prompt.
+
+Advisors usually include the agent on CC for a ongoing mail thread with a client. The context for a meeting gets built up through the mail thread. Then either the advisor or the client ask the agent to find a time on the calendar to discuss further. The context for how long the meeting should be or when it needs to be schedule may not be explicitly stated when they ask the agent because it may have been mentioned earlier in the thread. The agent needs to understand that. The agent should reply only when the email from either the advisor or client directly addresses the agent with its name. When the agent replies, it maybe because the advisor asked it to, or the client did. It should appropriately address the person who asked it to find a calendar time. The agent should keep quiet until it detects that either the client or advisor are asking them to do something by their name. Lastly when the agent sends a meeting invite, it is best to create a subject that is relevant to the conversation (with high confidence from the LLM) or simply put the subject as meeting client name/ advisor name.
+
+When a client confirms a time to the agent. The agent immediatley sends a calendar event. The advisor and client would prefer if they saw a confirmation on the same mail thread thanking them and say that the agent is about to send a calendar invite. Then send the invite and ideally enable a google meet as part of the invite.

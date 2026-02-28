@@ -125,12 +125,20 @@ function normalizeAdvisorEmail(value) {
     return "";
   }
 
-  const emailMatch = candidate.match(/[a-z0-9._%+-]+@[a-z0-9.-]+/);
+  const emailMatch = candidate.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/);
   if (emailMatch) {
     return emailMatch[0];
   }
 
-  return candidate.replace(/[<>]/g, "").trim();
+  const stripped = candidate
+    .replace(/^mailto:/, "")
+    .replace(/[<>]/g, "")
+    .trim();
+  if (/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(stripped)) {
+    return stripped;
+  }
+
+  return "";
 }
 
 function normalizeSecretArn(value) {

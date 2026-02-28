@@ -9,7 +9,8 @@ import {
   assessPromptInjectionRisk,
   draftResponseWithOpenAi,
   extractSchedulingIntentWithOpenAi,
-  parseOpenAiConfigSecret
+  parseOpenAiConfigSecret,
+  suggestInviteSubjectWithOpenAi
 } from "./llm-adapter.js";
 import { buildClientResponse } from "./response-builder.js";
 import { buildClientReference, createShortAvailabilityTokenId } from "./availability-link.js";
@@ -58,6 +59,8 @@ const AFFIRMATIVE_BOOKING_INTENT_KEYWORDS =
 const NEGATIVE_BOOKING_INTENT_KEYWORDS = /\b(not|cannot|can't|won't|do not|don't)\b/i;
 const AGENT_NARRATION_ACTION_KEYWORDS =
   /\b(?:will|can|should|could)\b[\s\S]{0,40}\b(?:suggest|share|send|propose|find|follow up|respond)\b/i;
+const AGENT_INVOCATION_ACTION_KEYWORDS =
+  /\b(?:find|suggest|share|send|propose|book|schedule|check|look|show|slot|time|availability|invite|meet|meeting|calendar|sync|coordinate)\b/i;
 const AGENT_REFERENCE_STOPWORDS = new Set([
   "agent",
   "assistant",
@@ -76,6 +79,8 @@ const QUOTED_THREAD_BOUNDARY_PATTERNS = [
   /^to:\s.+@/i,
   /^subject:\s/i
 ];
+const EMAIL_ADDRESS_PATTERN = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
+const DEFAULT_INVITE_SUBJECT_LLM_CONFIDENCE_THRESHOLD = 0.75;
 
 function parseIntEnv(value, fallback) {
   const parsed = Number.parseInt(value ?? "", 10);
@@ -320,6 +325,77 @@ function lineMentionsAgentReference(line, agentReferenceTerms) {
   return false;
 }
 
+function detectExplicitAgentInvocation({
+  subject,
+  latestReplyText,
+  fullBodyText,
+  agentReferenceTerms
+}) {
+  if (!Array.isArray(agentReferenceTerms) || agentReferenceTerms.length === 0) {
+    return {
+      invoked: false,
+      matchedTerm: "",
+      matchedLine: "",
+      source: "none"
+    };
+  }
+
+  const candidates = [
+    {
+      source: "latest_reply",
+      text: String(latestReplyText ?? "").trim()
+    },
+    {
+      source: "subject",
+      text: String(subject ?? "").trim()
+    },
+    {
+      source: "full_body",
+      text: String(fullBodyText ?? "").trim()
+    }
+  ];
+
+  for (const candidate of candidates) {
+    if (!candidate.text) {
+      continue;
+    }
+
+    const lines = candidate.text
+      .replace(/\r\n/g, "\n")
+      .split("\n");
+    for (const line of lines) {
+      const normalizedLine = String(line ?? "")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (!normalizedLine) {
+        continue;
+      }
+
+      const lowerLine = normalizedLine.toLowerCase();
+      for (const term of agentReferenceTerms) {
+        if (!term || !lowerLine.includes(term)) {
+          continue;
+        }
+        if (AGENT_INVOCATION_ACTION_KEYWORDS.test(normalizedLine) || /\?/.test(normalizedLine)) {
+          return {
+            invoked: true,
+            matchedTerm: term,
+            matchedLine: normalizedLine.slice(0, 240),
+            source: candidate.source
+          };
+        }
+      }
+    }
+  }
+
+  return {
+    invoked: false,
+    matchedTerm: "",
+    matchedLine: "",
+    source: "none"
+  };
+}
+
 function hasAgentNarrationBookingContext({ mergedText, agentReferenceTerms }) {
   if (!Array.isArray(agentReferenceTerms) || agentReferenceTerms.length === 0) {
     return false;
@@ -488,6 +564,22 @@ function buildThreadAwareIntentBody({ latestReplyText, quotedThreadContext }) {
   ].join("\n");
 }
 
+function buildThreadAwareParserBody({ latestReplyText, quotedThreadContext }) {
+  const latest = String(latestReplyText ?? "").trim();
+  const context = String(quotedThreadContext ?? "").trim();
+  if (!latest && !context) {
+    return "";
+  }
+  if (!context) {
+    return latest;
+  }
+  if (!latest) {
+    return context;
+  }
+
+  return `${latest}\n\n${context}`;
+}
+
 function buildIntentTraceFields({
   intentInputMode,
   intentInputLength,
@@ -555,6 +647,8 @@ function buildIcsInvite({
   endIsoUtc,
   summary,
   description,
+  location,
+  meetingUrl,
   organizerEmail,
   organizerName,
   attendeeEmails
@@ -564,6 +658,8 @@ function buildIcsInvite({
   const dtEnd = formatDateUtcForIcs(endIsoUtc);
   const normalizedSummary = escapeIcsText(summary);
   const normalizedDescription = escapeIcsText(description);
+  const normalizedLocation = escapeIcsText(location);
+  const normalizedMeetingUrl = String(meetingUrl ?? "").trim();
   const normalizedOrganizerName = escapeIcsText(organizerName);
   const normalizedOrganizerEmail = normalizeEmailAddress(organizerEmail);
 
@@ -580,6 +676,8 @@ function buildIcsInvite({
     `DTEND:${dtEnd}`,
     `SUMMARY:${normalizedSummary}`,
     `DESCRIPTION:${normalizedDescription}`,
+    ...(normalizedLocation ? [`LOCATION:${normalizedLocation}`] : []),
+    ...(normalizedMeetingUrl ? [`URL:${escapeIcsText(normalizedMeetingUrl)}`] : []),
     `ORGANIZER;CN=${normalizedOrganizerName}:mailto:${normalizedOrganizerEmail}`,
     "SEQUENCE:0",
     "STATUS:CONFIRMED"
@@ -612,11 +710,37 @@ function formatInviteLabel(isoUtc, timezone) {
   }).format(date);
 }
 
+function normalizeInviteParticipantName(value) {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[<>]/g, "")
+    .slice(0, 64);
+}
+
+function buildFallbackInviteSubject({ clientDisplayName, advisorDisplayName }) {
+  const clientName = normalizeInviteParticipantName(clientDisplayName);
+  const advisorName = normalizeInviteParticipantName(advisorDisplayName);
+
+  if (clientName && advisorName) {
+    return `Meeting ${clientName}/${advisorName}`;
+  }
+  if (clientName) {
+    return `Meeting ${clientName}`;
+  }
+  if (advisorName) {
+    return `Meeting ${advisorName}`;
+  }
+
+  return "Meeting request";
+}
+
 function buildCalendarInviteMessage({
   subject,
   selectedSlot,
   hostTimezone,
   clientTimezone,
+  meetingUrl,
   agentDisplayName,
   senderEmail,
   attendeeEmails,
@@ -628,14 +752,22 @@ function buildCalendarInviteMessage({
   const hostLabel = formatInviteLabel(selectedSlot.startIsoUtc, hostTimezone);
   const clientLabel = clientTimezone ? formatInviteLabel(selectedSlot.startIsoUtc, clientTimezone) : null;
   const safeTitle = String(inviteTitle ?? DEFAULT_CALENDAR_INVITE_TITLE).trim() || DEFAULT_CALENDAR_INVITE_TITLE;
+  const normalizedMeetingUrl = String(meetingUrl ?? "").trim();
+  const locationLabel = normalizedMeetingUrl ? `Google Meet: ${normalizedMeetingUrl}` : "";
   const safeDescription =
     String(inviteDescription ?? "").trim() ||
-    `Scheduled via LetsConnect.ai. Advisor timezone: ${hostTimezone}.`;
+    [
+      `Scheduled via LetsConnect.ai. Advisor timezone: ${hostTimezone}.`,
+      normalizedMeetingUrl ? `Join URL: ${normalizedMeetingUrl}.` : null
+    ]
+      .filter(Boolean)
+      .join(" ");
   const meetingUid = `${requestId}@letsconnect.ai`;
 
   const bodyLines = [
     `I have prepared a calendar invite for ${hostLabel}.`,
     clientLabel ? `Your local time: ${clientLabel}.` : null,
+    normalizedMeetingUrl ? `Join with Google Meet: ${normalizedMeetingUrl}` : null,
     "Please accept the invite in your calendar app."
   ].filter(Boolean);
 
@@ -646,15 +778,39 @@ function buildCalendarInviteMessage({
     endIsoUtc: selectedSlot.endIsoUtc,
     summary: safeTitle,
     description: safeDescription,
+    location: locationLabel,
+    meetingUrl: normalizedMeetingUrl,
     organizerEmail: senderEmail,
     organizerName: String(agentDisplayName ?? "").trim() || "Agent",
     attendeeEmails
   });
 
   return {
-    subject: `Calendar invite: ${subject || "Meeting request"}`,
+    subject: String(subject ?? "").trim() || "Meeting request",
     bodyText: bodyLines.join("\n"),
     icsContent
+  };
+}
+
+function buildBookingConfirmationMessage({
+  subject,
+  selectedSlot,
+  hostTimezone,
+  clientTimezone,
+  meetingUrl
+}) {
+  const hostLabel = formatInviteLabel(selectedSlot.startIsoUtc, hostTimezone);
+  const clientLabel = clientTimezone ? formatInviteLabel(selectedSlot.startIsoUtc, clientTimezone) : null;
+  const normalizedMeetingUrl = String(meetingUrl ?? "").trim();
+  const lines = [
+    `Thanks for confirming. I am about to send a calendar invite for ${hostLabel}.`,
+    clientLabel ? `Your local time: ${clientLabel}.` : null,
+    normalizedMeetingUrl ? `The invite will include Google Meet: ${normalizedMeetingUrl}` : null
+  ].filter(Boolean);
+
+  return {
+    subject: `Re: ${subject || "Meeting request"}`,
+    bodyText: lines.join("\n")
   };
 }
 
@@ -812,6 +968,18 @@ function titleCaseWords(input) {
       return word[0].toUpperCase() + word.slice(1);
     })
     .join(" ");
+}
+
+function buildThreadReplySubject(originalSubject, fallback = "Meeting request") {
+  const sanitized = String(originalSubject ?? "")
+    .replace(/[\r\n]+/g, " ")
+    .trim();
+  if (sanitized) {
+    return sanitized;
+  }
+
+  const normalizedFallback = String(fallback ?? "").trim() || "Meeting request";
+  return `Re: ${normalizedFallback}`;
 }
 
 function deriveClientDisplayName(rawFromEmail, normalizedFromEmail) {
@@ -1029,12 +1197,20 @@ function normalizeEmailAddress(rawValue) {
   }
 
   // Handles common header formats like: "Name <user@example.com>".
-  const emailMatch = candidate.match(/[a-z0-9._%+-]+@[a-z0-9.-]+/);
+  const emailMatch = candidate.match(/[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/);
   if (emailMatch) {
     return emailMatch[0];
   }
 
-  return candidate.replace(/[<>]/g, "").trim();
+  const stripped = candidate
+    .replace(/^mailto:/, "")
+    .replace(/[<>]/g, "")
+    .trim();
+  if (/^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/.test(stripped)) {
+    return stripped;
+  }
+
+  return "";
 }
 
 function sortConnectionsByUpdatedAtDesc(connections) {
@@ -1169,15 +1345,13 @@ function normalizeEmailList(input) {
     return [];
   }
 
-  const values = [];
-  for (const token of raw.split(",")) {
-    const normalized = normalizeEmailAddress(token);
-    if (normalized) {
-      values.push(normalized);
-    }
+  const matches = raw.match(EMAIL_ADDRESS_PATTERN);
+  if (Array.isArray(matches) && matches.length > 0) {
+    return [...new Set(matches.map((item) => normalizeEmailAddress(item)).filter(Boolean))];
   }
 
-  return values;
+  const normalized = normalizeEmailAddress(raw);
+  return normalized ? [normalized] : [];
 }
 
 function extractDestinationEmails(payload) {
@@ -1363,6 +1537,46 @@ function resolveSuggestionAddresseeDisplayName({
   }
 
   return fallback;
+}
+
+function resolveSuggestionAddresseeEmail({
+  payload,
+  isAdvisorSender,
+  advisorIdentityEmails,
+  inboundAgentEmail,
+  senderEmail,
+  fromEmail
+}) {
+  const normalizedSender = normalizeEmailAddress(fromEmail);
+  if (!isAdvisorSender) {
+    return normalizedSender;
+  }
+
+  const excludedEmails = new Set([
+    ...advisorIdentityEmails,
+    ...uniqueEmails([inboundAgentEmail, senderEmail])
+  ]);
+
+  const rawRecipients = collectRawThreadRecipientAddresses(payload);
+  for (const rawRecipient of rawRecipients) {
+    const recipientEmail = normalizeEmailAddress(rawRecipient);
+    if (!recipientEmail || excludedEmails.has(recipientEmail)) {
+      continue;
+    }
+
+    return recipientEmail;
+  }
+
+  const normalizedRecipients = extractDestinationEmails(payload);
+  for (const recipientEmail of normalizedRecipients) {
+    if (!recipientEmail || excludedEmails.has(recipientEmail)) {
+      continue;
+    }
+
+    return recipientEmail;
+  }
+
+  return normalizedSender;
 }
 
 function hashSenderIdentity(normalizedEmail) {
@@ -1860,6 +2074,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const responseId = crypto.randomUUID();
   const startedAtMs = now();
   const startedAtIso = new Date(startedAtMs).toISOString();
+  const threadReplySubject = buildThreadReplySubject(payload.subject);
 
   const fromEmail = normalizeEmailAddress(payload.fromEmail);
   if (!fromEmail) {
@@ -2010,6 +2225,9 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const bookingIntentConfidenceThreshold = Number.parseFloat(
     env.BOOKING_INTENT_LLM_CONFIDENCE_THRESHOLD ?? String(DEFAULT_BOOKING_INTENT_CONFIDENCE_THRESHOLD)
   );
+  const inviteSubjectConfidenceThreshold = Number.parseFloat(
+    env.INVITE_SUBJECT_LLM_CONFIDENCE_THRESHOLD ?? String(DEFAULT_INVITE_SUBJECT_LLM_CONFIDENCE_THRESHOLD)
+  );
   const clientProfilesTableName = String(env.CLIENT_PROFILES_TABLE_NAME ?? "").trim();
   const policyPresetsTableName = String(env.POLICY_PRESETS_TABLE_NAME ?? "").trim();
   const basePolicyPresets = parseClientPolicyPresets(env.CLIENT_POLICY_PRESETS_JSON, defaultAdvisingDays);
@@ -2048,7 +2266,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     env
   });
   const isAdvisorSender = advisorIdentityEmails.has(fromEmail);
-  const suggestionAddresseeDisplayName = resolveSuggestionAddresseeDisplayName({
+  const senderDisplayName = deriveClientDisplayName(payload.fromEmail, fromEmail);
+  const defaultSuggestionAddresseeDisplayName = resolveSuggestionAddresseeDisplayName({
     payload,
     isAdvisorSender,
     advisorIdentityEmails,
@@ -2056,6 +2275,17 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     senderEmail,
     fallbackDisplayName: clientDisplayName
   });
+  const defaultSuggestionAddresseeEmail = resolveSuggestionAddresseeEmail({
+    payload,
+    isAdvisorSender,
+    advisorIdentityEmails,
+    inboundAgentEmail,
+    senderEmail,
+    fromEmail
+  });
+  let suggestionAddresseeDisplayName = defaultSuggestionAddresseeDisplayName;
+  let suggestionAddresseeEmail = defaultSuggestionAddresseeEmail || fromEmail;
+  const suggestionAddresseeClientId = normalizeClientId(suggestionAddresseeEmail);
   const accessState = isAdvisorSender
     ? "advisor"
     : normalizeClientAccessState(clientProfile?.accessState, admissionControlEnabled ? "unknown" : "active");
@@ -2151,7 +2381,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       await deps.sendResponseEmail({
         senderEmail,
         recipientEmail: fromEmail,
-        subject: deniedMessage.subject,
+        subject: threadReplySubject,
         bodyText: deniedMessage.bodyText
       });
       deliveryStatus = "sent";
@@ -2214,6 +2444,81 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     };
   }
 
+  const explicitInvocationRequired = threadParticipantEmails.length > 1;
+  const invocationSignal = detectExplicitAgentInvocation({
+    subject: payload.subject ?? "",
+    latestReplyText: latestReplyText || bodyText,
+    fullBodyText: bodyText,
+    agentReferenceTerms
+  });
+
+  if (invocationSignal.invoked && !isAdvisorSender) {
+    suggestionAddresseeDisplayName = senderDisplayName || suggestionAddresseeDisplayName;
+    suggestionAddresseeEmail = fromEmail;
+  }
+
+  if (explicitInvocationRequired && !invocationSignal.invoked) {
+    const completedAtMs = now();
+    await deps.writeTrace(env.TRACE_TABLE_NAME, {
+      requestId,
+      responseId,
+      advisorId,
+      status: "suppressed",
+      stage: "agent_invocation",
+      errorCode: "AGENT_NOT_INVOKED",
+      providerStatus: "skipped",
+      channel: payload.channel ?? "email",
+      fromDomain,
+      responseMode,
+      calendarMode,
+      llmMode,
+      llmCredentialSource,
+      llmStatus: "skipped_not_invoked",
+      ...buildLlmTraceUsageFields(llmUsageAccumulator),
+      bodySource,
+      intentSource: "parser",
+      intentLlmStatus: "skipped",
+      promptGuardMode,
+      promptGuardDecision,
+      promptGuardLlmStatus,
+      promptInjectionRiskLevel,
+      promptInjectionSignalCount: 0,
+      availabilityLinkStatus: "not_applicable",
+      requestedWindowCount: 0,
+      agentInvocationRequired: true,
+      agentInvocationDetected: false,
+      ...buildBookingIntentTraceFields({
+        bookingIntentSource: "deterministic",
+        llmBookingIntent: null,
+        llmBookingIntentConfidence: 0
+      }),
+      ...buildIntentTraceFields({
+        intentInputMode,
+        intentInputLength,
+        intentLlmWindowCount: 0,
+        intentLlmRetryUsed: false
+      }),
+      accessState,
+      createdAt: startedAtIso,
+      updatedAt: new Date(completedAtMs).toISOString(),
+      latencyMs: completedAtMs - startedAtMs,
+      expiresAt: Math.floor((startedAtMs + 7 * 24 * 60 * 60 * 1000) / 1000)
+    });
+
+    return {
+      http: ok({
+        requestId,
+        responseId,
+        deliveryStatus: "suppressed",
+        llmStatus: "skipped_not_invoked",
+        suggestionCount: 0,
+        suggestions: [],
+        suppressed: true,
+        suppressionReason: "agent_not_invoked"
+      })
+    };
+  }
+
   if (promptGuardMode !== "off") {
     const heuristicAssessment = assessPromptInjectionRisk({
       subject: payload.subject ?? "",
@@ -2272,9 +2577,9 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           durationMinutes: durationDefault,
           issuedAtMs: startedAtMs,
           firstSuggestedSlotStartIsoUtc: null,
-          normalizedClientEmail: fromEmail,
-          clientDisplayName,
-          clientId
+          normalizedClientEmail: suggestionAddresseeEmail,
+          clientDisplayName: suggestionAddresseeDisplayName,
+          clientId: suggestionAddresseeClientId
         });
         availabilityLinkStatus = availabilityLinkResult.status;
         responseMessage = appendAvailabilityLinkSection({
@@ -2300,7 +2605,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         await deps.sendResponseEmail({
           senderEmail,
           recipientEmail: fromEmail,
-          subject: responseMessage.subject,
+          subject: threadReplySubject,
           bodyText: responseMessage.bodyText
         });
         deliveryStatus = "sent";
@@ -2396,7 +2701,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     policyPresets
   });
 
-  const parserIntent = parseSchedulingRequest({
+  let parserIntent = parseSchedulingRequest({
     fromEmail,
     subject: payload.subject ?? "",
     body: intentInputBodyText,
@@ -2404,6 +2709,40 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     fallbackTimezone: hostTimezone,
     referenceIso: startedAtIso
   });
+
+  if (intentInputMode === "latest_reply" && quotedThreadContext) {
+    const threadAwareParserIntent = parseSchedulingRequest({
+      fromEmail,
+      subject: payload.subject ?? "",
+      body: buildThreadAwareParserBody({
+        latestReplyText: intentInputBodyText,
+        quotedThreadContext
+      }),
+      defaultDurationMinutes: durationDefault,
+      fallbackTimezone: hostTimezone,
+      referenceIso: startedAtIso
+    });
+
+    const parserWindows = Array.isArray(parserIntent?.requestedWindows) ? parserIntent.requestedWindows : [];
+    const threadWindows = Array.isArray(threadAwareParserIntent?.requestedWindows)
+      ? threadAwareParserIntent.requestedWindows
+      : [];
+    const shouldAdoptThreadWindows = parserWindows.length === 0 && threadWindows.length > 0;
+    const parserDuration = Number.parseInt(parserIntent?.durationMinutes ?? durationDefault, 10);
+    const threadDuration = Number.parseInt(threadAwareParserIntent?.durationMinutes ?? durationDefault, 10);
+    const shouldAdoptThreadDuration = parserDuration === durationDefault && threadDuration !== durationDefault;
+    const shouldAdoptThreadTimezone =
+      !parserIntent?.clientTimezone && Boolean(threadAwareParserIntent?.clientTimezone);
+
+    if (shouldAdoptThreadWindows || shouldAdoptThreadDuration || shouldAdoptThreadTimezone) {
+      parserIntent = {
+        ...parserIntent,
+        requestedWindows: shouldAdoptThreadWindows ? threadWindows : parserWindows,
+        durationMinutes: shouldAdoptThreadDuration ? threadDuration : parserDuration,
+        clientTimezone: shouldAdoptThreadTimezone ? threadAwareParserIntent.clientTimezone : parserIntent.clientTimezone
+      };
+    }
+  }
 
   let parsed = parserIntent;
   let intentSource = "parser";
@@ -2710,7 +3049,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           await deps.sendResponseEmail({
             senderEmail,
             recipientEmail: advisorNotificationEmail,
-            subject: advisorMessage.subject,
+            subject: threadReplySubject,
             bodyText: advisorMessage.bodyText
           });
           advisorNotificationStatus = "sent";
@@ -2726,7 +3065,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         await deps.sendResponseEmail({
           senderEmail,
           recipientEmail: fromEmail,
-          subject: clientHoldMessage.subject,
+          subject: threadReplySubject,
           bodyText: clientHoldMessage.bodyText
         });
         clientHoldStatus = "sent";
@@ -2877,7 +3216,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   let llmStatus = "disabled";
   let availabilityLinkStatus = "pending";
   let bookingStatus = "not_requested";
+  let bookingConfirmationStatus = "not_applicable";
+  let inviteMeetingUrl = "";
   let inviteRecipients = [];
+  let inviteSubjectSource = "not_applicable";
+  let inviteSubjectConfidence = 0;
   const bookingCandidateSpecific = hasSpecificBookingCandidate({
     normalizedRequestedWindows,
     durationMinutes: parsed.durationMinutes
@@ -2908,15 +3251,70 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       const advisorInviteEmail = normalizeEmailAddress(
         advisorInviteEmailOverride || activeConnection?.accountEmail || env.ADVISOR_EMAIL || senderEmail
       );
+      const configuredMeetingUrl = String(env.CALENDAR_INVITE_MEETING_URL ?? "").trim();
+      inviteMeetingUrl = configuredMeetingUrl || "https://meet.google.com/new";
+      const advisorInviteDisplayName =
+        normalizeInviteParticipantName(advisorDisplayName) ||
+        normalizeInviteParticipantName(deriveDisplayNameFromEmail(advisorNotificationEmail)) ||
+        "Advisor";
+      const nonAdvisorParticipantName = isAdvisorSender ? defaultSuggestionAddresseeDisplayName : senderDisplayName;
+      const fallbackInviteSubject = buildFallbackInviteSubject({
+        clientDisplayName: nonAdvisorParticipantName,
+        advisorDisplayName: advisorInviteDisplayName
+      });
+      let inviteSubject = fallbackInviteSubject;
+      inviteSubjectSource = "deterministic_fallback";
+      inviteSubjectConfidence = 0;
+
+      if (llmMode === "openai" && llmProviderSecretArn && typeof deps.suggestInviteSubjectWithLlm === "function") {
+        try {
+          const llmSecretString = await deps.getSecretString(llmProviderSecretArn);
+          const openAiConfig = parseOpenAiConfigSecret(llmSecretString);
+          const inviteSubjectSuggestion = await deps.suggestInviteSubjectWithLlm({
+            openAiConfig,
+            threadSubject: payload.subject ?? "",
+            latestReplyText: intentInputBodyText,
+            quotedThreadContext,
+            advisorDisplayName: advisorInviteDisplayName,
+            clientDisplayName: nonAdvisorParticipantName,
+            agentDisplayName,
+            fetchImpl: deps.fetchImpl,
+            timeoutMs: llmTimeoutMs
+          });
+          accumulateLlmTelemetry(llmUsageAccumulator, inviteSubjectSuggestion?.llmTelemetry);
+          if (
+            inviteSubjectSuggestion?.subject &&
+            Number.isFinite(Number(inviteSubjectSuggestion?.confidence)) &&
+            Number(inviteSubjectSuggestion.confidence) >=
+              (Number.isFinite(inviteSubjectConfidenceThreshold)
+                ? inviteSubjectConfidenceThreshold
+                : DEFAULT_INVITE_SUBJECT_LLM_CONFIDENCE_THRESHOLD)
+          ) {
+            inviteSubject = inviteSubjectSuggestion.subject;
+            inviteSubjectSource = "llm";
+            inviteSubjectConfidence = Number(inviteSubjectSuggestion.confidence);
+          } else if (inviteSubjectSuggestion?.subject) {
+            inviteSubjectSource = "llm_low_confidence_fallback";
+            inviteSubjectConfidence = Number.isFinite(Number(inviteSubjectSuggestion?.confidence))
+              ? Number(inviteSubjectSuggestion.confidence)
+              : 0;
+          }
+        } catch {
+          inviteSubjectSource = "llm_error_fallback";
+          inviteSubjectConfidence = 0;
+        }
+      }
+
       inviteRecipients = uniqueEmails([
         ...(threadParticipantEmails.length > 0 ? threadParticipantEmails : [fromEmail]),
         advisorInviteEmail
       ]);
       responseMessage = buildCalendarInviteMessage({
-        subject: payload.subject,
+        subject: inviteSubject,
         selectedSlot: suggestions[0],
         hostTimezone,
         clientTimezone: parsed.clientTimezone,
+        meetingUrl: inviteMeetingUrl,
         agentDisplayName,
         senderEmail: inviteSenderEmail,
         attendeeEmails: inviteRecipients,
@@ -2931,6 +3329,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     } else {
       bookingStatus = "slot_unavailable";
       llmStatus = "skipped_booking";
+      inviteSubjectSource = "not_applicable";
+      inviteSubjectConfidence = 0;
       responseMessage = {
         subject: `Re: ${payload.subject || "Meeting request"}`,
         bodyText:
@@ -2946,9 +3346,9 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           durationMinutes: parsed.durationMinutes,
           issuedAtMs: startedAtMs,
           firstSuggestedSlotStartIsoUtc: suggestions[0]?.startIsoUtc,
-          normalizedClientEmail: fromEmail,
-          clientDisplayName,
-          clientId
+          normalizedClientEmail: suggestionAddresseeEmail,
+          clientDisplayName: suggestionAddresseeDisplayName,
+          clientId: suggestionAddresseeClientId
         });
         availabilityLinkStatus = availabilityLinkResult.status;
         responseMessage = appendAvailabilityLinkSection({
@@ -3005,9 +3405,9 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         durationMinutes: parsed.durationMinutes,
         issuedAtMs: startedAtMs,
         firstSuggestedSlotStartIsoUtc: suggestions[0]?.startIsoUtc,
-        normalizedClientEmail: fromEmail,
-        clientDisplayName,
-        clientId
+        normalizedClientEmail: suggestionAddresseeEmail,
+        clientDisplayName: suggestionAddresseeDisplayName,
+        clientId: suggestionAddresseeClientId
       });
       availabilityLinkStatus = availabilityLinkResult.status;
       responseMessage = appendAvailabilityLinkSection({
@@ -3017,6 +3417,13 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     } catch {
       availabilityLinkStatus = "error";
     }
+  }
+
+  if (bookingStatus !== "invite_ready") {
+    responseMessage = {
+      ...responseMessage,
+      subject: threadReplySubject
+    };
   }
 
   responseMessage = ensurePersonalizedGreetingAndSignature({
@@ -3033,6 +3440,45 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     }
 
     if (bookingStatus === "invite_ready") {
+      const bookingConfirmationMessage = ensurePersonalizedGreetingAndSignature({
+        responseMessage: buildBookingConfirmationMessage({
+          subject: threadReplySubject,
+          selectedSlot: suggestions[0],
+          hostTimezone,
+          clientTimezone: parsed.clientTimezone,
+          meetingUrl: inviteMeetingUrl
+        }),
+        clientDisplayName: suggestionAddresseeDisplayName,
+        agentDisplayName
+      });
+      const responseRecipients = uniqueEmails(
+        threadParticipantEmails.length > 0 ? threadParticipantEmails : [fromEmail]
+      );
+      if (typeof deps.sendResponseEmail === "function") {
+        try {
+          if (responseRecipients.length <= 1) {
+            await deps.sendResponseEmail({
+              senderEmail,
+              recipientEmail: responseRecipients[0] ?? fromEmail,
+              subject: bookingConfirmationMessage.subject,
+              bodyText: bookingConfirmationMessage.bodyText
+            });
+          } else {
+            await deps.sendResponseEmail({
+              senderEmail,
+              toEmails: responseRecipients,
+              subject: bookingConfirmationMessage.subject,
+              bodyText: bookingConfirmationMessage.bodyText
+            });
+          }
+          bookingConfirmationStatus = "sent";
+        } catch {
+          bookingConfirmationStatus = "failed";
+        }
+      } else {
+        bookingConfirmationStatus = "skipped";
+      }
+
       if (typeof deps.sendCalendarInviteEmail === "function") {
         await deps.sendCalendarInviteEmail({
           senderEmail,
@@ -3076,6 +3522,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
 
     deliveryStatus = "sent";
   } else if (bookingStatus === "invite_ready") {
+    bookingConfirmationStatus = "logged";
     bookingStatus = "invite_logged";
   }
 
@@ -3107,9 +3554,15 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     promptInjectionRiskLevel,
     promptInjectionSignalCount: promptInjectionSignals.length,
     bookingStatus,
+    bookingConfirmationStatus,
+    inviteSubjectSource,
+    inviteSubjectConfidence,
     inviteRecipientCount: inviteRecipients.length,
     availabilityLinkStatus,
     requestedWindowCount: parsed.requestedWindows.length,
+    agentInvocationRequired: explicitInvocationRequired,
+    agentInvocationDetected: invocationSignal.invoked,
+    agentInvocationSource: invocationSignal.source,
     ...buildBookingIntentTraceFields({
       bookingIntentSource,
       llmBookingIntent,
@@ -3150,6 +3603,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       deliveryStatus,
       llmStatus,
       bookingStatus,
+      bookingConfirmationStatus,
       suggestionCount: suggestions.length,
       suggestions
     })
@@ -3165,6 +3619,7 @@ export function createHandler(overrides = {}) {
     draftResponseWithLlm: draftResponseWithOpenAi,
     extractSchedulingIntentWithLlm: extractSchedulingIntentWithOpenAi,
     analyzePromptInjectionRiskWithLlm: analyzePromptInjectionRiskWithOpenAi,
+    suggestInviteSubjectWithLlm: suggestInviteSubjectWithOpenAi,
     ...overrides
   };
 
