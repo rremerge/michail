@@ -61,6 +61,12 @@ const AGENT_NARRATION_ACTION_KEYWORDS =
   /\b(?:will|can|should|could)\b[\s\S]{0,40}\b(?:suggest|share|send|propose|find|follow up|respond)\b/i;
 const AGENT_INVOCATION_ACTION_KEYWORDS =
   /\b(?:find|suggest|share|send|propose|book|schedule|check|look|show|slot|time|availability|invite|meet|meeting|calendar|sync|coordinate)\b/i;
+const CALENDAR_STATUS_SUBJECT_PATTERN =
+  /^(?:\[[^\]]+\]\s*)*(?:re:\s*)?(accepted|declined|tentative|canceled|cancelled)\s*:/i;
+const CALENDAR_STATUS_SUBJECT_CONTEXT_PATTERN =
+  /\s@\s|\((?:[^()]{2,})\)\s*$|\b(?:gmt|utc)\b|\b\d{1,2}:\d{2}\b/i;
+const CALENDAR_STATUS_BODY_HINT_PATTERN =
+  /\b(?:invitation|meeting)\b[\s\S]{0,40}\b(?:accepted|declined|tentative|response)\b|\bmethod\s*:\s*reply\b|begin:vcalendar/i;
 const AGENT_REFERENCE_STOPWORDS = new Set([
   "agent",
   "assistant",
@@ -468,6 +474,28 @@ function hasSpecificBookingCandidate({ normalizedRequestedWindows, durationMinut
   }
 
   return true;
+}
+
+function isCalendarStatusMessage({ subject, bodyText }) {
+  const normalizedSubject = String(subject ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalizedSubject || !CALENDAR_STATUS_SUBJECT_PATTERN.test(normalizedSubject)) {
+    return false;
+  }
+
+  if (CALENDAR_STATUS_SUBJECT_CONTEXT_PATTERN.test(normalizedSubject)) {
+    return true;
+  }
+
+  const normalizedBody = String(bodyText ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalizedBody) {
+    return false;
+  }
+
+  return CALENDAR_STATUS_BODY_HINT_PATTERN.test(normalizedBody);
 }
 
 function buildBookingIntentTraceFields({
@@ -2487,6 +2515,66 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         suggestions: [],
         accessDenied: true,
         accessState
+      })
+    };
+  }
+
+  if (isCalendarStatusMessage({ subject: payload.subject, bodyText })) {
+    const completedAtMs = now();
+    await deps.writeTrace(env.TRACE_TABLE_NAME, {
+      requestId,
+      responseId,
+      advisorId,
+      status: "suppressed",
+      stage: "calendar_status_email",
+      errorCode: "CALENDAR_STATUS_MESSAGE_SUPPRESSED",
+      providerStatus: "skipped",
+      channel: payload.channel ?? "email",
+      fromDomain,
+      responseMode,
+      calendarMode,
+      llmMode,
+      llmCredentialSource,
+      llmStatus: "skipped_calendar_status",
+      ...buildLlmTraceUsageFields(llmUsageAccumulator),
+      bodySource,
+      intentSource: "parser",
+      intentLlmStatus: "skipped",
+      promptGuardMode,
+      promptGuardDecision,
+      promptGuardLlmStatus,
+      promptInjectionRiskLevel,
+      promptInjectionSignalCount: 0,
+      availabilityLinkStatus: "not_applicable",
+      requestedWindowCount: 0,
+      ...buildBookingIntentTraceFields({
+        bookingIntentSource: "deterministic",
+        llmBookingIntent: null,
+        llmBookingIntentConfidence: 0
+      }),
+      ...buildIntentTraceFields({
+        intentInputMode,
+        intentInputLength,
+        intentLlmWindowCount: 0,
+        intentLlmRetryUsed: false
+      }),
+      accessState,
+      createdAt: startedAtIso,
+      updatedAt: new Date(completedAtMs).toISOString(),
+      latencyMs: completedAtMs - startedAtMs,
+      expiresAt: Math.floor((startedAtMs + 7 * 24 * 60 * 60 * 1000) / 1000)
+    });
+
+    return {
+      http: ok({
+        requestId,
+        responseId,
+        deliveryStatus: "suppressed",
+        llmStatus: "skipped_calendar_status",
+        suggestionCount: 0,
+        suggestions: [],
+        suppressed: true,
+        suppressionReason: "calendar_status_message"
       })
     };
   }

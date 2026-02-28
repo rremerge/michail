@@ -821,6 +821,56 @@ test("processSchedulingEmail always copies advisor on direct client response whe
   assert.equal(sentMessages[0].recipientEmail, undefined);
 });
 
+test("processSchedulingEmail suppresses calendar status acceptance messages", async () => {
+  const sentMessages = [];
+  const traceItems = [];
+
+  const deps = {
+    async getSecretString() {
+      return "";
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "michael@agent.letsconnect.ai",
+    ADVISOR_ID: "manoj@rremerge.com"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "adam.bateman@pushsecurity.com",
+      subject: "[EXTERNAL] Accepted: Advisory Meeting @ Wed Mar 18, 2026 5pm - 6pm (GMT) (Michael)",
+      body: "I accepted this invitation."
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-02-27T22:59:37Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.deliveryStatus, "suppressed");
+  assert.equal(response.suppressed, true);
+  assert.equal(response.suppressionReason, "calendar_status_message");
+  assert.equal(response.llmStatus, "skipped_calendar_status");
+  assert.equal(response.suggestionCount, 0);
+  assert.equal(sentMessages.length, 0);
+
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].status, "suppressed");
+  assert.equal(traceItems[0].stage, "calendar_status_email");
+  assert.equal(traceItems[0].errorCode, "CALENDAR_STATUS_MESSAGE_SUPPRESSED");
+  assert.equal(traceItems[0].llmStatus, "skipped_calendar_status");
+});
+
 test("processSchedulingEmail replies to all non-agent thread participants when advisor CCs agent", async () => {
   const sentMessages = [];
 
