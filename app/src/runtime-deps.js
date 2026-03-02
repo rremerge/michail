@@ -124,7 +124,7 @@ export function createRuntimeDeps() {
             },
             ExclusiveStartKey: lastEvaluatedKey,
             ProjectionExpression:
-              "requestId, advisorId, createdAt, #status, providerStatus, responseMode, bookingStatus, inviteRecipientCount, llmStatus, llmMode, llmProvider, llmModel, llmRequestCount, llmInputTokens, llmOutputTokens, llmTotalTokens, intentLlmStatus, promptGuardLlmStatus",
+              "requestId, advisorId, createdAt, #status, providerStatus, responseMode, bookingStatus, inviteRecipientCount, llmStatus, llmMode, llmProvider, llmModel, llmRequestCount, llmInputTokens, llmOutputTokens, llmTotalTokens, intentLlmStatus, promptGuardLlmStatus, meetingLinkProvider, meetingLinkStatus, meetingLinkErrorCode, meetingLinkErrorMessage",
             ExpressionAttributeNames: {
               "#status": "status"
             }

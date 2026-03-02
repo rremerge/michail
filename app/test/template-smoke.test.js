@@ -39,6 +39,7 @@ test("template defines isolated serverless resources", () => {
   assert.match(template, /RAW_EMAIL_BUCKET/);
   assert.match(template, /AVAILABILITY_LINK_BASE_URL/);
   assert.match(template, /AVAILABILITY_LINK_SECRET_ARN/);
+  assert.match(template, /Sid:\s*RotateConnectionOAuthSecrets[\s\S]*secretsmanager:PutSecretValue/);
 
   // Guardrail: this spike must not install account-level SES receipt rules.
   assert.equal(template.includes("AWS::SES::ReceiptRule"), false);

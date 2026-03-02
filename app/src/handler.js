@@ -2,8 +2,19 @@ import crypto from "node:crypto";
 import { DateTime } from "luxon";
 import { parseSchedulingRequest } from "./intent-parser.js";
 import { generateCandidateSlots } from "./slot-generator.js";
-import { parseGoogleOauthSecret, lookupGoogleBusyIntervals } from "./google-adapter.js";
+import {
+  createGoogleMeetSpace,
+  exchangeRefreshToken,
+  parseGoogleOauthSecret,
+  lookupGoogleBusyIntervals
+} from "./google-adapter.js";
 import { parseMicrosoftOauthSecret, lookupMicrosoftBusyIntervals } from "./microsoft-adapter.js";
+import {
+  createZoomMeeting,
+  exchangeZoomRefreshToken,
+  parseZoomAppSecret,
+  parseZoomMeetingSecret
+} from "./zoom-adapter.js";
 import {
   analyzePromptInjectionRiskWithOpenAi,
   assessPromptInjectionRisk,
@@ -29,12 +40,16 @@ import { simpleParser } from "mailparser";
 
 const DEFAULT_INTENT_CONFIDENCE_THRESHOLD = 0.65;
 const DEFAULT_BOOKING_INTENT_CONFIDENCE_THRESHOLD = 0.75;
+const DEFAULT_AGENT_INVOCATION_LLM_CONFIDENCE_THRESHOLD = 0.7;
 const DEFAULT_AVAILABILITY_LINK_TTL_MINUTES = 7 * 24 * 60;
 const DEFAULT_ADVISOR_TIMEZONE = "America/Los_Angeles";
 const DEFAULT_PROMPT_GUARD_MODE = "heuristic_llm";
 const DEFAULT_PROMPT_GUARD_BLOCK_LEVEL = "high";
 const DEFAULT_PROMPT_GUARD_LLM_TIMEOUT_MS = 3000;
 const DEFAULT_CALENDAR_INVITE_TITLE = "Advisory Meeting";
+const DEFAULT_MEETING_LINK_PROVIDER = "google_meet";
+const SUPPORTED_MEETING_LINK_PROVIDERS = new Set(["google_meet", "zoom", "static_url"]);
+const MEETING_LINK_ERROR_MESSAGE_MAX_LENGTH = 240;
 const DAYPART_PATTERN = /\b(early morning|late morning|late afternoon|morning|afternoon|evening|night|noon|lunch)\b/gi;
 const DAYPART_WINDOWS = {
   "early morning": { startMinute: 8 * 60, endMinute: 10 * 60 },
@@ -61,6 +76,9 @@ const AGENT_NARRATION_ACTION_KEYWORDS =
   /\b(?:will|can|should|could)\b[\s\S]{0,40}\b(?:suggest|share|send|propose|find|follow up|respond)\b/i;
 const AGENT_INVOCATION_ACTION_KEYWORDS =
   /\b(?:find|suggest|share|send|propose|book|schedule|check|look|show|slot|time|availability|invite|meet|meeting|calendar|sync|coordinate)\b/i;
+const AGENT_LLM_INVOCATION_HINT_KEYWORDS =
+  /\b(?:cc(?:ing)?|copy(?:ing)?|add(?:ing)?|include|including|loop(?:ing)?\s+in|bring(?:ing)?\s+in|introduc(?:e|ing)|with)\b[\s\S]{0,60}\b(?:assistant|agent|scheduler|calendar\s+agent)\b/i;
+const AGENT_ROLE_REFERENCE_HINT_KEYWORDS = /\b(?:my|our|the)\s+(?:assistant|agent|scheduler|calendar\s+agent)\b/i;
 const CALENDAR_STATUS_SUBJECT_PATTERN =
   /^(?:\[[^\]]+\]\s*)*(?:re:\s*)?(accepted|declined|tentative|canceled|cancelled)\s*:/i;
 const CALENDAR_STATUS_SUBJECT_CONTEXT_PATTERN =
@@ -402,6 +420,44 @@ function detectExplicitAgentInvocation({
   };
 }
 
+function hasLlmInvocationHint({
+  subject,
+  latestReplyText,
+  fullBodyText,
+  agentReferenceTerms
+}) {
+  const candidates = [
+    String(latestReplyText ?? "").trim(),
+    String(subject ?? "").trim(),
+    String(fullBodyText ?? "").trim()
+  ].filter(Boolean);
+
+  for (const candidateText of candidates) {
+    const normalizedText = String(candidateText).trim();
+    if (!normalizedText) {
+      continue;
+    }
+
+    if (
+      AGENT_LLM_INVOCATION_HINT_KEYWORDS.test(normalizedText) ||
+      AGENT_ROLE_REFERENCE_HINT_KEYWORDS.test(normalizedText)
+    ) {
+      return true;
+    }
+
+    const lines = normalizedText
+      .replace(/\r\n/g, "\n")
+      .split("\n");
+    for (const line of lines) {
+      if (lineMentionsAgentReference(line, agentReferenceTerms)) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 function hasAgentNarrationBookingContext({ mergedText, agentReferenceTerms }) {
   if (!Array.isArray(agentReferenceTerms) || agentReferenceTerms.length === 0) {
     return false;
@@ -474,6 +530,263 @@ function hasSpecificBookingCandidate({ normalizedRequestedWindows, durationMinut
   }
 
   return true;
+}
+
+function normalizeMeetingLinkProvider(value, fallback = DEFAULT_MEETING_LINK_PROVIDER) {
+  const candidate = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (SUPPORTED_MEETING_LINK_PROVIDERS.has(candidate)) {
+    return candidate;
+  }
+  return fallback;
+}
+
+function resolveStaticMeetingUrl(env) {
+  return String(env.CALENDAR_INVITE_MEETING_URL ?? "").trim();
+}
+
+function sanitizeMeetingLinkErrorMessage(value) {
+  const normalized = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) {
+    return "";
+  }
+
+  const redacted = normalized
+    .replace(
+      /("?(?:access_token|refresh_token|client_secret|id_token)"?\s*[:=]\s*"?)([^",\s}]+)/gi,
+      "$1[redacted]"
+    )
+    .replace(/(authorization:\s*bearer\s+)[^\s]+/gi, "$1[redacted]");
+
+  return redacted.slice(0, MEETING_LINK_ERROR_MESSAGE_MAX_LENGTH);
+}
+
+function deriveMeetingLinkErrorCode({ provider, status, error }) {
+  const normalizedProvider = String(provider ?? "unknown")
+    .trim()
+    .toLowerCase();
+  const codeProvider =
+    normalizedProvider === "google_meet" ? "google" : normalizedProvider === "static_url" ? "static" : normalizedProvider;
+  const normalizedStatus = String(status ?? "failed")
+    .trim()
+    .toLowerCase();
+  const rawMessage = String(error?.message ?? "");
+  const normalizedMessage = rawMessage.toLowerCase();
+  const httpCodeMatch = rawMessage.match(/\((\d{3})\)/);
+  if (httpCodeMatch) {
+    return `${codeProvider}_http_${httpCodeMatch[1]}`;
+  }
+
+  if (normalizedMessage.includes("token refresh failed")) {
+    return `${codeProvider}_token_refresh_failed`;
+  }
+  if (normalizedMessage.includes("missing")) {
+    return `${codeProvider}_oauth_missing`;
+  }
+  if (normalizedMessage.includes("response missing")) {
+    return `${codeProvider}_response_invalid`;
+  }
+  return `${codeProvider}_${normalizedStatus}`;
+}
+
+function summarizeMeetingLinkError({ provider, status, error }) {
+  return {
+    errorCode: deriveMeetingLinkErrorCode({ provider, status, error }),
+    errorMessage: sanitizeMeetingLinkErrorMessage(error?.message ?? "")
+  };
+}
+
+function selectGoogleConnectionForMeetingLink({ activeConnection, connectedConnections }) {
+  if (activeConnection?.provider === "google" && activeConnection?.secretArn) {
+    return activeConnection;
+  }
+
+  const googleConnection = (Array.isArray(connectedConnections) ? connectedConnections : []).find(
+    (connection) =>
+      String(connection?.provider ?? "").toLowerCase() === "google" &&
+      String(connection?.status ?? "").toLowerCase() === "connected" &&
+      Boolean(connection?.secretArn)
+  );
+  return googleConnection ?? null;
+}
+
+async function resolveMeetingLinkForInvite({
+  env,
+  deps,
+  advisorSettings,
+  selectedSlotStartIsoUtc,
+  durationMinutes,
+  hostTimezone,
+  inviteSubject,
+  calendarMode,
+  activeConnection,
+  connectedConnections
+}) {
+  const provider = normalizeMeetingLinkProvider(
+    advisorSettings?.meetingProvider ?? env.MEETING_LINK_PROVIDER,
+    DEFAULT_MEETING_LINK_PROVIDER
+  );
+  const staticMeetingUrl = resolveStaticMeetingUrl(env);
+
+  if (provider === "static_url") {
+    return {
+      provider,
+      meetingUrl: staticMeetingUrl,
+      status: staticMeetingUrl ? "static_url" : "static_url_missing",
+      errorCode: staticMeetingUrl ? "" : "static_url_missing",
+      errorMessage: staticMeetingUrl ? "" : "CALENDAR_INVITE_MEETING_URL is empty"
+    };
+  }
+
+  if (provider === "google_meet") {
+    try {
+      let oauthConfig = null;
+      const googleConnection = selectGoogleConnectionForMeetingLink({
+        activeConnection,
+        connectedConnections
+      });
+      if (googleConnection?.secretArn) {
+        const secretString = await deps.getSecretString(googleConnection.secretArn);
+        oauthConfig = parseGoogleOauthSecret(secretString);
+      } else if (calendarMode === "google" && env.GOOGLE_OAUTH_SECRET_ARN) {
+        const secretString = await deps.getSecretString(env.GOOGLE_OAUTH_SECRET_ARN);
+        oauthConfig = parseGoogleOauthSecret(secretString);
+      }
+
+      if (!oauthConfig) {
+        return {
+          provider,
+          meetingUrl: staticMeetingUrl,
+          status: "google_oauth_missing",
+          errorCode: "google_oauth_missing",
+          errorMessage: "Google OAuth credentials are missing for meeting link creation"
+        };
+      }
+
+      const accessToken = await exchangeRefreshToken({
+        clientId: oauthConfig.clientId,
+        clientSecret: oauthConfig.clientSecret,
+        refreshToken: oauthConfig.refreshToken,
+        fetchImpl: deps.fetchImpl
+      });
+      const meet = await createGoogleMeetSpace({
+        accessToken,
+        fetchImpl: deps.fetchImpl
+      });
+
+      return {
+        provider,
+        meetingUrl: meet.meetingUrl,
+        status: "google_created",
+        errorCode: "",
+        errorMessage: ""
+      };
+    } catch (error) {
+      const summary = summarizeMeetingLinkError({
+        provider,
+        status: "create_failed",
+        error
+      });
+      return {
+        provider,
+        meetingUrl: staticMeetingUrl,
+        status: "google_create_failed",
+        errorCode: summary.errorCode,
+        errorMessage: summary.errorMessage
+      };
+    }
+  }
+
+  if (provider === "zoom") {
+    try {
+      const zoomMeetingSecretArn = String(advisorSettings?.zoomMeetingSecretArn ?? "").trim();
+      const zoomAppSecretArn = String(env.ZOOM_OAUTH_APP_SECRET_ARN ?? "").trim();
+      if (!zoomMeetingSecretArn || !zoomAppSecretArn) {
+        return {
+          provider,
+          meetingUrl: staticMeetingUrl,
+          status: "zoom_oauth_missing",
+          errorCode: "zoom_oauth_missing",
+          errorMessage: "Zoom OAuth credentials are missing for meeting link creation"
+        };
+      }
+
+      const [zoomAppSecretString, zoomMeetingSecretString] = await Promise.all([
+        deps.getSecretString(zoomAppSecretArn),
+        deps.getSecretString(zoomMeetingSecretArn)
+      ]);
+      const zoomApp = parseZoomAppSecret(zoomAppSecretString);
+      const zoomMeetingSecret = parseZoomMeetingSecret(zoomMeetingSecretString);
+      const zoomTokenPayload = await exchangeZoomRefreshToken({
+        clientId: zoomApp.clientId,
+        clientSecret: zoomApp.clientSecret,
+        refreshToken: zoomMeetingSecret.refreshToken,
+        fetchImpl: deps.fetchImpl
+      });
+
+      if (
+        zoomTokenPayload.refreshToken &&
+        zoomTokenPayload.refreshToken !== zoomMeetingSecret.refreshToken &&
+        typeof deps.putSecretValue === "function"
+      ) {
+        const refreshedSecretPayload = JSON.stringify({
+          refresh_token: zoomTokenPayload.refreshToken,
+          account_email: zoomMeetingSecret.accountEmail ?? ""
+        });
+        try {
+          await deps.putSecretValue(zoomMeetingSecretArn, refreshedSecretPayload);
+        } catch (tokenPersistError) {
+          // Non-fatal: invite creation should proceed even if refresh token rotation persistence fails.
+          console.warn(
+            `[meeting-link][zoom] refresh token rotation persist failed: ${sanitizeMeetingLinkErrorMessage(
+              tokenPersistError?.message
+            )}`
+          );
+        }
+      }
+
+      const zoomMeeting = await createZoomMeeting({
+        accessToken: zoomTokenPayload.accessToken,
+        topic: inviteSubject,
+        startIsoUtc: selectedSlotStartIsoUtc,
+        durationMinutes,
+        timezone: hostTimezone,
+        fetchImpl: deps.fetchImpl
+      });
+
+      return {
+        provider,
+        meetingUrl: zoomMeeting.meetingUrl,
+        status: "zoom_created",
+        errorCode: "",
+        errorMessage: ""
+      };
+    } catch (error) {
+      const summary = summarizeMeetingLinkError({
+        provider,
+        status: "create_failed",
+        error
+      });
+      return {
+        provider,
+        meetingUrl: staticMeetingUrl,
+        status: "zoom_create_failed",
+        errorCode: summary.errorCode,
+        errorMessage: summary.errorMessage
+      };
+    }
+  }
+
+  return {
+    provider: "unknown",
+    meetingUrl: staticMeetingUrl,
+    status: "provider_unrecognized",
+    errorCode: "provider_unrecognized",
+    errorMessage: "Meeting link provider is not recognized"
+  };
 }
 
 function isCalendarStatusMessage({ subject, bodyText }) {
@@ -785,7 +1098,7 @@ function buildCalendarInviteMessage({
     String(inviteTitle ?? DEFAULT_CALENDAR_INVITE_TITLE).trim() ||
     DEFAULT_CALENDAR_INVITE_TITLE;
   const normalizedMeetingUrl = String(meetingUrl ?? "").trim();
-  const locationLabel = normalizedMeetingUrl ? `Google Meet: ${normalizedMeetingUrl}` : "";
+  const locationLabel = normalizedMeetingUrl ? `Meeting link: ${normalizedMeetingUrl}` : "";
   const safeDescription =
     String(inviteDescription ?? "").trim() ||
     [
@@ -799,7 +1112,7 @@ function buildCalendarInviteMessage({
   const bodyLines = [
     `I have prepared a calendar invite for ${hostLabel}.`,
     clientLabel ? `Your local time: ${clientLabel}.` : null,
-    normalizedMeetingUrl ? `Join with Google Meet: ${normalizedMeetingUrl}` : null,
+    normalizedMeetingUrl ? `Join meeting: ${normalizedMeetingUrl}` : null,
     "Please accept the invite in your calendar app."
   ].filter(Boolean);
 
@@ -837,7 +1150,7 @@ function buildBookingConfirmationMessage({
   const lines = [
     `Thanks for confirming. I am about to send a calendar invite for ${hostLabel}.`,
     clientLabel ? `Your local time: ${clientLabel}.` : null,
-    normalizedMeetingUrl ? `The invite will include Google Meet: ${normalizedMeetingUrl}` : null
+    normalizedMeetingUrl ? `The invite will include this meeting link: ${normalizedMeetingUrl}` : null
   ].filter(Boolean);
 
   return {
@@ -2298,6 +2611,9 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const bookingIntentConfidenceThreshold = Number.parseFloat(
     env.BOOKING_INTENT_LLM_CONFIDENCE_THRESHOLD ?? String(DEFAULT_BOOKING_INTENT_CONFIDENCE_THRESHOLD)
   );
+  const agentInvocationLlmConfidenceThreshold = Number.parseFloat(
+    env.AGENT_INVOCATION_LLM_CONFIDENCE_THRESHOLD ?? String(DEFAULT_AGENT_INVOCATION_LLM_CONFIDENCE_THRESHOLD)
+  );
   const inviteSubjectConfidenceThreshold = Number.parseFloat(
     env.INVITE_SUBJECT_LLM_CONFIDENCE_THRESHOLD ?? String(DEFAULT_INVITE_SUBJECT_LLM_CONFIDENCE_THRESHOLD)
   );
@@ -2580,16 +2896,83 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   }
 
   const explicitInvocationRequired = threadParticipantEmails.length > 1;
-  const invocationSignal = detectExplicitAgentInvocation({
+  let invocationSignal = detectExplicitAgentInvocation({
     subject: payload.subject ?? "",
     latestReplyText: latestReplyText || bodyText,
     fullBodyText: bodyText,
     agentReferenceTerms
   });
+  let invocationLlmStatus = intentExtractionMode === "llm_hybrid" ? "not_run" : "disabled";
+  let invocationLlmValue = null;
+  let invocationLlmConfidence = 0;
+  let preflightLlmIntent = null;
+  let cachedIntentOpenAiConfig = null;
+  const resolvedAgentInvocationLlmConfidenceThreshold = Number.isFinite(agentInvocationLlmConfidenceThreshold)
+    ? agentInvocationLlmConfidenceThreshold
+    : DEFAULT_AGENT_INVOCATION_LLM_CONFIDENCE_THRESHOLD;
 
   if (invocationSignal.invoked && !isAdvisorSender) {
     suggestionAddresseeDisplayName = senderDisplayName || suggestionAddresseeDisplayName;
     suggestionAddresseeEmail = fromEmail;
+  }
+
+  if (explicitInvocationRequired && !invocationSignal.invoked) {
+    const llmInvocationHintPresent = hasLlmInvocationHint({
+      subject: payload.subject ?? "",
+      latestReplyText: latestReplyText || bodyText,
+      fullBodyText: bodyText,
+      agentReferenceTerms
+    });
+    if (
+      llmInvocationHintPresent &&
+      intentExtractionMode === "llm_hybrid" &&
+      llmProviderSecretArn &&
+      typeof deps.extractSchedulingIntentWithLlm === "function"
+    ) {
+      try {
+        const llmSecretString = await deps.getSecretString(llmProviderSecretArn);
+        const openAiConfig = parseOpenAiConfigSecret(llmSecretString);
+        cachedIntentOpenAiConfig = openAiConfig;
+        const llmInvocationIntent = await deps.extractSchedulingIntentWithLlm({
+          openAiConfig,
+          subject: payload.subject ?? "",
+          body: intentInputBodyText,
+          agentDisplayName,
+          agentIdentityHints: agentReferenceTerms,
+          hostTimezone,
+          referenceNowIso: startedAtIso,
+          fetchImpl: deps.fetchImpl,
+          timeoutMs: intentLlmTimeoutMs,
+          retryPolicy: "invocation_check"
+        });
+        accumulateLlmTelemetry(llmUsageAccumulator, llmInvocationIntent?.llmTelemetry);
+        preflightLlmIntent = llmInvocationIntent;
+        invocationLlmStatus = "ok";
+        invocationLlmValue = typeof llmInvocationIntent?.invocationIntent === "boolean"
+          ? llmInvocationIntent.invocationIntent
+          : null;
+        invocationLlmConfidence = Number.isFinite(Number(llmInvocationIntent?.invocationIntentConfidence))
+          ? Number(llmInvocationIntent.invocationIntentConfidence)
+          : 0;
+        if (
+          invocationLlmValue === true &&
+          invocationLlmConfidence >= resolvedAgentInvocationLlmConfidenceThreshold
+        ) {
+          invocationSignal = {
+            invoked: true,
+            matchedTerm: "",
+            matchedLine: "llm_invocation_classifier",
+            source: "llm"
+          };
+          if (!isAdvisorSender) {
+            suggestionAddresseeDisplayName = senderDisplayName || suggestionAddresseeDisplayName;
+            suggestionAddresseeEmail = fromEmail;
+          }
+        }
+      } catch {
+        invocationLlmStatus = "fallback";
+      }
+    }
   }
 
   if (explicitInvocationRequired && !invocationSignal.invoked) {
@@ -2612,7 +2995,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       ...buildLlmTraceUsageFields(llmUsageAccumulator),
       bodySource,
       intentSource: "parser",
-      intentLlmStatus: "skipped",
+      intentLlmStatus: invocationLlmStatus === "ok" ? "ok" : "skipped",
       promptGuardMode,
       promptGuardDecision,
       promptGuardLlmStatus,
@@ -2622,6 +3005,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       requestedWindowCount: 0,
       agentInvocationRequired: true,
       agentInvocationDetected: false,
+      agentInvocationSource: invocationSignal.source,
+      agentInvocationLlmStatus: invocationLlmStatus,
+      agentInvocationLlmValue:
+        invocationLlmValue === null ? "unknown" : invocationLlmValue ? "true" : "false",
+      agentInvocationLlmConfidence: invocationLlmConfidence,
       ...buildBookingIntentTraceFields({
         bookingIntentSource: "deterministic",
         llmBookingIntent: null,
@@ -2896,9 +3284,14 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         throw new Error("LLM_PROVIDER_SECRET_ARN is required for INTENT_EXTRACTION_MODE=llm_hybrid");
       }
 
-      const llmSecretString = await deps.getSecretString(llmProviderSecretArn);
-      const openAiConfig = parseOpenAiConfigSecret(llmSecretString);
-      const llmIntent = await deps.extractSchedulingIntentWithLlm({
+      let openAiConfig = cachedIntentOpenAiConfig;
+      if (!openAiConfig) {
+        const llmSecretString = await deps.getSecretString(llmProviderSecretArn);
+        openAiConfig = parseOpenAiConfigSecret(llmSecretString);
+        cachedIntentOpenAiConfig = openAiConfig;
+      }
+      const reusedPreflightIntent = Boolean(preflightLlmIntent);
+      const llmIntent = preflightLlmIntent ?? (await deps.extractSchedulingIntentWithLlm({
         openAiConfig,
         subject: payload.subject ?? "",
         body: intentInputBodyText,
@@ -2908,8 +3301,11 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         referenceNowIso: startedAtIso,
         fetchImpl: deps.fetchImpl,
         timeoutMs: intentLlmTimeoutMs
-      });
-      accumulateLlmTelemetry(llmUsageAccumulator, llmIntent?.llmTelemetry);
+      }));
+      if (!reusedPreflightIntent) {
+        accumulateLlmTelemetry(llmUsageAccumulator, llmIntent?.llmTelemetry);
+      }
+      preflightLlmIntent = null;
       let mergedLlmIntent = llmIntent;
       const resolvedBookingIntentConfidenceThreshold = Number.isFinite(bookingIntentConfidenceThreshold)
         ? bookingIntentConfidenceThreshold
@@ -3023,6 +3419,15 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       llmBookingIntentConfidence = Number.isFinite(Number(mergedLlmIntent?.bookingIntentConfidence))
         ? Number(mergedLlmIntent.bookingIntentConfidence)
         : 0;
+      if (typeof mergedLlmIntent?.invocationIntent === "boolean") {
+        invocationLlmValue = mergedLlmIntent.invocationIntent;
+        invocationLlmConfidence = Number.isFinite(Number(mergedLlmIntent?.invocationIntentConfidence))
+          ? Number(mergedLlmIntent.invocationIntentConfidence)
+          : invocationLlmConfidence;
+        if (invocationLlmStatus === "not_run") {
+          invocationLlmStatus = "ok";
+        }
+      }
 
       const merged = mergeParsedIntent({
         parserIntent,
@@ -3069,6 +3474,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   let busyIntervals = [];
   let providerStatus = "ok";
   let activeConnection = null;
+  let connectedConnections = [];
 
   try {
     if (calendarMode === "mock") {
@@ -3103,7 +3509,7 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       });
     } else if (calendarMode === "connection") {
       const connectionsTableName = env.CONNECTIONS_TABLE_NAME;
-      const connectedConnections = await listConnectedCalendarConnections({
+      connectedConnections = await listConnectedCalendarConnections({
         deps,
         connectionsTableName,
         advisorId
@@ -3357,6 +3763,13 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   let bookingStatus = "not_requested";
   let bookingConfirmationStatus = "not_applicable";
   let inviteMeetingUrl = "";
+  let meetingLinkProvider = normalizeMeetingLinkProvider(
+    advisorSettings?.meetingProvider ?? env.MEETING_LINK_PROVIDER,
+    DEFAULT_MEETING_LINK_PROVIDER
+  );
+  let meetingLinkStatus = "not_applicable";
+  let meetingLinkErrorCode = "not_applicable";
+  let meetingLinkErrorMessage = "";
   let inviteRecipients = [];
   let inviteSubjectSource = "not_applicable";
   let inviteSubjectConfidence = 0;
@@ -3390,8 +3803,6 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
       const advisorInviteEmail = normalizeEmailAddress(
         advisorInviteEmailOverride || activeConnection?.accountEmail || env.ADVISOR_EMAIL || senderEmail
       );
-      const configuredMeetingUrl = String(env.CALENDAR_INVITE_MEETING_URL ?? "").trim();
-      inviteMeetingUrl = configuredMeetingUrl || "https://meet.google.com/new";
       const advisorInviteDisplayName =
         normalizeInviteParticipantName(advisorDisplayName) ||
         normalizeInviteParticipantName(deriveDisplayNameFromEmail(advisorNotificationEmail)) ||
@@ -3443,6 +3854,24 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           inviteSubjectConfidence = 0;
         }
       }
+
+      const meetingLinkResolution = await resolveMeetingLinkForInvite({
+        env,
+        deps,
+        advisorSettings,
+        selectedSlotStartIsoUtc: suggestions[0].startIsoUtc,
+        durationMinutes: parsed.durationMinutes,
+        hostTimezone,
+        inviteSubject,
+        calendarMode,
+        activeConnection,
+        connectedConnections
+      });
+      inviteMeetingUrl = String(meetingLinkResolution.meetingUrl ?? "").trim();
+      meetingLinkProvider = meetingLinkResolution.provider;
+      meetingLinkStatus = meetingLinkResolution.status;
+      meetingLinkErrorCode = String(meetingLinkResolution.errorCode ?? "").trim() || "none";
+      meetingLinkErrorMessage = String(meetingLinkResolution.errorMessage ?? "").trim();
 
       inviteRecipients = uniqueEmails([
         ...(threadParticipantEmails.length > 0 ? threadParticipantEmails : [fromEmail]),
@@ -3680,6 +4109,10 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     promptInjectionSignalCount: promptInjectionSignals.length,
     bookingStatus,
     bookingConfirmationStatus,
+    meetingLinkProvider,
+    meetingLinkStatus,
+    meetingLinkErrorCode,
+    meetingLinkErrorMessage,
     inviteSubjectSource,
     inviteSubjectConfidence,
     inviteRecipientCount: inviteRecipients.length,
@@ -3688,6 +4121,10 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
     agentInvocationRequired: explicitInvocationRequired,
     agentInvocationDetected: invocationSignal.invoked,
     agentInvocationSource: invocationSignal.source,
+    agentInvocationLlmStatus: invocationLlmStatus,
+    agentInvocationLlmValue:
+      invocationLlmValue === null ? "unknown" : invocationLlmValue ? "true" : "false",
+    agentInvocationLlmConfidence: invocationLlmConfidence,
     ...buildBookingIntentTraceFields({
       bookingIntentSource,
       llmBookingIntent,

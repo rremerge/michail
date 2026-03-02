@@ -967,6 +967,148 @@ test("processSchedulingEmail keeps quiet in multi-party thread when agent is not
   assert.equal(traceItems[0].stage, "agent_invocation");
 });
 
+test("processSchedulingEmail uses high-confidence LLM invocation detection for split-line advisor request", async () => {
+  const traceItems = [];
+  let llmIntentCalls = 0;
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm(options) {
+      llmIntentCalls += 1;
+      assert.equal(options.retryPolicy, "invocation_check");
+      return {
+        requestedWindows: [
+          {
+            startIso: "2026-03-04T22:30:00.000Z",
+            endIso: "2026-03-04T23:00:00.000Z"
+          }
+        ],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.92,
+        bookingIntent: true,
+        bookingIntentConfidence: 0.97,
+        invocationIntent: true,
+        invocationIntentConfidence: 0.96
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    ADVISOR_EMAIL: "advisor@example.com",
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "30"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "Advisor Name <advisor@example.com>",
+      toEmails: [
+        "Miitb Agent <miitb.agent@agent.letsconnect.ai>",
+        "Client Person <client@example.com>"
+      ],
+      subject: "book a meeting",
+      body: [
+        "hi miitb",
+        "Please book a meeting with client for march 4 230pm for 30 minutes.",
+        "Thanks",
+        "advisor"
+      ].join("\n")
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.deliveryStatus, "logged");
+  assert.equal(response.bookingStatus, "invite_logged");
+  assert.equal(llmIntentCalls, 1);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].status, "completed");
+  assert.equal(traceItems[0].agentInvocationDetected, true);
+  assert.equal(traceItems[0].agentInvocationSource, "llm");
+});
+
+test("processSchedulingEmail falls back to explicit invocation gating when LLM invocation confidence is low", async () => {
+  const traceItems = [];
+  let llmIntentCalls = 0;
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm() {
+      llmIntentCalls += 1;
+      return {
+        requestedWindows: [
+          {
+            startIso: "2026-03-04T22:30:00.000Z",
+            endIso: "2026-03-04T23:00:00.000Z"
+          }
+        ],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.92,
+        bookingIntent: true,
+        bookingIntentConfidence: 0.97,
+        invocationIntent: true,
+        invocationIntentConfidence: 0.4
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    ADVISOR_EMAIL: "advisor@example.com",
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "30",
+    AGENT_INVOCATION_LLM_CONFIDENCE_THRESHOLD: "0.8"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "Advisor Name <advisor@example.com>",
+      toEmails: [
+        "Miitb Agent <miitb.agent@agent.letsconnect.ai>",
+        "Client Person <client@example.com>"
+      ],
+      subject: "book a meeting",
+      body: [
+        "hi miitb",
+        "Please book a meeting with client for march 4 230pm for 30 minutes."
+      ].join("\n")
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.deliveryStatus, "suppressed");
+  assert.equal(response.suppressionReason, "agent_not_invoked");
+  assert.equal(llmIntentCalls, 1);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].status, "suppressed");
+  assert.equal(traceItems[0].stage, "agent_invocation");
+  assert.equal(traceItems[0].agentInvocationDetected, false);
+});
+
 test("processSchedulingEmail sends calendar invite when booking intent is detected", async () => {
   const sentInviteMessages = [];
   const sentResponseMessages = [];
@@ -1022,18 +1164,20 @@ test("processSchedulingEmail sends calendar invite when booking intent is detect
   assert.equal(invite.subject, "Meeting Client/Manoj");
   assert.match(invite.bodyText, /^Hi Client,/);
   assert.match(invite.bodyText, /I have prepared a calendar invite/);
-  assert.match(invite.bodyText, /Join with Google Meet: https:\/\/meet\.google\.com\/new/);
+  assert.equal(invite.bodyText.includes("Join meeting:"), false);
   assert.match(invite.icsContent, /BEGIN:VCALENDAR/);
   assert.match(invite.icsContent, /METHOD:REQUEST/);
   assert.match(invite.icsContent, /SUMMARY:Meeting Client\/Manoj/);
-  assert.match(invite.icsContent, /LOCATION:Google Meet: https:\/\/meet\.google\.com\/new/);
-  assert.match(invite.icsContent, /URL:https:\/\/meet\.google\.com\/new/);
+  assert.equal(invite.icsContent.includes("LOCATION:"), false);
+  assert.equal(invite.icsContent.includes("URL:https://meet.google.com/new"), false);
   assert.match(invite.icsContent, /ATTENDEE;CN=client@example.com;RSVP=TRUE:mailto:client@example.com/);
   assert.match(invite.icsContent, /ATTENDEE;CN=manoj@example.com;RSVP=TRUE:mailto:manoj@example.com/);
 
   assert.equal(traceItems.length, 1);
   assert.equal(traceItems[0].bookingStatus, "invite_sent");
   assert.equal(traceItems[0].bookingConfirmationStatus, "sent");
+  assert.equal(traceItems[0].meetingLinkProvider, "google_meet");
+  assert.equal(traceItems[0].meetingLinkStatus, "google_oauth_missing");
   assert.equal(traceItems[0].availabilityLinkStatus, "not_applicable");
 });
 
@@ -1984,6 +2128,451 @@ test("processSchedulingEmail honors high-confidence negative LLM booking intent"
   assert.equal(response.bookingStatus, "not_requested");
   assert.equal(traceItems[0].bookingIntentSource, "llm");
   assert.equal(traceItems[0].bookingIntentLlmValue, "false");
+});
+
+test("processSchedulingEmail creates real Google Meet links when configured", async () => {
+  const traceItems = [];
+  const sentInvites = [];
+  const deps = {
+    async getSecretString(secretArn) {
+      assert.equal(secretArn, "arn:google-oauth");
+      return JSON.stringify({
+        client_id: "google-client-id",
+        client_secret: "google-client-secret",
+        refresh_token: "google-refresh-token",
+        calendar_ids: ["primary"]
+      });
+    },
+    async lookupBusyIntervals() {
+      return [];
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {},
+    async sendCalendarInviteEmail(message) {
+      sentInvites.push(message);
+    },
+    async fetchImpl(url) {
+      const target = String(url);
+      if (target === "https://oauth2.googleapis.com/token") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              access_token: "google-access-token"
+            };
+          }
+        };
+      }
+      if (target === "https://meet.googleapis.com/v2/spaces") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              meetingUri: "https://meet.google.com/abc-defg-hij"
+            };
+          }
+        };
+      }
+      throw new Error(`unexpected fetch url: ${target}`);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    CALENDAR_MODE: "google",
+    GOOGLE_OAUTH_SECRET_ARN: "arn:google-oauth",
+    MEETING_LINK_PROVIDER: "google_meet"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      toEmail: "manoj.agent@agent.letsconnect.ai",
+      subject: "Please book",
+      body: "Please book 2026-03-11T10:00:00-07:00 to 2026-03-11T10:30:00-07:00."
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-10T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(sentInvites.length, 1);
+  assert.match(sentInvites[0].bodyText, /https:\/\/meet\.google\.com\/abc-defg-hij/);
+  assert.equal(traceItems.at(-1).meetingLinkProvider, "google_meet");
+  assert.equal(traceItems.at(-1).meetingLinkStatus, "google_created");
+});
+
+test("processSchedulingEmail creates real Zoom links when advisor selects zoom provider", async () => {
+  const traceItems = [];
+  const sentInvites = [];
+  const rotatedSecrets = [];
+  const deps = {
+    async getAdvisorSettingsByAgentEmail(_tableName, agentEmail) {
+      assert.equal(agentEmail, "manoj.agent@agent.letsconnect.ai");
+      return {
+        advisorId: "manoj",
+        advisorEmail: "advisor@example.com",
+        agentEmail,
+        meetingProvider: "zoom",
+        zoomMeetingSecretArn: "arn:zoom-meeting-secret"
+      };
+    },
+    async getSecretString(secretArn) {
+      if (secretArn === "arn:zoom-app-secret") {
+        return JSON.stringify({
+          client_id: "zoom-client-id",
+          client_secret: "zoom-client-secret"
+        });
+      }
+      if (secretArn === "arn:zoom-meeting-secret") {
+        return JSON.stringify({
+          refresh_token: "zoom-refresh-token-old",
+          account_email: "advisor@zoom.example"
+        });
+      }
+      throw new Error(`unexpected secret arn: ${secretArn}`);
+    },
+    async putSecretValue(secretArn, secretValue) {
+      rotatedSecrets.push({ secretArn, secretValue });
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {},
+    async sendCalendarInviteEmail(message) {
+      sentInvites.push(message);
+    },
+    async fetchImpl(url) {
+      const target = String(url);
+      if (target === "https://zoom.us/oauth/token") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              access_token: "zoom-access-token",
+              refresh_token: "zoom-refresh-token-new"
+            };
+          }
+        };
+      }
+      if (target === "https://api.zoom.us/v2/users/me/meetings") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              join_url: "https://zoom.us/j/12345678901"
+            };
+          }
+        };
+      }
+      throw new Error(`unexpected fetch url: ${target}`);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    CALENDAR_MODE: "mock",
+    ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable",
+    ZOOM_OAUTH_APP_SECRET_ARN: "arn:zoom-app-secret"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      toEmail: "manoj.agent@agent.letsconnect.ai",
+      subject: "Please book",
+      body: "Please book 2026-03-11T10:00:00-07:00 to 2026-03-11T10:30:00-07:00.",
+      mockBusyIntervals: []
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-10T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(sentInvites.length, 1);
+  assert.match(sentInvites[0].bodyText, /https:\/\/zoom\.us\/j\/12345678901/);
+  assert.equal(rotatedSecrets.length, 1);
+  assert.equal(rotatedSecrets[0].secretArn, "arn:zoom-meeting-secret");
+  assert.match(rotatedSecrets[0].secretValue, /zoom-refresh-token-new/);
+  assert.equal(traceItems.at(-1).meetingLinkProvider, "zoom");
+  assert.equal(traceItems.at(-1).meetingLinkStatus, "zoom_created");
+});
+
+test("processSchedulingEmail traces zoom meeting creation failure details", async () => {
+  const traceItems = [];
+  const sentInvites = [];
+  const deps = {
+    async getAdvisorSettingsByAgentEmail(_tableName, agentEmail) {
+      assert.equal(agentEmail, "manoj.agent@agent.letsconnect.ai");
+      return {
+        advisorId: "manoj",
+        advisorEmail: "advisor@example.com",
+        agentEmail,
+        meetingProvider: "zoom",
+        zoomMeetingSecretArn: "arn:zoom-meeting-secret"
+      };
+    },
+    async getSecretString(secretArn) {
+      if (secretArn === "arn:zoom-app-secret") {
+        return JSON.stringify({
+          client_id: "zoom-client-id",
+          client_secret: "zoom-client-secret"
+        });
+      }
+      if (secretArn === "arn:zoom-meeting-secret") {
+        return JSON.stringify({
+          refresh_token: "zoom-refresh-token-old",
+          account_email: "advisor@zoom.example"
+        });
+      }
+      throw new Error(`unexpected secret arn: ${secretArn}`);
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {},
+    async sendCalendarInviteEmail(message) {
+      sentInvites.push(message);
+    },
+    async fetchImpl(url) {
+      const target = String(url);
+      if (target === "https://zoom.us/oauth/token") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              access_token: "zoom-access-token",
+              refresh_token: "zoom-refresh-token-new"
+            };
+          }
+        };
+      }
+      if (target === "https://api.zoom.us/v2/users/me/meetings") {
+        return {
+          ok: false,
+          status: 401,
+          async text() {
+            return '{"code":124,"message":"Invalid access token."}';
+          }
+        };
+      }
+      throw new Error(`unexpected fetch url: ${target}`);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    CALENDAR_MODE: "mock",
+    ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable",
+    ZOOM_OAUTH_APP_SECRET_ARN: "arn:zoom-app-secret"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      toEmail: "manoj.agent@agent.letsconnect.ai",
+      subject: "Please book",
+      body: "Please book 2026-03-11T10:00:00-07:00 to 2026-03-11T10:30:00-07:00.",
+      mockBusyIntervals: []
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-10T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(sentInvites.length, 1);
+  assert.equal(sentInvites[0].bodyText.includes("https://zoom.us/j/"), false);
+  assert.equal(traceItems.at(-1).meetingLinkProvider, "zoom");
+  assert.equal(traceItems.at(-1).meetingLinkStatus, "zoom_create_failed");
+  assert.equal(traceItems.at(-1).meetingLinkErrorCode, "zoom_http_401");
+  assert.match(traceItems.at(-1).meetingLinkErrorMessage, /Zoom meeting create failed/i);
+});
+
+test("processSchedulingEmail still creates zoom meeting invite when refresh token persist fails", async () => {
+  const traceItems = [];
+  const sentInvites = [];
+  const deps = {
+    async getAdvisorSettingsByAgentEmail(_tableName, agentEmail) {
+      assert.equal(agentEmail, "manoj.agent@agent.letsconnect.ai");
+      return {
+        advisorId: "manoj",
+        advisorEmail: "advisor@example.com",
+        agentEmail,
+        meetingProvider: "zoom",
+        zoomMeetingSecretArn: "arn:zoom-meeting-secret"
+      };
+    },
+    async getSecretString(secretArn) {
+      if (secretArn === "arn:zoom-app-secret") {
+        return JSON.stringify({
+          client_id: "zoom-client-id",
+          client_secret: "zoom-client-secret"
+        });
+      }
+      if (secretArn === "arn:zoom-meeting-secret") {
+        return JSON.stringify({
+          refresh_token: "zoom-refresh-token-old",
+          account_email: "advisor@zoom.example"
+        });
+      }
+      throw new Error(`unexpected secret arn: ${secretArn}`);
+    },
+    async putSecretValue() {
+      throw new Error("AccessDeniedException: not authorized to PutSecretValue");
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {},
+    async sendCalendarInviteEmail(message) {
+      sentInvites.push(message);
+    },
+    async fetchImpl(url) {
+      const target = String(url);
+      if (target === "https://zoom.us/oauth/token") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              access_token: "zoom-access-token",
+              refresh_token: "zoom-refresh-token-new"
+            };
+          }
+        };
+      }
+      if (target === "https://api.zoom.us/v2/users/me/meetings") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              join_url: "https://zoom.us/j/9988776655"
+            };
+          }
+        };
+      }
+      throw new Error(`unexpected fetch url: ${target}`);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    CALENDAR_MODE: "mock",
+    ADVISOR_SETTINGS_TABLE_NAME: "AdvisorSettingsTable",
+    ZOOM_OAUTH_APP_SECRET_ARN: "arn:zoom-app-secret"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      toEmail: "manoj.agent@agent.letsconnect.ai",
+      subject: "Please book",
+      body: "Please book 2026-03-11T10:00:00-07:00 to 2026-03-11T10:30:00-07:00.",
+      mockBusyIntervals: []
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-10T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(sentInvites.length, 1);
+  assert.match(sentInvites[0].bodyText, /https:\/\/zoom\.us\/j\/9988776655/);
+  assert.equal(traceItems.at(-1).meetingLinkProvider, "zoom");
+  assert.equal(traceItems.at(-1).meetingLinkStatus, "zoom_created");
+  assert.equal(traceItems.at(-1).meetingLinkErrorCode, "none");
+  assert.equal(traceItems.at(-1).meetingLinkErrorMessage, "");
+});
+
+test("processSchedulingEmail does not fall back to meet.google.com/new when Google meet creation fails", async () => {
+  const traceItems = [];
+  const sentInvites = [];
+  const deps = {
+    async getSecretString(secretArn) {
+      assert.equal(secretArn, "arn:google-oauth");
+      return JSON.stringify({
+        client_id: "google-client-id",
+        client_secret: "google-client-secret",
+        refresh_token: "google-refresh-token",
+        calendar_ids: ["primary"]
+      });
+    },
+    async lookupBusyIntervals() {
+      return [];
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {},
+    async sendCalendarInviteEmail(message) {
+      sentInvites.push(message);
+    },
+    async fetchImpl(url) {
+      const target = String(url);
+      if (target === "https://oauth2.googleapis.com/token") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              access_token: "google-access-token"
+            };
+          }
+        };
+      }
+      if (target === "https://meet.googleapis.com/v2/spaces") {
+        return {
+          ok: false,
+          status: 500,
+          async text() {
+            return "boom";
+          }
+        };
+      }
+      throw new Error(`unexpected fetch url: ${target}`);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "agent@agent.letsconnect.ai",
+    CALENDAR_MODE: "google",
+    GOOGLE_OAUTH_SECRET_ARN: "arn:google-oauth",
+    MEETING_LINK_PROVIDER: "google_meet"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "client@example.com",
+      toEmail: "manoj.agent@agent.letsconnect.ai",
+      subject: "Please book",
+      body: "Please book 2026-03-11T10:00:00-07:00 to 2026-03-11T10:30:00-07:00."
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-10T18:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(sentInvites.length, 1);
+  assert.equal(sentInvites[0].bodyText.includes("https://meet.google.com/new"), false);
+  assert.equal(sentInvites[0].bodyText.includes("Join meeting:"), false);
+  assert.equal(traceItems.at(-1).meetingLinkProvider, "google_meet");
+  assert.equal(traceItems.at(-1).meetingLinkStatus, "google_create_failed");
+  assert.equal(traceItems.at(-1).meetingLinkErrorCode, "google_http_500");
+  assert.match(traceItems.at(-1).meetingLinkErrorMessage, /Google Meet .*create failed/i);
 });
 
 test("processSchedulingEmail appends short availability link when configured", async () => {

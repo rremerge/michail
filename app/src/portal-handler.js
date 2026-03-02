@@ -73,6 +73,7 @@ const DEFAULT_LLM_MODEL = "gpt-5.2";
 const DEFAULT_LLM_ENDPOINT = "https://api.openai.com/v1/chat/completions";
 const ALLOWED_LLM_PROVIDERS = new Set(["openai"]);
 const ALLOWED_LLM_KEY_MODES = new Set(["platform", "advisor"]);
+const ALLOWED_MEETING_LINK_PROVIDERS = new Set(["google_meet", "zoom", "static_url"]);
 const USAGE_WINDOW_DAYS = {
   daily: 1,
   weekly: 7,
@@ -217,8 +218,22 @@ function normalizeLlmEndpoint(value, fallbackEndpoint = DEFAULT_LLM_ENDPOINT) {
   }
 }
 
+function normalizeMeetingLinkProvider(value, fallbackProvider = "google_meet") {
+  const candidate = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (ALLOWED_MEETING_LINK_PROVIDERS.has(candidate)) {
+    return candidate;
+  }
+  return fallbackProvider;
+}
+
 function buildAdvisorLlmSecretName({ appName, stage, advisorId }) {
   return `/${appName}/${stage}/${advisorId}/llm/provider`;
+}
+
+function buildAdvisorZoomMeetingSecretName({ appName, stage, advisorId }) {
+  return `/${appName}/${stage}/${advisorId}/zoom/meeting`;
 }
 
 function normalizeAgentEmailDomain(value) {
@@ -388,6 +403,9 @@ function normalizeAdvisorSettingsRecord({
   const llmModel = normalizeLlmModel(settings?.llmModel, fallbackLlmModel);
   const llmEndpoint = normalizeLlmEndpoint(settings?.llmEndpoint, fallbackLlmEndpoint);
   const llmProviderSecretArn = normalizeSecretArn(settings?.llmProviderSecretArn);
+  const meetingProvider = normalizeMeetingLinkProvider(settings?.meetingProvider, "google_meet");
+  const zoomMeetingSecretArn = normalizeSecretArn(settings?.zoomMeetingSecretArn);
+  const zoomMeetingAccountEmail = normalizeAdvisorEmail(settings?.zoomMeetingAccountEmail);
   const llmKeyMode = normalizeLlmKeyMode(
     settings?.llmKeyMode,
     llmProviderSecretArn ? "advisor" : "platform"
@@ -416,6 +434,9 @@ function normalizeAdvisorSettingsRecord({
     llmEndpoint,
     llmKeyMode,
     llmProviderSecretArn,
+    meetingProvider,
+    zoomMeetingSecretArn,
+    zoomMeetingAccountEmail,
     createdAt: settings?.createdAt ?? nowIso,
     updatedAt: nowIso
   };
@@ -594,6 +615,18 @@ function parseMicrosoftAppSecret(secretString) {
   return { clientId, clientSecret, tenantId };
 }
 
+function parseZoomAppSecret(secretString) {
+  const parsed = JSON.parse(secretString);
+  const clientId = String(parsed.client_id ?? "").trim();
+  const clientSecret = String(parsed.client_secret ?? "").trim();
+
+  if (!clientId || !clientSecret) {
+    throw new Error("Zoom OAuth app secret is missing client_id or client_secret");
+  }
+
+  return { clientId, clientSecret };
+}
+
 function parsePortalAuthSecret(secretString) {
   const parsed = JSON.parse(secretString);
   const username = String(parsed.username ?? "").trim();
@@ -662,7 +695,8 @@ function shouldProtectPath(rawPath) {
     "/advisor/auth/google/start",
     "/advisor/auth/google/callback",
     "/advisor/api/connections/google/callback",
-    "/advisor/api/connections/microsoft/callback"
+    "/advisor/api/connections/microsoft/callback",
+    "/advisor/api/connections/zoom/callback"
   ].includes(rawPath);
 }
 
@@ -3141,6 +3175,7 @@ function buildAdvisorUsageSummary({
     estimatedTotalCostUsd: 0
   };
   const byModelMap = new Map();
+  let latestMeetingLinkFailure = null;
 
   for (const trace of Array.isArray(traces) ? traces : []) {
     totals.invocationCount += 1;
@@ -3190,6 +3225,23 @@ function buildAdvisorUsageSummary({
 
     totals.emailSendCount += estimateEmailSendsFromTrace(trace);
     totals.calendarApiCallCount += estimateCalendarApiCallsFromTrace(trace);
+
+    const meetingLinkStatus = String(trace?.meetingLinkStatus ?? "")
+      .trim()
+      .toLowerCase();
+    if (meetingLinkStatus.endsWith("_failed")) {
+      const createdAt = String(trace?.createdAt ?? "");
+      if (!latestMeetingLinkFailure || createdAt > String(latestMeetingLinkFailure.createdAt ?? "")) {
+        latestMeetingLinkFailure = {
+          requestId: trace?.requestId ?? null,
+          createdAt,
+          provider: String(trace?.meetingLinkProvider ?? "").trim().toLowerCase() || "unknown",
+          status: meetingLinkStatus,
+          errorCode: String(trace?.meetingLinkErrorCode ?? "").trim() || null,
+          errorMessage: String(trace?.meetingLinkErrorMessage ?? "").trim() || null
+        };
+      }
+    }
   }
 
   const lambdaInvocationEstimate = totals.invocationCount * lambdaInvocationCostUsd;
@@ -3215,6 +3267,7 @@ function buildAdvisorUsageSummary({
     },
     totals,
     byModel,
+    latestMeetingLinkFailure,
     assumptions: {
       llmInputCostPer1KUsd,
       llmOutputCostPer1KUsd,
@@ -3327,6 +3380,10 @@ function selectTraceMetadata(trace) {
     stage: trace.stage,
     errorCode: trace.errorCode,
     providerStatus: trace.providerStatus,
+    meetingLinkProvider: trace.meetingLinkProvider,
+    meetingLinkStatus: trace.meetingLinkStatus,
+    meetingLinkErrorCode: trace.meetingLinkErrorCode,
+    meetingLinkErrorMessage: trace.meetingLinkErrorMessage,
     channel: trace.channel,
     meetingType: trace.meetingType,
     durationMinutes: trace.durationMinutes,
@@ -3380,6 +3437,31 @@ function buildTraceDiagnosis(trace) {
   if (trace.llmStatus === "fallback") {
     categories.push("llm_fallback");
     actions.push("Check LLM provider key, model availability, and timeout configuration.");
+  }
+
+  const meetingLinkStatus = String(trace.meetingLinkStatus ?? "")
+    .trim()
+    .toLowerCase();
+  if (meetingLinkStatus.endsWith("_failed")) {
+    categories.push("meeting_link_failed");
+    const providerLabel = String(trace.meetingLinkProvider ?? "meeting provider")
+      .trim()
+      .toLowerCase();
+    const errorCode = String(trace.meetingLinkErrorCode ?? "")
+      .trim()
+      .toLowerCase();
+    const errorMessage = String(trace.meetingLinkErrorMessage ?? "").trim();
+    const details = [errorCode, errorMessage]
+      .filter((part) => Boolean(part))
+      .join(" | ")
+      .slice(0, 220);
+    if (details) {
+      actions.push(
+        `Meeting link creation failed via ${providerLabel}. Reconnect provider credentials and retry. Details: ${details}`
+      );
+    } else {
+      actions.push(`Meeting link creation failed via ${providerLabel}. Reconnect provider credentials and retry.`);
+    }
   }
 
   if (trace.intentLlmStatus === "fallback" && Number(trace.requestedWindowCount ?? 0) === 0) {
@@ -3873,6 +3955,12 @@ function buildAdvisorPage() {
       .connection-actions { gap: 10px; align-items: stretch; }
       .connection-actions button { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; font-weight: 700; }
       .connection-actions-note { margin: 8px 0 0; display: block; }
+      .connection-provider-summary { margin: 6px 0 0; display: block; font-weight: 700; color: var(--ink-700); }
+      .connection-provider-controls { margin-top: 8px; gap: 8px; align-items: center; }
+      .connection-provider-controls label { font-size: 12px; font-weight: 700; color: var(--ink-700); }
+      .connection-provider-controls select,
+      .connection-provider-controls input { min-width: 220px; }
+      .connection-provider-status { margin: 6px 0 0; }
       .small-button { padding: 5px 9px; font-size: 12px; }
       .small-select { padding: 4px 8px; font-size: 12px; }
       textarea { padding: 8px 10px; border: 1px solid #c7ced9; border-radius: 8px; font-family: inherit; background: #fff; }
@@ -3925,6 +4013,9 @@ function buildAdvisorPage() {
       .sidebar-actions .workspace-nav-button { text-align: center; }
       .workspace-grid { margin-top: 12px; display: grid; grid-template-columns: repeat(3, minmax(240px, 1fr)); gap: 10px; }
       .workspace-card { border: 1px solid var(--line); border-radius: 12px; background: var(--surface-soft); padding: 12px; display: grid; gap: 8px; }
+      .workspace-card[data-open-panel] { cursor: pointer; }
+      .workspace-card[data-open-panel]:hover { border-color: #a9c9eb; box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08); }
+      .workspace-card[data-open-panel]:focus-visible { outline: 2px solid #3b82f6; outline-offset: 2px; }
       .workspace-card h3 { margin: 0; font-size: 15px; color: var(--ink-900); }
       .workspace-card p { margin: 0; font-size: 13px; color: var(--ink-600); line-height: 1.35; }
       .workspace-inline-search { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
@@ -4164,7 +4255,7 @@ function buildAdvisorPage() {
       <h2 style="margin-top:0;">Workspace</h2>
       <p class="muted">Select an area to open full controls in a focused panel.</p>
       <div class="workspace-grid">
-        <article class="workspace-card">
+        <article class="workspace-card" data-open-panel="connections" tabindex="0" role="button" aria-label="Open Connections">
           <h3>Connections</h3>
           <p id="workspaceConnectionsSummary">No connections loaded.</p>
           <ul id="workspaceConnectionsDetailList" class="workspace-card-list">
@@ -4172,7 +4263,7 @@ function buildAdvisorPage() {
           </ul>
           <div class="card-actions"><button type="button" class="small-button" data-open-panel="connections">Open</button></div>
         </article>
-        <article class="workspace-card">
+        <article class="workspace-card" data-open-panel="clients" tabindex="0" role="button" aria-label="Open Clients and Access">
           <h3>Clients &amp; Access</h3>
           <p id="workspaceClientsSummary">No clients loaded.</p>
           <div class="workspace-inline-search">
@@ -4190,7 +4281,7 @@ function buildAdvisorPage() {
           </ul>
           <div class="card-actions"><button type="button" class="small-button" data-open-panel="clients">Open</button></div>
         </article>
-        <article class="workspace-card">
+        <article class="workspace-card" data-open-panel="settings" tabindex="0" role="button" aria-label="Open Profile and AI Settings">
           <h3>Profile &amp; AI Settings</h3>
           <p id="workspaceSettingsSummary">Advisor profile loading.</p>
           <ul id="workspaceSettingsDetailList" class="workspace-card-list">
@@ -4198,7 +4289,7 @@ function buildAdvisorPage() {
           </ul>
           <div class="card-actions"><button type="button" class="small-button" data-open-panel="settings">Open</button></div>
         </article>
-        <article class="workspace-card">
+        <article class="workspace-card" data-open-panel="branding" tabindex="0" role="button" aria-label="Open Branding">
           <h3>Branding</h3>
           <p id="workspaceBrandingSummary">LetsConnect default branding.</p>
           <ul id="workspaceBrandingDetailList" class="workspace-card-list">
@@ -4206,7 +4297,7 @@ function buildAdvisorPage() {
           </ul>
           <div class="card-actions"><button type="button" class="small-button" data-open-panel="branding">Open</button></div>
         </article>
-        <article class="workspace-card">
+        <article class="workspace-card" data-open-panel="usage" tabindex="0" role="button" aria-label="Open Usage and Billing">
           <h3>Usage &amp; Billing</h3>
           <p id="workspaceUsageSummary">Usage metrics loading.</p>
           <ul id="workspaceUsageDetailList" class="workspace-card-list">
@@ -4214,7 +4305,7 @@ function buildAdvisorPage() {
           </ul>
           <div class="card-actions"><button type="button" class="small-button" data-open-panel="usage">Open</button></div>
         </article>
-        <article class="workspace-card">
+        <article class="workspace-card" data-open-panel="debug" tabindex="0" role="button" aria-label="Open Diagnostics">
           <h3>Diagnostics</h3>
           <p id="workspaceDebugSummary">No trace selected.</p>
           <ul id="workspaceDebugDetailList" class="workspace-card-list">
@@ -4233,10 +4324,24 @@ function buildAdvisorPage() {
         <div class="row inline-controls connection-actions">
           <button id="googleConnect">Connect Google (Sign In)</button>
           <button id="microsoftConnect">Connect Microsoft (Sign In)</button>
+          <button id="zoomConnect">Connect Zoom (Meetings)</button>
           <button id="openAdvisorCalendarView">Open Advisor Calendar</button>
           <button id="refreshPortalData">Refresh Data</button>
         </div>
         <p class="muted connection-actions-note">Google/Microsoft flows require app credentials configured in backend secrets.</p>
+        <p id="connectionsMeetingProviderSummary" class="connection-provider-summary">Conferencing platform preference: Loading...</p>
+        <div class="row inline-controls connection-provider-controls">
+          <label for="advisorMeetingProvider">Conferencing Platform</label>
+          <select id="advisorMeetingProvider">
+            <option value="google_meet">Google Meet (real room)</option>
+            <option value="zoom">Zoom (real meeting)</option>
+            <option value="static_url">Static URL fallback only</option>
+          </select>
+          <label for="advisorZoomStatus">Zoom OAuth</label>
+          <input id="advisorZoomStatus" type="text" readonly value="Not connected" />
+          <button id="saveMeetingProvider">Save Conferencing Preference</button>
+        </div>
+        <p id="connectionProviderStatus" class="muted connection-provider-status">Select your preferred platform for new meeting invites.</p>
         <h3 class="section-subtitle">Current Connections</h3>
         <table>
           <thead>
@@ -4244,6 +4349,7 @@ function buildAdvisorPage() {
               <th>Provider</th>
               <th>Account</th>
               <th>Status</th>
+              <th>Type</th>
               <th>Primary</th>
               <th>Updated</th>
               <th>Action</th>
@@ -4491,9 +4597,11 @@ function buildAdvisorPage() {
       let latestUsageSummary = null;
       let latestAdvisorSettings = null;
       let selectedUsageWindow = 'weekly';
+      let latestMeetingProvider = 'google_meet';
       let activePanelNode = null;
       const BRAND_STORAGE_KEY = '${BRAND_STORAGE_KEY}';
       const BRAND_MAX_BYTES = 1024 * 1024;
+      const GOOGLE_MEET_RECONNECT_CUTOFF_ISO = '2026-02-28T00:00:00.000Z';
 
       function getStoredBrandLogo() {
         try {
@@ -4575,6 +4683,35 @@ function buildAdvisorPage() {
           return normalized;
         }
         return normalized.slice(0, Math.max(0, maxLength - 1)).trimEnd() + '…';
+      }
+
+      function formatMeetingProviderLabel(value) {
+        const normalized = String(value || '').trim().toLowerCase();
+        if (normalized === 'zoom') {
+          return 'Zoom';
+        }
+        if (normalized === 'static_url') {
+          return 'Static URL';
+        }
+        return 'Google Meet';
+      }
+
+      function updateConnectionsMeetingProviderSummary() {
+        const node = document.getElementById('connectionsMeetingProviderSummary');
+        if (!node) {
+          return;
+        }
+        node.textContent = 'Conferencing platform preference: ' + formatMeetingProviderLabel(latestMeetingProvider);
+      }
+
+      function setConnectionProviderStatus(message, tone) {
+        const node = document.getElementById('connectionProviderStatus');
+        if (!node) {
+          return;
+        }
+
+        node.className = tone === 'error' ? 'error connection-provider-status' : tone === 'ok' ? 'ok connection-provider-status' : 'muted connection-provider-status';
+        node.textContent = String(message || '');
       }
 
       function setWorkspaceNavActive(panelId) {
@@ -4689,8 +4826,13 @@ function buildAdvisorPage() {
           return;
         }
 
-        const connectedCalendars = latestConnections.filter(
-          (connection) => String(connection?.status || '').toLowerCase() === 'connected'
+        const calendarConnections = latestConnections.filter(
+          (connection) => String(connection?.connectionType || 'calendar').toLowerCase() === 'calendar'
+        );
+        const connectedCalendars = calendarConnections.filter(
+          (connection) =>
+            String(connection?.status || '').toLowerCase() === 'connected' &&
+            String(connection?.connectionType || 'calendar').toLowerCase() === 'calendar'
         ).length;
         const totalClients = Array.isArray(latestClients) ? latestClients.length : 0;
         const hints = [];
@@ -4714,6 +4856,54 @@ function buildAdvisorPage() {
             actionText: 'Import or add clients',
             actionPanel: 'clients',
             actionFocus: 'bulkClientEmails'
+          });
+        }
+
+        const cutoffMs = Date.parse(GOOGLE_MEET_RECONNECT_CUTOFF_ISO);
+        const requiresGoogleReconnect = latestConnections.some((connection) => {
+          if (String(connection?.provider || '').toLowerCase() !== 'google') {
+            return false;
+          }
+          const createdAtMs = Date.parse(String(connection?.createdAt || ''));
+          const updatedAtMs = Date.parse(String(connection?.updatedAt || ''));
+          const connectionStartMs = Number.isFinite(createdAtMs)
+            ? createdAtMs
+            : Number.isFinite(updatedAtMs)
+              ? updatedAtMs
+              : Number.NaN;
+          return Number.isFinite(connectionStartMs) && Number.isFinite(cutoffMs) && connectionStartMs < cutoffMs;
+        });
+        if (requiresGoogleReconnect) {
+          hints.push({
+            level: 'warn',
+            title: 'Reconnect Google for Meet links',
+            detail:
+              'This Google connection predates February 28, 2026. Reconnect Google so invites can include Google Meet links automatically.',
+            actionText: 'Reconnect Google now',
+            actionPanel: 'connections',
+            actionFocus: 'googleConnect'
+          });
+        }
+
+        const latestMeetingLinkFailure = latestUsageSummary?.latestMeetingLinkFailure;
+        if (latestMeetingLinkFailure && latestMeetingLinkFailure.status) {
+          const providerLabel = String(latestMeetingLinkFailure.provider || 'meeting provider')
+            .replace(/_/g, ' ')
+            .trim();
+          const codePart = String(latestMeetingLinkFailure.errorCode || '').trim();
+          const detailPart = String(latestMeetingLinkFailure.errorMessage || '').trim();
+          const detailSegments = [codePart, detailPart].filter(Boolean);
+          hints.push({
+            level: 'warn',
+            title: 'Meeting link creation failed recently',
+            detail:
+              'Latest provider: ' +
+              providerLabel +
+              '. ' +
+              (detailSegments.length > 0 ? 'Details: ' + detailSegments.join(' | ') : 'Reconnect provider credentials and retry.'),
+            actionText: 'Open diagnostics',
+            actionPanel: 'debug',
+            actionFocus: 'traceRequestId'
           });
         }
 
@@ -4751,7 +4941,14 @@ function buildAdvisorPage() {
       }
 
       function updateWorkspaceSummaries() {
-        const connectedCalendars = latestConnections.filter((connection) => String(connection?.status || '').toLowerCase() === 'connected').length;
+        const calendarConnections = latestConnections.filter(
+          (connection) => String(connection?.connectionType || 'calendar').toLowerCase() === 'calendar'
+        );
+        const connectedCalendars = latestConnections.filter(
+          (connection) =>
+            String(connection?.status || '').toLowerCase() === 'connected' &&
+            String(connection?.connectionType || 'calendar').toLowerCase() === 'calendar'
+        ).length;
         const erroredConnections = latestConnections.filter((connection) => String(connection?.status || '').toLowerCase() === 'error').length;
         const primaryConnection = latestConnections.find((connection) => Boolean(connection?.isPrimary));
         const totalClients = latestClients.length;
@@ -4818,11 +5015,12 @@ function buildAdvisorPage() {
         renderWorkspaceDetailList(
           'workspaceConnectionsDetailList',
           [
-            'Connected: ' + connectedCalendars + ' of ' + latestConnections.length + ' calendars',
+            'Connected: ' + connectedCalendars + ' of ' + calendarConnections.length + ' calendars',
             primaryConnection
               ? 'Primary: ' +
                 compactWorkspaceValue(String(primaryConnection.provider || 'calendar') + ' · ' + String(primaryConnection.accountEmail || '-'))
               : 'Primary: Not set',
+            'Meeting platform: ' + formatMeetingProviderLabel(latestMeetingProvider),
             erroredConnections > 0 ? 'Needs attention: ' + erroredConnections + ' connection(s) in error' : 'Health: All connection statuses are healthy'
           ],
           'No connection details yet.'
@@ -4951,10 +5149,30 @@ function buildAdvisorPage() {
           });
         }
 
-        const cardButtons = Array.from(document.querySelectorAll('[data-open-panel]'));
+        const cardButtons = Array.from(document.querySelectorAll('button[data-open-panel]'));
         for (const button of cardButtons) {
           button.addEventListener('click', () => {
             openPanel(button.getAttribute('data-open-panel'));
+          });
+        }
+
+        const cardNodes = Array.from(document.querySelectorAll('.workspace-card[data-open-panel]'));
+        for (const card of cardNodes) {
+          card.addEventListener('click', (event) => {
+            if (event.target?.closest?.('button') || event.target?.closest?.('a') || event.target?.closest?.('input') || event.target?.closest?.('select') || event.target?.closest?.('textarea')) {
+              return;
+            }
+            openPanel(card.getAttribute('data-open-panel'));
+          });
+          card.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') {
+              return;
+            }
+            if (event.target?.closest?.('input') || event.target?.closest?.('select') || event.target?.closest?.('textarea')) {
+              return;
+            }
+            event.preventDefault();
+            openPanel(card.getAttribute('data-open-panel'));
           });
         }
 
@@ -5110,7 +5328,9 @@ function buildAdvisorPage() {
 
         const settings = payload.settings || {};
         latestAdvisorSettings = settings;
+        latestMeetingProvider = String(settings.meetingProvider || latestMeetingProvider || 'google_meet').trim().toLowerCase() || 'google_meet';
         updateAdvisorHeader(settings);
+        updateConnectionsMeetingProviderSummary();
         const agentEmailInput = document.getElementById('advisorAgentEmail');
         const agentNameInput = document.getElementById('advisorAgentName');
         const inviteEmailInput = document.getElementById('advisorInviteEmail');
@@ -5122,6 +5342,8 @@ function buildAdvisorPage() {
         const llmEndpointInput = document.getElementById('advisorLlmEndpoint');
         const llmApiKeyInput = document.getElementById('advisorLlmApiKey');
         const clearLlmApiKeyInput = document.getElementById('clearAdvisorLlmApiKey');
+        const meetingProviderInput = document.getElementById('advisorMeetingProvider');
+        const zoomStatusInput = document.getElementById('advisorZoomStatus');
 
         if (agentEmailInput) {
           agentEmailInput.value = settings.agentEmail || '';
@@ -5149,6 +5371,14 @@ function buildAdvisorPage() {
         }
         if (llmEndpointInput) {
           llmEndpointInput.value = settings.llmEndpoint || 'https://api.openai.com/v1/chat/completions';
+        }
+        if (meetingProviderInput) {
+          meetingProviderInput.value = settings.meetingProvider || 'google_meet';
+        }
+        if (zoomStatusInput) {
+          zoomStatusInput.value = settings.zoomMeetingConfigured
+            ? ('Connected' + (settings.zoomMeetingAccountEmail ? ' (' + settings.zoomMeetingAccountEmail + ')' : ''))
+            : 'Not connected';
         }
         if (llmApiKeyInput) {
           llmApiKeyInput.value = '';
@@ -5179,7 +5409,9 @@ function buildAdvisorPage() {
 
         const updated = responsePayload.settings || {};
         latestAdvisorSettings = updated;
+        latestMeetingProvider = String(updated.meetingProvider || latestMeetingProvider || 'google_meet').trim().toLowerCase() || 'google_meet';
         updateAdvisorHeader(updated);
+        updateConnectionsMeetingProviderSummary();
         const agentEmailInput = document.getElementById('advisorAgentEmail');
         const agentNameInput = document.getElementById('advisorAgentName');
         const inviteEmailInput = document.getElementById('advisorInviteEmail');
@@ -5191,6 +5423,8 @@ function buildAdvisorPage() {
         const llmEndpointInput = document.getElementById('advisorLlmEndpoint');
         const llmApiKeyInput = document.getElementById('advisorLlmApiKey');
         const clearLlmApiKeyInput = document.getElementById('clearAdvisorLlmApiKey');
+        const meetingProviderInput = document.getElementById('advisorMeetingProvider');
+        const zoomStatusInput = document.getElementById('advisorZoomStatus');
 
         if (agentEmailInput) {
           agentEmailInput.value = updated.agentEmail || '';
@@ -5219,6 +5453,14 @@ function buildAdvisorPage() {
         if (llmEndpointInput) {
           llmEndpointInput.value = updated.llmEndpoint || 'https://api.openai.com/v1/chat/completions';
         }
+        if (meetingProviderInput) {
+          meetingProviderInput.value = updated.meetingProvider || 'google_meet';
+        }
+        if (zoomStatusInput) {
+          zoomStatusInput.value = updated.zoomMeetingConfigured
+            ? ('Connected' + (updated.zoomMeetingAccountEmail ? ' (' + updated.zoomMeetingAccountEmail + ')' : ''))
+            : 'Not connected';
+        }
         if (llmApiKeyInput) {
           llmApiKeyInput.value = '';
         }
@@ -5231,6 +5473,40 @@ function buildAdvisorPage() {
           : 'Advisor LLM key is not configured.';
         setAdvisorSettingsStatus('Advisor profile saved. ' + configuredMessage, 'ok');
         updateWorkspaceSummaries();
+      }
+
+      async function saveMeetingProviderPreference() {
+        const meetingProvider = String(document.getElementById('advisorMeetingProvider')?.value || '').trim();
+        if (!meetingProvider) {
+          throw new Error('Select a conferencing platform before saving.');
+        }
+
+        setConnectionProviderStatus('Saving conferencing preference...');
+        const response = await fetch('./advisor/api/settings', {
+          method: 'PATCH',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ meetingProvider })
+        });
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload.error || 'Unable to save conferencing preference.');
+        }
+
+        const settings = payload.settings || {};
+        latestAdvisorSettings = {
+          ...(latestAdvisorSettings || {}),
+          ...settings
+        };
+        latestMeetingProvider = String(settings.meetingProvider || latestMeetingProvider || 'google_meet').trim().toLowerCase() || 'google_meet';
+        updateConnectionsMeetingProviderSummary();
+        const zoomStatusInput = document.getElementById('advisorZoomStatus');
+        if (zoomStatusInput) {
+          zoomStatusInput.value = settings.zoomMeetingConfigured
+            ? ('Connected' + (settings.zoomMeetingAccountEmail ? ' (' + settings.zoomMeetingAccountEmail + ')' : ''))
+            : 'Not connected';
+        }
+        updateWorkspaceSummaries();
+        setConnectionProviderStatus('Conferencing preference saved.', 'ok');
       }
 
       function readFileAsDataUrl(file) {
@@ -5278,6 +5554,14 @@ function buildAdvisorPage() {
           banner.style.display = 'block';
           banner.className = 'banner ok';
           banner.textContent = 'Google calendar connected successfully.';
+        } else if (connected === 'microsoft') {
+          banner.style.display = 'block';
+          banner.className = 'banner ok';
+          banner.textContent = 'Microsoft calendar connected successfully.';
+        } else if (connected === 'zoom') {
+          banner.style.display = 'block';
+          banner.className = 'banner ok';
+          banner.textContent = 'Zoom meeting provider connected successfully.';
         } else if (error) {
           banner.style.display = 'block';
           banner.className = 'banner error';
@@ -5434,11 +5718,17 @@ function buildAdvisorPage() {
         const tbody = document.getElementById('connectionsBody');
         tbody.innerHTML = '';
         latestConnections = Array.isArray(payload.connections) ? payload.connections : [];
+        latestMeetingProvider = String(payload.meetingProvider || latestMeetingProvider || 'google_meet').trim().toLowerCase() || 'google_meet';
+        updateConnectionsMeetingProviderSummary();
+        const meetingProviderInput = document.getElementById('advisorMeetingProvider');
+        if (meetingProviderInput) {
+          meetingProviderInput.value = latestMeetingProvider;
+        }
         renderOverviewMetrics();
 
         if (!payload.connections || payload.connections.length === 0) {
           const row = document.createElement('tr');
-          row.innerHTML = '<td colspan="6" class="muted">No connections yet.</td>';
+          row.innerHTML = '<td colspan="7" class="muted">No connections yet.</td>';
           tbody.appendChild(row);
           return;
         }
@@ -5447,18 +5737,28 @@ function buildAdvisorPage() {
           const row = document.createElement('tr');
           const statusClass = connection.status === 'connected' ? 'ok' : connection.status === 'error' ? 'error' : 'warn';
 
+          const connectionType = String(connection.connectionType || 'calendar').toLowerCase();
+          const canRemove = connection.canRemove !== false;
           row.innerHTML =
             '<td><code>' + connection.provider + '</code></td>' +
             '<td>' + (connection.accountEmail || '-') + '</td>' +
             '<td><span class="status ' + statusClass + '">' + connection.status + '</span></td>' +
+            '<td>' + (connectionType === 'meeting_provider' ? 'Meeting provider' : 'Calendar') + '</td>' +
             '<td>' + (connection.isPrimary ? 'Yes' : 'No') + '</td>' +
             '<td>' + (connection.updatedAt || '-') + '</td>' +
-            '<td><button data-id="' + connection.connectionId + '">Remove</button></td>';
+            '<td>' +
+            (canRemove
+              ? '<button data-id="' + connection.connectionId + '">Remove</button>'
+              : '<span class="muted">Managed by provider settings</span>') +
+            '</td>';
 
-          row.querySelector('button').addEventListener('click', async () => {
-            await fetch('./advisor/api/connections/' + connection.connectionId, { method: 'DELETE' });
-            await loadConnections();
-          });
+          const removeButton = row.querySelector('button[data-id]');
+          if (removeButton) {
+            removeButton.addEventListener('click', async () => {
+              await fetch('./advisor/api/connections/' + connection.connectionId, { method: 'DELETE' });
+              await loadConnections();
+            });
+          }
 
           tbody.appendChild(row);
         }
@@ -5893,6 +6193,17 @@ function buildAdvisorPage() {
         }
       });
 
+      const saveMeetingProviderButton = document.getElementById('saveMeetingProvider');
+      if (saveMeetingProviderButton) {
+        saveMeetingProviderButton.addEventListener('click', async () => {
+          try {
+            await saveMeetingProviderPreference();
+          } catch (error) {
+            setConnectionProviderStatus(error.message || 'Unable to save conferencing preference.', 'error');
+          }
+        });
+      }
+
       document.getElementById('saveBrandLogo').addEventListener('click', async () => {
         try {
           await saveUploadedBrandLogo();
@@ -5981,6 +6292,10 @@ function buildAdvisorPage() {
 
       document.getElementById('microsoftConnect').addEventListener('click', () => {
         window.location.href = './advisor/api/connections/microsoft/start';
+      });
+
+      document.getElementById('zoomConnect').addEventListener('click', () => {
+        window.location.href = './advisor/api/connections/zoom/start';
       });
 
       function openAdvisorCalendarView() {
@@ -6186,6 +6501,32 @@ async function exchangeMicrosoftCodeForTokens({
   });
 }
 
+async function exchangeZoomCodeForTokens({ clientId, clientSecret, code, redirectUri, fetchImpl }) {
+  const fetchFn = fetchImpl ?? fetch;
+  const form = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: redirectUri
+  });
+
+  const basicAuth = Buffer.from(`${clientId}:${clientSecret}`, "utf8").toString("base64");
+  const response = await fetchFn("https://zoom.us/oauth/token", {
+    method: "POST",
+    headers: {
+      authorization: `Basic ${basicAuth}`,
+      "content-type": "application/x-www-form-urlencoded"
+    },
+    body: form.toString()
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Zoom code exchange failed (${response.status}): ${message}`);
+  }
+
+  return response.json();
+}
+
 async function fetchGoogleUserProfile(accessToken, fetchImpl) {
   const fetchFn = fetchImpl ?? fetch;
   const response = await fetchFn("https://openidconnect.googleapis.com/v1/userinfo", {
@@ -6220,6 +6561,26 @@ async function fetchMicrosoftUserProfile(accessToken, fetchImpl) {
   return {
     email: email || null,
     displayName: String(payload.displayName ?? "").trim() || null
+  };
+}
+
+async function fetchZoomUserProfile(accessToken, fetchImpl) {
+  const fetchFn = fetchImpl ?? fetch;
+  const response = await fetchFn("https://api.zoom.us/v2/users/me", {
+    method: "GET",
+    headers: {
+      authorization: `Bearer ${accessToken}`
+    }
+  });
+
+  if (!response.ok) {
+    return { email: null };
+  }
+
+  const payload = await response.json();
+  return {
+    email: String(payload?.email ?? "").trim().toLowerCase() || null,
+    displayName: String(payload?.display_name ?? payload?.first_name ?? "").trim() || null
   };
 }
 
@@ -6268,6 +6629,7 @@ export function createPortalHandler(overrides = {}) {
     const oauthStateTableName = process.env.OAUTH_STATE_TABLE_NAME;
     const googleAppSecretArn = process.env.GOOGLE_OAUTH_APP_SECRET_ARN;
     const microsoftAppSecretArn = process.env.MICROSOFT_OAUTH_APP_SECRET_ARN;
+    const zoomAppSecretArn = process.env.ZOOM_OAUTH_APP_SECRET_ARN;
     const sessionSecretArn = process.env.ADVISOR_PORTAL_SESSION_SECRET_ARN;
     const availabilityLinkSecretArn = process.env.AVAILABILITY_LINK_SECRET_ARN;
     const availabilityLinkTableName = process.env.AVAILABILITY_LINK_TABLE_NAME;
@@ -6878,6 +7240,9 @@ export function createPortalHandler(overrides = {}) {
           inviteEmail: normalizedSettings.inviteEmail,
           preferredName: normalizedSettings.preferredName,
           timezone: normalizedSettings.timezone,
+          meetingProvider: normalizedSettings.meetingProvider,
+          zoomMeetingConfigured: Boolean(normalizedSettings.zoomMeetingSecretArn),
+          zoomMeetingAccountEmail: normalizedSettings.zoomMeetingAccountEmail,
           llmKeyMode: normalizedSettings.llmKeyMode,
           llmProvider: normalizedSettings.llmProvider,
           llmModel: normalizedSettings.llmModel,
@@ -6906,6 +7271,7 @@ export function createPortalHandler(overrides = {}) {
       const hasInviteEmail = Object.prototype.hasOwnProperty.call(body, "inviteEmail");
       const hasPreferredName = Object.prototype.hasOwnProperty.call(body, "preferredName");
       const hasTimezone = Object.prototype.hasOwnProperty.call(body, "timezone");
+      const hasMeetingProvider = Object.prototype.hasOwnProperty.call(body, "meetingProvider");
       const hasLlmKeyMode = Object.prototype.hasOwnProperty.call(body, "llmKeyMode");
       const hasLlmProvider = Object.prototype.hasOwnProperty.call(body, "llmProvider");
       const hasLlmModel = Object.prototype.hasOwnProperty.call(body, "llmModel");
@@ -6918,6 +7284,7 @@ export function createPortalHandler(overrides = {}) {
         !hasInviteEmail &&
         !hasPreferredName &&
         !hasTimezone &&
+        !hasMeetingProvider &&
         !hasLlmKeyMode &&
         !hasLlmProvider &&
         !hasLlmModel &&
@@ -6926,7 +7293,7 @@ export function createPortalHandler(overrides = {}) {
         !hasClearAdvisorLlmApiKey
       ) {
         return badRequest(
-          "At least one setting field is required: agentEmail, agentName, inviteEmail, preferredName, timezone, llmKeyMode, llmProvider, llmModel, llmEndpoint, llmApiKey, clearAdvisorLlmApiKey"
+          "At least one setting field is required: agentEmail, agentName, inviteEmail, preferredName, timezone, meetingProvider, llmKeyMode, llmProvider, llmModel, llmEndpoint, llmApiKey, clearAdvisorLlmApiKey"
         );
       }
 
@@ -7004,6 +7371,14 @@ export function createPortalHandler(overrides = {}) {
           return badRequest("timezone must be a valid IANA timezone (for example America/Los_Angeles)");
         }
         mergedSettings.timezone = timezone;
+      }
+
+      if (hasMeetingProvider) {
+        const meetingProvider = normalizeMeetingLinkProvider(body.meetingProvider, "");
+        if (!meetingProvider) {
+          return badRequest("meetingProvider must be one of: google_meet, zoom, static_url");
+        }
+        mergedSettings.meetingProvider = meetingProvider;
       }
 
       if (hasLlmProvider) {
@@ -7133,6 +7508,9 @@ export function createPortalHandler(overrides = {}) {
           inviteEmail: normalizedSettings.inviteEmail,
           preferredName: normalizedSettings.preferredName,
           timezone: normalizedSettings.timezone,
+          meetingProvider: normalizedSettings.meetingProvider,
+          zoomMeetingConfigured: Boolean(normalizedSettings.zoomMeetingSecretArn),
+          zoomMeetingAccountEmail: normalizedSettings.zoomMeetingAccountEmail,
           llmKeyMode: normalizedSettings.llmKeyMode,
           llmProvider: normalizedSettings.llmProvider,
           llmModel: normalizedSettings.llmModel,
@@ -7152,16 +7530,53 @@ export function createPortalHandler(overrides = {}) {
       const connections = await deps.listConnections(connectionsTableName, advisorId);
       connections.sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
 
+      let meetingProvider = "google_meet";
+      let zoomMeetingConfigured = false;
+      let zoomMeetingAccountEmail = "";
+      let advisorSettingsUpdatedAt = "";
+      let advisorSettingsCreatedAt = "";
+      if (advisorSettingsTableName && typeof deps.getAdvisorSettings === "function") {
+        try {
+          const settings = await deps.getAdvisorSettings(advisorSettingsTableName, advisorId);
+          meetingProvider = normalizeMeetingLinkProvider(settings?.meetingProvider, "google_meet");
+          zoomMeetingConfigured = Boolean(normalizeSecretArn(settings?.zoomMeetingSecretArn));
+          zoomMeetingAccountEmail = normalizeAdvisorEmail(settings?.zoomMeetingAccountEmail);
+          advisorSettingsUpdatedAt = String(settings?.updatedAt ?? "").trim();
+          advisorSettingsCreatedAt = String(settings?.createdAt ?? "").trim();
+        } catch {
+          // Keep defaults when advisor settings are unavailable.
+        }
+      }
+
+      const mappedConnections = connections.map((item) => ({
+        connectionId: item.connectionId,
+        provider: item.provider,
+        accountEmail: item.accountEmail,
+        status: item.status,
+        connectionType: "calendar",
+        isPrimary: Boolean(item.isPrimary),
+        canRemove: true,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt
+      }));
+      if (zoomMeetingConfigured) {
+        mappedConnections.push({
+          connectionId: "zoom-meeting-provider",
+          provider: "zoom",
+          accountEmail: zoomMeetingAccountEmail || "-",
+          status: "connected",
+          connectionType: "meeting_provider",
+          isPrimary: false,
+          canRemove: false,
+          createdAt: advisorSettingsCreatedAt || advisorSettingsUpdatedAt || "",
+          updatedAt: advisorSettingsUpdatedAt || advisorSettingsCreatedAt || ""
+        });
+      }
+
       return jsonResponse(200, {
         advisorId,
-        connections: connections.map((item) => ({
-          connectionId: item.connectionId,
-          provider: item.provider,
-          accountEmail: item.accountEmail,
-          status: item.status,
-          isPrimary: Boolean(item.isPrimary),
-          updatedAt: item.updatedAt
-        }))
+        meetingProvider,
+        connections: mappedConnections
       });
     }
 
@@ -7761,7 +8176,10 @@ export function createPortalHandler(overrides = {}) {
       authUrl.searchParams.set("client_id", appSecret.clientId);
       authUrl.searchParams.set("redirect_uri", redirectUri);
       authUrl.searchParams.set("response_type", "code");
-      authUrl.searchParams.set("scope", "https://www.googleapis.com/auth/calendar.readonly openid email profile");
+      authUrl.searchParams.set(
+        "scope",
+        "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/meetings.space.created openid email profile"
+      );
       authUrl.searchParams.set("access_type", "offline");
       authUrl.searchParams.set("prompt", "consent");
       authUrl.searchParams.set("state", state);
@@ -7988,6 +8406,170 @@ export function createPortalHandler(overrides = {}) {
       });
 
       return redirectResponse(`${getBaseUrl(event)}/advisor?connected=microsoft`);
+    }
+
+    if ((method === "POST" || method === "GET") && rawPath === "/advisor/api/connections/zoom/start") {
+      if (!oauthStateTableName) {
+        if (method === "GET") {
+          return redirectAdvisorWithError(event, "OAUTH_STATE_TABLE_NAME is required");
+        }
+
+        return serverError("OAUTH_STATE_TABLE_NAME is required");
+      }
+
+      if (!zoomAppSecretArn) {
+        if (method === "GET") {
+          return redirectAdvisorWithError(event, "Zoom OAuth app is not configured in this environment yet.");
+        }
+
+        return badRequest("Zoom OAuth app is not configured in this environment yet.");
+      }
+
+      let appSecret;
+      try {
+        appSecret = parseZoomAppSecret(await deps.getSecretString(zoomAppSecretArn));
+      } catch (error) {
+        if (method === "GET") {
+          return redirectAdvisorWithError(event, error.message);
+        }
+
+        return badRequest(error.message);
+      }
+
+      const state = crypto.randomUUID();
+      const nowMs = Date.now();
+      await deps.putOauthState(oauthStateTableName, state, {
+        advisorId,
+        purpose: "zoom_meeting_connection",
+        provider: "zoom",
+        createdAt: new Date(nowMs).toISOString(),
+        expiresAt: Math.floor((nowMs + 15 * 60 * 1000) / 1000)
+      });
+
+      const redirectUri = `${getBaseUrl(event)}/advisor/api/connections/zoom/callback`;
+      const authUrl = new URL("https://zoom.us/oauth/authorize");
+      authUrl.searchParams.set("response_type", "code");
+      authUrl.searchParams.set("client_id", appSecret.clientId);
+      authUrl.searchParams.set("redirect_uri", redirectUri);
+      authUrl.searchParams.set("state", state);
+      return redirectResponse(authUrl.toString());
+    }
+
+    if (method === "GET" && rawPath === "/advisor/api/connections/zoom/callback") {
+      if (!oauthStateTableName) {
+        return serverError("OAUTH_STATE_TABLE_NAME is required");
+      }
+      if (!advisorSettingsTableName) {
+        return serverError("ADVISOR_SETTINGS_TABLE_NAME is required");
+      }
+      if (!zoomAppSecretArn) {
+        return badRequest("Zoom OAuth app is not configured in this environment yet.");
+      }
+
+      const code = event.queryStringParameters?.code;
+      const state = event.queryStringParameters?.state;
+      if (!code || !state) {
+        return badRequest("Missing OAuth callback code/state");
+      }
+
+      const stateItem = await deps.getOauthState(oauthStateTableName, state);
+      if (
+        !stateItem ||
+        stateItem.purpose !== "zoom_meeting_connection" ||
+        (stateItem.provider && stateItem.provider !== "zoom")
+      ) {
+        return badRequest("Invalid or expired OAuth state");
+      }
+      const oauthAdvisorId = normalizeAdvisorId(stateItem.advisorId, advisorId);
+      await deps.deleteOauthState(oauthStateTableName, state);
+
+      let appSecret;
+      try {
+        appSecret = parseZoomAppSecret(await deps.getSecretString(zoomAppSecretArn));
+      } catch (error) {
+        return badRequest(error.message);
+      }
+
+      const redirectUri = `${getBaseUrl(event)}/advisor/api/connections/zoom/callback`;
+      const tokenPayload = await exchangeZoomCodeForTokens({
+        clientId: appSecret.clientId,
+        clientSecret: appSecret.clientSecret,
+        code,
+        redirectUri,
+        fetchImpl: deps.fetchImpl
+      });
+
+      const refreshToken = String(tokenPayload?.refresh_token ?? "").trim();
+      if (!refreshToken) {
+        return badRequest("Zoom did not return refresh_token. Reconnect and ensure consent prompt is granted.");
+      }
+
+      const profile = tokenPayload?.access_token
+        ? await fetchZoomUserProfile(tokenPayload.access_token, deps.fetchImpl)
+        : { email: null };
+
+      const existingSettings = await deps.getAdvisorSettings(advisorSettingsTableName, oauthAdvisorId);
+      const existingZoomMeetingSecretArn = normalizeSecretArn(existingSettings?.zoomMeetingSecretArn);
+      const meetingSecretPayload = JSON.stringify({
+        refresh_token: refreshToken,
+        account_email: profile.email ?? ""
+      });
+
+      let zoomMeetingSecretArn = existingZoomMeetingSecretArn;
+      if (existingZoomMeetingSecretArn && typeof deps.putSecretValue === "function") {
+        await deps.putSecretValue(existingZoomMeetingSecretArn, meetingSecretPayload);
+      } else {
+        const secretName = buildAdvisorZoomMeetingSecretName({
+          appName,
+          stage,
+          advisorId: oauthAdvisorId
+        });
+        zoomMeetingSecretArn = await deps.createSecret(secretName, meetingSecretPayload);
+      }
+
+      const fallbackAdvisorEmail = normalizeAdvisorEmail(
+        existingSettings?.advisorEmail ?? advisorEmail ?? profile.email ?? process.env.ADVISOR_ALLOWED_EMAIL ?? ""
+      );
+      const fallbackInviteEmail = normalizeAdvisorEmail(existingSettings?.inviteEmail ?? fallbackAdvisorEmail);
+      const fallbackPreferredName =
+        normalizeAdvisorPreferredName(existingSettings?.preferredName ?? "") ||
+        deriveAdvisorPreferredNameFromEmail(fallbackAdvisorEmail || fallbackInviteEmail, oauthAdvisorId);
+      const fallbackTimezone = normalizeTimezone(
+        existingSettings?.timezone ?? process.env.HOST_TIMEZONE,
+        DEFAULT_ADVISOR_TIMEZONE
+      );
+      const fallbackLlmProvider = normalizeLlmProvider(
+        existingSettings?.llmProvider ?? process.env.LLM_DEFAULT_PROVIDER,
+        DEFAULT_LLM_PROVIDER
+      );
+      const fallbackLlmModel = normalizeLlmModel(
+        existingSettings?.llmModel ?? process.env.LLM_DEFAULT_MODEL,
+        DEFAULT_LLM_MODEL
+      );
+      const fallbackLlmEndpoint = normalizeLlmEndpoint(
+        existingSettings?.llmEndpoint ?? process.env.LLM_DEFAULT_ENDPOINT,
+        DEFAULT_LLM_ENDPOINT
+      );
+
+      const nextSettings = normalizeAdvisorSettingsRecord({
+        advisorId: oauthAdvisorId,
+        settings: {
+          ...(existingSettings ?? {}),
+          zoomMeetingSecretArn,
+          zoomMeetingAccountEmail: profile.email ?? existingSettings?.zoomMeetingAccountEmail ?? ""
+        },
+        fallbackAdvisorEmail,
+        fallbackInviteEmail,
+        fallbackPreferredName,
+        fallbackTimezone,
+        fallbackAgentEmailDomain: defaultAgentEmailDomain,
+        fallbackLlmProvider,
+        fallbackLlmModel,
+        fallbackLlmEndpoint
+      });
+      await deps.putAdvisorSettings(advisorSettingsTableName, nextSettings);
+
+      return redirectResponse(`${getBaseUrl(event)}/advisor?connected=zoom`);
     }
 
     if (method === "DELETE" && rawPath.startsWith("/advisor/api/connections/")) {

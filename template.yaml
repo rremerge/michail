@@ -69,6 +69,10 @@ Parameters:
     Type: String
     Default: ""
     Description: Optional app-level secret name for Microsoft OAuth client_id/client_secret/tenant_id.
+  ZoomOAuthAppSecretName:
+    Type: String
+    Default: ""
+    Description: Optional app-level secret name for Zoom OAuth client_id/client_secret.
   AdvisorId:
     Type: String
     Default: advisor
@@ -163,6 +167,7 @@ Conditions:
   HasCustomMicrosoftSecretName: !Not [!Equals [!Ref MicrosoftOAuthSecretName, ""]]
   HasCustomAppSecretName: !Not [!Equals [!Ref GoogleOAuthAppSecretName, ""]]
   HasCustomMicrosoftAppSecretName: !Not [!Equals [!Ref MicrosoftOAuthAppSecretName, ""]]
+  HasCustomZoomAppSecretName: !Not [!Equals [!Ref ZoomOAuthAppSecretName, ""]]
   HasCustomLlmProviderSecretName: !Not [!Equals [!Ref LlmProviderSecretName, ""]]
   HasCustomAdvisorPortalAuthSecretName: !Not [!Equals [!Ref AdvisorPortalAuthSecretName, ""]]
   HasCustomAdvisorPortalSessionSecretName: !Not [!Equals [!Ref AdvisorPortalSessionSecretName, ""]]
@@ -398,6 +403,21 @@ Resources:
         - Key: stage
           Value: !Ref Stage
 
+  ZoomOAuthAppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !If
+        - HasCustomZoomAppSecretName
+        - !Ref ZoomOAuthAppSecretName
+        - !Sub /${AppName}/${Stage}/${AWS::StackName}/zoom-oauth-app
+      Description: Zoom OAuth application credentials (client_id/client_secret).
+      SecretString: '{"client_id":"","client_secret":""}'
+      Tags:
+        - Key: application
+          Value: !Ref AppName
+        - Key: stage
+          Value: !Ref Stage
+
   LlmProviderSecret:
     Type: AWS::SecretsManager::Secret
     Properties:
@@ -520,6 +540,7 @@ Resources:
           INTENT_LLM_TIMEOUT_MS: !Ref IntentLlmTimeoutMs
           INTENT_LLM_CONFIDENCE_THRESHOLD: !Ref IntentLlmConfidenceThreshold
           LLM_PROVIDER_SECRET_ARN: !Ref LlmProviderSecret
+          ZOOM_OAUTH_APP_SECRET_ARN: !Ref ZoomOAuthAppSecret
           RAW_EMAIL_BUCKET: !Ref InboundRawEmailBucket
           RAW_EMAIL_BUCKET_REGION: !Ref InboundRawEmailBucketRegion
           RAW_EMAIL_OBJECT_PREFIX: !Ref InboundRawEmailObjectPrefix
@@ -566,6 +587,11 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref MicrosoftOAuthSecret
+            - Sid: ReadZoomOAuthAppSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref ZoomOAuthAppSecret
             - Sid: ReadLlmProviderSecret
               Effect: Allow
               Action:
@@ -600,6 +626,11 @@ Resources:
               Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
+              Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/${AppName}/${Stage}/*
+            - Sid: RotateConnectionOAuthSecrets
+              Effect: Allow
+              Action:
+                - secretsmanager:PutSecretValue
               Resource: !Sub arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:/${AppName}/${Stage}/*
             - Sid: SendResponseEmail
               Effect: Allow
@@ -660,6 +691,7 @@ Resources:
           OAUTH_STATE_TABLE_NAME: !Ref OAuthStateTable
           GOOGLE_OAUTH_APP_SECRET_ARN: !Ref GoogleOAuthAppSecret
           MICROSOFT_OAUTH_APP_SECRET_ARN: !Ref MicrosoftOAuthAppSecret
+          ZOOM_OAUTH_APP_SECRET_ARN: !Ref ZoomOAuthAppSecret
           ADVISOR_PORTAL_AUTH_MODE: !Ref AdvisorPortalAuthMode
           ADVISOR_PORTAL_AUTH_SECRET_ARN: !Ref AdvisorPortalAuthSecret
           ADVISOR_PORTAL_SESSION_SECRET_ARN: !Ref AdvisorPortalSessionSecret
@@ -743,6 +775,24 @@ Resources:
             ApiId: !Ref SpikeApi
             Method: GET
             Path: /advisor/api/connections/microsoft/callback
+        AdvisorZoomStart:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: POST
+            Path: /advisor/api/connections/zoom/start
+        AdvisorZoomStartGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /advisor/api/connections/zoom/start
+        AdvisorZoomCallback:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref SpikeApi
+            Method: GET
+            Path: /advisor/api/connections/zoom/callback
         AdvisorAuthGoogleStart:
           Type: HttpApi
           Properties:
@@ -869,6 +919,11 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref MicrosoftOAuthAppSecret
+            - Sid: ReadZoomOAuthAppSecret
+              Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref ZoomOAuthAppSecret
             - Sid: ReadGoogleOAuthSecret
               Effect: Allow
               Action:
@@ -956,6 +1011,9 @@ Outputs:
   MicrosoftOAuthAppSecretArn:
     Description: Secret ARN for Microsoft OAuth app credentials (client_id/client_secret/tenant_id).
     Value: !Ref MicrosoftOAuthAppSecret
+  ZoomOAuthAppSecretArn:
+    Description: Secret ARN for Zoom OAuth app credentials (client_id/client_secret).
+    Value: !Ref ZoomOAuthAppSecret
   LlmProviderSecretArn:
     Description: Secret ARN for LLM provider credentials/settings.
     Value: !Ref LlmProviderSecret

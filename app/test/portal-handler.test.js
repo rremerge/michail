@@ -78,6 +78,8 @@ test("advisor portal home serves html", async () => {
     assert.match(response.body, /grid-template-columns: repeat\(3, minmax\(240px, 1fr\)\)/);
     assert.match(response.body, /Connect Google \(Sign In\)/);
     assert.match(response.body, /Connect Microsoft \(Sign In\)/);
+    assert.match(response.body, /id="connectionsMeetingProviderSummary"/);
+    assert.match(response.body, /data-open-panel="connections"/);
     assert.match(response.body, /Open Advisor Calendar/);
     assert.equal(response.body.includes("Add Mock Calendar"), false);
     assert.match(response.body, /Copyright \(C\) 2026\. RR Emerge LLC/);
@@ -891,8 +893,10 @@ test("advisor portal can create and list mock connection", async () => {
 
     assert.equal(listResponse.statusCode, 200);
     const listPayload = JSON.parse(listResponse.body);
+    assert.equal(listPayload.meetingProvider, "google_meet");
     assert.equal(listPayload.connections.length, 1);
     assert.equal(listPayload.connections[0].provider, "mock");
+    assert.equal(listPayload.connections[0].connectionType, "calendar");
   } finally {
     if (previousConnectionsTable === undefined) {
       delete process.env.CONNECTIONS_TABLE_NAME;
@@ -904,6 +908,77 @@ test("advisor portal can create and list mock connection", async () => {
       delete process.env.ADVISOR_ID;
     } else {
       process.env.ADVISOR_ID = previousAdvisorId;
+    }
+  }
+});
+
+test("advisor portal connections list includes zoom meeting provider row and preferred provider", async () => {
+  const handler = createPortalHandler({
+    async listConnections() {
+      return [
+        {
+          advisorId: "manoj",
+          connectionId: "google-1",
+          provider: "google",
+          accountEmail: "manoj@gmail.com",
+          status: "connected",
+          isPrimary: true,
+          createdAt: "2026-02-10T10:00:00.000Z",
+          updatedAt: "2026-02-12T10:00:00.000Z"
+        }
+      ];
+    },
+    async getAdvisorSettings(tableName, advisorId) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(advisorId, "manoj");
+      return {
+        advisorId,
+        meetingProvider: "zoom",
+        zoomMeetingSecretArn: "arn:aws:secretsmanager:us-east-1:111111111111:secret:/calendar-agent-spike/dev/manoj/zoom/meeting",
+        zoomMeetingAccountEmail: "manoj.zoom@example.com",
+        createdAt: "2026-02-20T10:00:00.000Z",
+        updatedAt: "2026-02-22T12:00:00.000Z"
+      };
+    }
+  });
+
+  const previousValues = {
+    CONNECTIONS_TABLE_NAME: process.env.CONNECTIONS_TABLE_NAME,
+    ADVISOR_SETTINGS_TABLE_NAME: process.env.ADVISOR_SETTINGS_TABLE_NAME,
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    ADVISOR_ID: process.env.ADVISOR_ID
+  };
+
+  process.env.CONNECTIONS_TABLE_NAME = "ConnectionsTable";
+  process.env.ADVISOR_SETTINGS_TABLE_NAME = "AdvisorSettingsTable";
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.ADVISOR_ID = "manoj";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        http: { method: "GET" }
+      },
+      rawPath: "/advisor/api/connections"
+    });
+
+    assert.equal(response.statusCode, 200);
+    const payload = JSON.parse(response.body);
+    assert.equal(payload.meetingProvider, "zoom");
+    assert.equal(payload.connections.length, 2);
+    const zoomRow = payload.connections.find((connection) => connection.connectionId === "zoom-meeting-provider");
+    assert.ok(zoomRow);
+    assert.equal(zoomRow.provider, "zoom");
+    assert.equal(zoomRow.connectionType, "meeting_provider");
+    assert.equal(zoomRow.canRemove, false);
+    assert.equal(zoomRow.accountEmail, "manoj.zoom@example.com");
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
     }
   }
 });
@@ -1423,6 +1498,10 @@ test("advisor portal usage summary aggregates advisor-scoped llm and infra metri
       responseMode: "send",
       bookingStatus: "not_requested",
       providerStatus: "error",
+      meetingLinkProvider: "zoom",
+      meetingLinkStatus: "zoom_create_failed",
+      meetingLinkErrorCode: "zoom_http_401",
+      meetingLinkErrorMessage: "Zoom meeting create failed (401): invalid token",
       llmProvider: "openai",
       llmModel: "gpt-5.2",
       llmRequestCount: 1,
@@ -1472,6 +1551,10 @@ test("advisor portal usage summary aggregates advisor-scoped llm and infra metri
     assert.equal(payload.byModel[0].model, "gpt-5.2");
     assert.equal(payload.byModel[0].requestCount, 3);
     assert.equal(payload.byModel[0].totalTokens, 2100);
+    assert.equal(payload.latestMeetingLinkFailure.requestId, "req-2");
+    assert.equal(payload.latestMeetingLinkFailure.provider, "zoom");
+    assert.equal(payload.latestMeetingLinkFailure.status, "zoom_create_failed");
+    assert.equal(payload.latestMeetingLinkFailure.errorCode, "zoom_http_401");
     assert.equal(Math.abs(payload.totals.llmEstimatedCostUsd - 0.0093) < 0.0000001, true);
     assert.equal(payload.totals.estimatedTotalCostUsd > payload.totals.llmEstimatedCostUsd, true);
   } finally {
@@ -1539,6 +1622,8 @@ test("advisor portal settings api returns and updates advisor profile settings",
     assert.equal(getPayload.settings.inviteEmail, "manoj@rremerge.com");
     assert.equal(getPayload.settings.preferredName, "Manoj");
     assert.equal(getPayload.settings.timezone, "America/Los_Angeles");
+    assert.equal(getPayload.settings.meetingProvider, "google_meet");
+    assert.equal(getPayload.settings.zoomMeetingConfigured, false);
     assert.equal(getPayload.settings.llmKeyMode, "platform");
     assert.equal(getPayload.settings.llmProvider, "openai");
     assert.equal(getPayload.settings.advisorLlmKeyConfigured, false);
@@ -1553,7 +1638,8 @@ test("advisor portal settings api returns and updates advisor profile settings",
         agentName: "Miitb Assistant",
         inviteEmail: "advisor@newdomain.com",
         preferredName: "Manoj Apte",
-        timezone: "America/New_York"
+        timezone: "America/New_York",
+        meetingProvider: "zoom"
       })
     });
 
@@ -1563,6 +1649,7 @@ test("advisor portal settings api returns and updates advisor profile settings",
     assert.equal(writes[0].inviteEmail, "advisor@newdomain.com");
     assert.equal(writes[0].preferredName, "Manoj Apte");
     assert.equal(writes[0].timezone, "America/New_York");
+    assert.equal(writes[0].meetingProvider, "zoom");
     assert.equal(writes[0].llmKeyMode, "platform");
     assert.equal(writes[0].llmProvider, "openai");
   } finally {
@@ -2289,6 +2376,187 @@ test("advisor portal microsoft callback persists calendar connection for advisor
   }
 });
 
+test("advisor portal zoom start redirects browser to Zoom login", async () => {
+  let capturedState = null;
+  const handler = createPortalHandler({
+    async getSecretString() {
+      return JSON.stringify({
+        client_id: "zoom-client-id",
+        client_secret: "zoom-client-secret"
+      });
+    },
+    async putOauthState(_tableName, state) {
+      capturedState = state;
+    }
+  });
+
+  const previousOauthStateTable = process.env.OAUTH_STATE_TABLE_NAME;
+  const previousZoomAppSecretArn = process.env.ZOOM_OAUTH_APP_SECRET_ARN;
+
+  process.env.OAUTH_STATE_TABLE_NAME = "OAuthStateTable";
+  process.env.ZOOM_OAUTH_APP_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:zoom-app";
+
+  try {
+    const response = await handler({
+      requestContext: {
+        domainName: "xytaxmumc3.execute-api.us-east-1.amazonaws.com",
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/api/connections/zoom/start"
+    });
+
+    assert.equal(response.statusCode, 302);
+    assert.ok(response.headers.location.startsWith("https://zoom.us/oauth/authorize"));
+    const redirectUrl = new URL(response.headers.location);
+    assert.equal(redirectUrl.searchParams.get("client_id"), "zoom-client-id");
+    assert.equal(
+      redirectUrl.searchParams.get("redirect_uri"),
+      "https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev/advisor/api/connections/zoom/callback"
+    );
+    assert.equal(redirectUrl.searchParams.get("response_type"), "code");
+    assert.equal(redirectUrl.searchParams.get("state"), capturedState);
+    assert.ok(capturedState);
+  } finally {
+    if (previousOauthStateTable === undefined) {
+      delete process.env.OAUTH_STATE_TABLE_NAME;
+    } else {
+      process.env.OAUTH_STATE_TABLE_NAME = previousOauthStateTable;
+    }
+
+    if (previousZoomAppSecretArn === undefined) {
+      delete process.env.ZOOM_OAUTH_APP_SECRET_ARN;
+    } else {
+      process.env.ZOOM_OAUTH_APP_SECRET_ARN = previousZoomAppSecretArn;
+    }
+  }
+});
+
+test("advisor portal zoom callback stores advisor meeting secret and updates settings", async () => {
+  let createdSecretName = null;
+  let createdSecretValue = null;
+  let savedSettings = null;
+  const handler = createPortalHandler({
+    async getOauthState() {
+      return {
+        advisorId: "manoj",
+        purpose: "zoom_meeting_connection",
+        provider: "zoom"
+      };
+    },
+    async deleteOauthState() {},
+    async getSecretString(secretArn) {
+      assert.equal(secretArn, "arn:aws:secretsmanager:us-east-1:111111111111:secret:zoom-app");
+      return JSON.stringify({
+        client_id: "zoom-client-id",
+        client_secret: "zoom-client-secret"
+      });
+    },
+    async getAdvisorSettings(tableName, advisorId) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      assert.equal(advisorId, "manoj");
+      return {
+        advisorId: "manoj",
+        advisorEmail: "manoj@example.com",
+        inviteEmail: "manoj@example.com",
+        preferredName: "Manoj",
+        timezone: "America/Los_Angeles",
+        agentEmail: "manoj.agent@agent.letsconnect.ai",
+        agentName: "Miitb",
+        llmProvider: "openai",
+        llmModel: "gpt-5.2",
+        llmEndpoint: "https://api.openai.com/v1/chat/completions",
+        llmKeyMode: "platform"
+      };
+    },
+    async createSecret(secretName, secretValue) {
+      createdSecretName = secretName;
+      createdSecretValue = secretValue;
+      return "arn:aws:secretsmanager:us-east-1:111111111111:secret:/calendar-agent-spike/dev/manoj/zoom/meeting";
+    },
+    async putAdvisorSettings(tableName, item) {
+      assert.equal(tableName, "AdvisorSettingsTable");
+      savedSettings = item;
+    },
+    fetchImpl: async (url) => {
+      const target = String(url);
+      if (target === "https://zoom.us/oauth/token") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              access_token: "zoom-access-token",
+              refresh_token: "zoom-refresh-token"
+            };
+          }
+        };
+      }
+      if (target === "https://api.zoom.us/v2/users/me") {
+        return {
+          ok: true,
+          async json() {
+            return {
+              email: "manoj.zoom@example.com",
+              display_name: "Manoj Zoom"
+            };
+          }
+        };
+      }
+      throw new Error(`unexpected fetch url: ${target}`);
+    }
+  });
+
+  const previousValues = {
+    ADVISOR_PORTAL_AUTH_MODE: process.env.ADVISOR_PORTAL_AUTH_MODE,
+    OAUTH_STATE_TABLE_NAME: process.env.OAUTH_STATE_TABLE_NAME,
+    ADVISOR_SETTINGS_TABLE_NAME: process.env.ADVISOR_SETTINGS_TABLE_NAME,
+    ZOOM_OAUTH_APP_SECRET_ARN: process.env.ZOOM_OAUTH_APP_SECRET_ARN,
+    APP_NAME: process.env.APP_NAME,
+    STAGE: process.env.STAGE
+  };
+
+  process.env.ADVISOR_PORTAL_AUTH_MODE = "none";
+  process.env.OAUTH_STATE_TABLE_NAME = "OAuthStateTable";
+  process.env.ADVISOR_SETTINGS_TABLE_NAME = "AdvisorSettingsTable";
+  process.env.ZOOM_OAUTH_APP_SECRET_ARN = "arn:aws:secretsmanager:us-east-1:111111111111:secret:zoom-app";
+  process.env.APP_NAME = "calendar-agent-spike";
+  process.env.STAGE = "dev";
+
+  try {
+    const response = await handler({
+      queryStringParameters: {
+        code: "zoom-oauth-code",
+        state: "zoom-oauth-state"
+      },
+      requestContext: {
+        domainName: "xytaxmumc3.execute-api.us-east-1.amazonaws.com",
+        stage: "dev",
+        http: { method: "GET" }
+      },
+      rawPath: "/dev/advisor/api/connections/zoom/callback"
+    });
+
+    assert.equal(response.statusCode, 302);
+    assert.equal(
+      response.headers.location,
+      "https://xytaxmumc3.execute-api.us-east-1.amazonaws.com/dev/advisor?connected=zoom"
+    );
+    assert.equal(createdSecretName, "/calendar-agent-spike/dev/manoj/zoom/meeting");
+    assert.match(createdSecretValue, /"refresh_token":"zoom-refresh-token"/);
+    assert.ok(savedSettings);
+    assert.equal(savedSettings.zoomMeetingSecretArn, "arn:aws:secretsmanager:us-east-1:111111111111:secret:/calendar-agent-spike/dev/manoj/zoom/meeting");
+    assert.equal(savedSettings.zoomMeetingAccountEmail, "manoj.zoom@example.com");
+  } finally {
+    for (const [key, value] of Object.entries(previousValues)) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+});
+
 test("advisor portal trace lookup returns metadata and diagnosis", async () => {
   const requestId = "123e4567-e89b-12d3-a456-426614174000";
   const handler = createPortalHandler({
@@ -2302,6 +2570,10 @@ test("advisor portal trace lookup returns metadata and diagnosis", async () => {
         status: "failed",
         errorCode: "CALENDAR_LOOKUP_FAILED",
         providerStatus: "error",
+        meetingLinkProvider: "zoom",
+        meetingLinkStatus: "zoom_create_failed",
+        meetingLinkErrorCode: "zoom_http_401",
+        meetingLinkErrorMessage: "Zoom meeting create failed (401): invalid token",
         llmStatus: "fallback",
         latencyMs: 35000,
         suggestionCount: 0,
@@ -2331,6 +2603,7 @@ test("advisor portal trace lookup returns metadata and diagnosis", async () => {
     assert.equal(payload.trace.requestId, requestId);
     assert.equal(payload.trace.status, "failed");
     assert.deepEqual(payload.diagnosis.categories.includes("processing_failed"), true);
+    assert.deepEqual(payload.diagnosis.categories.includes("meeting_link_failed"), true);
     assert.deepEqual(payload.diagnosis.categories.includes("slow_response"), true);
   } finally {
     if (previousTraceTableName === undefined) {
