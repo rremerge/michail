@@ -303,6 +303,16 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 7. If invite-subject confidence is below threshold or LLM invite-subject generation fails, the system shall deterministically fall back to `Meeting <ClientName>/<AdvisorName>` (or equivalent safe fallback when one name is unavailable).
 8. Invite-subject generation shall not change existing prompt-injection safeguards: only sanitized untrusted text may be supplied to the model and no raw thread content shall be persisted.
 
+### FR-31 Video Meeting Provider Selection and Real Link Provisioning
+1. Advisor settings shall include a configurable meeting-link provider preference with at least: `google_meet`, `zoom`, and `static_url`.
+2. For `google_meet`, the system shall create a real Google Meet space URL per booked meeting (not `https://meet.google.com/new`) using advisor-granted OAuth permission.
+3. For `zoom`, the system shall create a real Zoom meeting URL per booked meeting using advisor-granted OAuth permission.
+4. Advisor portal shall provide OAuth connection flow for Zoom meeting creation and persist only required token metadata in secure secrets storage.
+5. Existing Google calendar connection flow shall request required scope(s) for Google Meet space creation, and advisor shall be prompted to reconnect if existing tokens are insufficient.
+6. If provider-side link creation fails at booking time, system shall fail safely by using configured static URL when present, otherwise send invite without fabricated placeholder URL.
+7. Meeting-link provider logic shall be advisor-scoped in multi-tenant mode; no advisor may use another advisor's meeting-provider credentials or tokens.
+8. Invite trace metadata shall capture meeting-link provider and meeting-link resolution status for supportability without storing raw tokens.
+
 ## 7. Non-Functional Requirements
 1. Security: Encrypt credentials/tokens in transit and at rest; least-privilege access to calendars and email.
 2. Privacy: Default-deny visibility for meeting details except explicit policy exceptions, and zero retention of email/calendar content after task completion.
@@ -448,6 +458,9 @@ Manoj spends significant manual effort coordinating advisory meetings across mul
 46. Given a client or advisor confirms a specific time and auto-booking conditions are met, when the agent processes the request, then it first sends a thread confirmation message and then sends the calendar invite.
 47. Given online-invite link configuration is present, when the agent sends the calendar invite, then the invite body/ICS includes the join URL (Google Meet when configured for that advisor/provider path).
 48. Given the agent sends any outbound response email, when advisor invite identity is configured, then the advisor is always included as a copied recipient on that email.
+49. Given advisor selects `google_meet` and OAuth scopes are granted, when a booking invite is sent, then the invite contains a real Google Meet URL created for that meeting.
+50. Given advisor selects `zoom` and Zoom OAuth is connected, when a booking invite is sent, then the invite contains a real Zoom join URL created for that meeting.
+51. Given provider meeting-link API fails or credentials are missing, when invite is sent, then the system does not emit fake placeholder links and falls back to configured static URL or no link.
 
 ## 14. Future Iterations
 1. Add LinkedIn and SMS channel connectors.
@@ -509,3 +522,5 @@ Advisors usually include the agent on CC for a ongoing mail thread with a client
 When a client confirms a time to the agent. The agent immediatley sends a calendar event. The advisor and client would prefer if they saw a confirmation on the same mail thread thanking them and say that the agent is about to send a calendar invite. Then send the invite and ideally enable a google meet as part of the invite.
 
 When the agent detects it has to respond, then it MUST always cc the advisor on all its responses.
+
+The advisor wants the invite link provider to be configurable. Some advisors prefer Google Meet and others prefer Zoom. The advisor should be able to choose the provider in advisor portal and authorize the agent to create meeting links on their behalf. The invite sent by the agent should contain a real provider-created join link, not a placeholder URL.

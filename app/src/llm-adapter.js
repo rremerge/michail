@@ -3,6 +3,7 @@ const DEFAULT_ENDPOINT = "https://api.openai.com/v1/chat/completions";
 const DEFAULT_TIMEOUT_MS = 4000;
 const INTENT_CONFIDENCE_DEFAULT = 0.5;
 const INTENT_BOOKING_CONFIDENCE_DEFAULT = 0;
+const INTENT_INVOCATION_CONFIDENCE_DEFAULT = 0;
 const PROMPT_GUARD_CONFIDENCE_DEFAULT = 0.5;
 const MAX_SUBJECT_CHARS = 240;
 const MAX_BODY_CHARS = 8000;
@@ -368,10 +369,35 @@ function normalizeIntentBookingIntent(rawBookingIntent) {
   return null;
 }
 
+function normalizeIntentInvocation(rawInvocationIntent) {
+  if (typeof rawInvocationIntent === "boolean") {
+    return rawInvocationIntent;
+  }
+
+  return null;
+}
+
 function clampIntentBookingConfidence(rawConfidence) {
   const parsed = Number(rawConfidence);
   if (Number.isNaN(parsed)) {
     return INTENT_BOOKING_CONFIDENCE_DEFAULT;
+  }
+
+  if (parsed < 0) {
+    return 0;
+  }
+
+  if (parsed > 1) {
+    return 1;
+  }
+
+  return parsed;
+}
+
+function clampIntentInvocationConfidence(rawConfidence) {
+  const parsed = Number(rawConfidence);
+  if (Number.isNaN(parsed)) {
+    return INTENT_INVOCATION_CONFIDENCE_DEFAULT;
   }
 
   if (parsed < 0) {
@@ -396,7 +422,9 @@ function validateIntentExtraction(candidate) {
     clientTimezone: normalizeIntentTimezone(candidate.clientTimezone),
     confidence: clampIntentConfidence(candidate.confidence),
     bookingIntent: normalizeIntentBookingIntent(candidate.bookingIntent),
-    bookingIntentConfidence: clampIntentBookingConfidence(candidate.bookingIntentConfidence)
+    bookingIntentConfidence: clampIntentBookingConfidence(candidate.bookingIntentConfidence),
+    invocationIntent: normalizeIntentInvocation(candidate.invocationIntent),
+    invocationIntentConfidence: clampIntentInvocationConfidence(candidate.invocationIntentConfidence)
   };
 }
 
@@ -681,13 +709,18 @@ export async function extractSchedulingIntentWithOpenAi({
       "Use EARLIER_THREAD_CONTEXT only to resolve references in LATEST_CLIENT_REPLY, such as '9 am works', 'option 2', or 'that time works'."
     );
   }
+  if (retryPolicyValue === "invocation_check") {
+    guidance.push(
+      "Prioritize invocationIntent detection. Treat salutations and nearby follow-up lines as one request context (for example, 'Hi Michael' followed by 'please book...')."
+    );
+  }
 
   const userPrompt = JSON.stringify(
     {
       task:
-        "Extract client-requested scheduling windows. Resolve relative dates from referenceNowIso in hostTimezone unless clientTimezone is explicit. " +
-        "Also classify whether client clearly intends to book one of the requested windows now. " +
-        "If uncertain, leave requestedWindows empty, set bookingIntent to null, and lower confidence.",
+      "Extract client-requested scheduling windows. Resolve relative dates from referenceNowIso in hostTimezone unless clientTimezone is explicit. " +
+        "Classify whether the sender is explicitly asking the scheduling agent to act now, and whether they clearly intend to book one of the requested windows now. " +
+        "If uncertain, leave requestedWindows empty, set bookingIntent/invocationIntent to null, and lower confidence.",
       trustedContext: {
         hostTimezone,
         referenceNowIso,
@@ -712,7 +745,9 @@ export async function extractSchedulingIntentWithOpenAi({
         clientTimezone: "IANA timezone string or null",
         confidence: "number 0..1",
         bookingIntent: "true|false|null",
-        bookingIntentConfidence: "number 0..1"
+        bookingIntentConfidence: "number 0..1",
+        invocationIntent: "true|false|null",
+        invocationIntentConfidence: "number 0..1"
       }
     },
     null,

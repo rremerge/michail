@@ -86,6 +86,35 @@ export async function exchangeRefreshToken({ clientId, clientSecret, refreshToke
   return payload.access_token;
 }
 
+export async function createGoogleMeetSpace({ accessToken, fetchImpl }) {
+  const fetchFn = fetchImpl ?? fetch;
+  const response = await fetchFn("https://meet.googleapis.com/v2/spaces", {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${accessToken}`,
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({})
+  });
+
+  if (!response.ok) {
+    const message = await response.text();
+    throw new Error(`Google Meet space create failed (${response.status}): ${message}`);
+  }
+
+  const payload = await response.json();
+  const meetingUrl = String(payload?.meetingUri ?? "").trim();
+  if (!meetingUrl) {
+    throw new Error("Google Meet space create response missing meetingUri");
+  }
+
+  return {
+    meetingUrl,
+    meetingCode: String(payload?.meetingCode ?? "").trim() || null,
+    spaceName: String(payload?.name ?? "").trim() || null
+  };
+}
+
 export async function fetchBusyIntervals({
   accessToken,
   calendarIds,
