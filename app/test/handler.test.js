@@ -769,7 +769,9 @@ test("processSchedulingEmail sends email when RESPONSE_MODE=send", async () => {
   const result = await runSchedulingEmail({
     payload: {
       fromEmail: "client@example.com",
-      subject: "Chat"
+      subject: "Chat",
+      messageId: "<client-msg-1@example.com>",
+      references: "<thread-root@example.com>"
     },
     env,
     deps,
@@ -780,6 +782,10 @@ test("processSchedulingEmail sends email when RESPONSE_MODE=send", async () => {
   assert.equal(sentMessages.length, 1);
   assert.equal(sentMessages[0].senderEmail, "manoj@example.com");
   assert.equal(sentMessages[0].recipientEmail, "client@example.com");
+  assert.deepEqual(sentMessages[0].threadHeaders, {
+    inReplyTo: "<client-msg-1@example.com>",
+    references: "<thread-root@example.com> <client-msg-1@example.com>"
+  });
   assert.match(sentMessages[0].bodyText, /^Hi Client,/);
   assert.match(sentMessages[0].bodyText, /Best regards,\nManoj$/);
 });
@@ -967,6 +973,53 @@ test("processSchedulingEmail keeps quiet in multi-party thread when agent is not
   assert.equal(traceItems[0].stage, "agent_invocation");
 });
 
+test("processSchedulingEmail detects multi-line invocation context for concise client confirmations", async () => {
+  const traceItems = [];
+
+  const deps = {
+    async getSecretString() {
+      return "";
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "log",
+    SENDER_EMAIL: "miitb.agent@agent.letsconnect.ai",
+    ADVISOR_EMAIL: "advisor@example.com"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "Brad Thomas <bradlthomas@gmail.com>",
+      toEmails: [
+        "Miitb <miitb.agent@agent.letsconnect.ai>",
+        "Advisor Name <advisor@example.com>"
+      ],
+      subject: "Re: Calendar",
+      body: [
+        "Thanks Miitb. Tuesday 9am works for me.",
+        "",
+        "Thanks,",
+        "Brad"
+      ].join("\n")
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-02T23:25:39.661Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.notEqual(response.suppressionReason, "agent_not_invoked");
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].agentInvocationDetected, true);
+  assert.equal(traceItems[0].agentInvocationSource, "latest_reply");
+});
+
 test("processSchedulingEmail uses high-confidence LLM invocation detection for split-line advisor request", async () => {
   const traceItems = [];
   let llmIntentCalls = 0;
@@ -1039,7 +1092,7 @@ test("processSchedulingEmail uses high-confidence LLM invocation detection for s
   assert.equal(traceItems[0].agentInvocationSource, "llm");
 });
 
-test("processSchedulingEmail falls back to explicit invocation gating when LLM invocation confidence is low", async () => {
+test("processSchedulingEmail trusts unified LLM scheduling intent when invocation confidence is low", async () => {
   const traceItems = [];
   let llmIntentCalls = 0;
   const deps = {
@@ -1062,6 +1115,71 @@ test("processSchedulingEmail falls back to explicit invocation gating when LLM i
         confidence: 0.92,
         bookingIntent: true,
         bookingIntentConfidence: 0.97,
+        invocationIntent: true,
+        invocationIntentConfidence: 0.4
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    ADVISOR_EMAIL: "advisor@example.com",
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "30",
+    AGENT_INVOCATION_LLM_CONFIDENCE_THRESHOLD: "0.8"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "Advisor Name <advisor@example.com>",
+      toEmails: [
+        "Miitb Agent <miitb.agent@agent.letsconnect.ai>",
+        "Client Person <client@example.com>"
+      ],
+      subject: "book a meeting",
+      body: [
+        "hi miitb",
+        "Please book a meeting with client for march 4 230pm for 30 minutes."
+      ].join("\n")
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.deliveryStatus, "logged");
+  assert.equal(response.bookingStatus, "invite_logged");
+  assert.equal(llmIntentCalls, 1);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].status, "completed");
+  assert.equal(traceItems[0].agentInvocationDetected, true);
+  assert.equal(traceItems[0].agentInvocationSource, "llm");
+});
+
+test("processSchedulingEmail still suppresses when LLM invocation confidence is low and no scheduling intent is extracted", async () => {
+  const traceItems = [];
+  let llmIntentCalls = 0;
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm() {
+      llmIntentCalls += 1;
+      return {
+        requestedWindows: [],
+        clientTimezone: null,
+        confidence: 0.3,
+        bookingIntent: null,
+        bookingIntentConfidence: 0.2,
         invocationIntent: true,
         invocationIntentConfidence: 0.4
       };
@@ -1140,7 +1258,9 @@ test("processSchedulingEmail sends calendar invite when booking intent is detect
     payload: {
       fromEmail: "client@example.com",
       subject: "Meeting confirmation",
-      body: "Please book Wednesday between 2pm and 3pm. Timezone: America/Los_Angeles"
+      body: "Please book Wednesday between 2pm and 3pm. Timezone: America/Los_Angeles",
+      messageId: "<client-booking-msg@example.com>",
+      references: "<thread-root@example.com>"
     },
     env,
     deps,
@@ -1157,9 +1277,17 @@ test("processSchedulingEmail sends calendar invite when booking intent is detect
 
   const invite = sentInviteMessages[0];
   const confirmation = sentResponseMessages[0];
+  assert.deepEqual(confirmation.threadHeaders, {
+    inReplyTo: "<client-booking-msg@example.com>",
+    references: "<thread-root@example.com> <client-booking-msg@example.com>"
+  });
   assert.equal(confirmation.subject, "Re: Meeting confirmation");
   assert.match(confirmation.bodyText, /about to send a calendar invite/i);
   assert.equal(invite.senderEmail, "agent@agent.letsconnect.ai");
+  assert.deepEqual(invite.threadHeaders, {
+    inReplyTo: "<client-booking-msg@example.com>",
+    references: "<thread-root@example.com> <client-booking-msg@example.com>"
+  });
   assert.deepEqual(invite.toEmails.sort(), ["client@example.com", "manoj@example.com"]);
   assert.equal(invite.subject, "Meeting Client/Manoj");
   assert.match(invite.bodyText, /^Hi Client,/);
@@ -3119,6 +3247,61 @@ test("processSchedulingEmail loads body from transient mail store and deletes ra
   assert.equal(calls[1][0], "delete");
   assert.deepEqual(calls[1][1], calls[0][1]);
   assert.equal(traceItems[0].bodySource, "mail_store");
+});
+
+test("processSchedulingEmail preserves thread headers from MIME when replying", async () => {
+  const sentMessages = [];
+  const deps = {
+    async getRawEmailObject() {
+      return [
+        "From: Titoneeda <titoneeda@gmail.com>",
+        "Subject: Need appointment",
+        "Message-ID: <mime-msg-1@example.com>",
+        "In-Reply-To: <mime-parent@example.com>",
+        "References: <mime-root@example.com> <mime-parent@example.com>",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        "Timezone: America/Los_Angeles",
+        "I can do 2026-03-03T10:00:00-08:00 to 2026-03-03T12:00:00-08:00"
+      ].join("\n");
+    },
+    async deleteRawEmailObject() {},
+    async writeTrace() {},
+    async sendResponseEmail(message) {
+      sentMessages.push(message);
+    }
+  };
+
+  const env = {
+    ...baseEnv,
+    RESPONSE_MODE: "send",
+    SENDER_EMAIL: "manoj@example.com",
+    RAW_EMAIL_BUCKET: "mail-store-bucket",
+    RAW_EMAIL_BUCKET_REGION: "us-east-1",
+    RAW_EMAIL_OBJECT_PREFIX: "raw/"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "titoneeda@gmail.com",
+      subject: "Need appointment",
+      body: "",
+      ses: {
+        messageId: "message-mime-thread",
+        receipt: {}
+      }
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-03T00:00:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  assert.equal(sentMessages.length, 1);
+  assert.deepEqual(sentMessages[0].threadHeaders, {
+    inReplyTo: "<mime-msg-1@example.com>",
+    references: "<mime-root@example.com> <mime-parent@example.com> <mime-msg-1@example.com>"
+  });
 });
 
 test("processSchedulingEmail parses html-only MIME bodies from transient mail store", async () => {

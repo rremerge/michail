@@ -45,6 +45,19 @@ function sanitizeHeaderValue(value) {
     .trim();
 }
 
+function normalizeThreadHeaders(threadHeaders) {
+  const inReplyTo = sanitizeHeaderValue(threadHeaders?.inReplyTo ?? "");
+  const references = sanitizeHeaderValue(threadHeaders?.references ?? "");
+  if (!inReplyTo && !references) {
+    return null;
+  }
+
+  return {
+    inReplyTo,
+    references
+  };
+}
+
 export function createRuntimeDeps() {
   const secretsClient = new SecretsManagerClient({});
   const ddbClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
@@ -552,7 +565,7 @@ export function createRuntimeDeps() {
       );
     },
 
-    async sendResponseEmail({ senderEmail, recipientEmail, toEmails, subject, bodyText }) {
+    async sendResponseEmail({ senderEmail, recipientEmail, toEmails, subject, bodyText, threadHeaders }) {
       const recipients = Array.isArray(toEmails)
         ? toEmails
             .map((item) => String(item ?? "").trim().toLowerCase())
@@ -566,6 +579,46 @@ export function createRuntimeDeps() {
       }
       if (recipients.length === 0) {
         throw new Error("sendResponseEmail requires at least one recipient");
+      }
+
+      const normalizedThreadHeaders = normalizeThreadHeaders(threadHeaders);
+      if (normalizedThreadHeaders) {
+        const safeSubject = sanitizeHeaderValue(subject || "Message");
+        const safeBody = String(bodyText ?? "").replace(/\r?\n/g, "\r\n");
+        const rawMessageLines = [
+          `From: ${sanitizeHeaderValue(senderEmail)}`,
+          `To: ${sanitizeHeaderValue(recipients.join(", "))}`,
+          `Subject: ${safeSubject}`
+        ];
+        if (normalizedThreadHeaders.inReplyTo) {
+          rawMessageLines.push(`In-Reply-To: ${normalizedThreadHeaders.inReplyTo}`);
+        }
+        if (normalizedThreadHeaders.references) {
+          rawMessageLines.push(`References: ${normalizedThreadHeaders.references}`);
+        }
+        rawMessageLines.push(
+          "MIME-Version: 1.0",
+          "Content-Type: text/plain; charset=UTF-8",
+          "Content-Transfer-Encoding: 7bit",
+          "",
+          safeBody,
+          ""
+        );
+        const rawMessage = rawMessageLines.join("\r\n");
+        await sesClient.send(
+          new SendEmailCommand({
+            FromEmailAddress: senderEmail,
+            Destination: {
+              ToAddresses: recipients
+            },
+            Content: {
+              Raw: {
+                Data: Buffer.from(rawMessage)
+              }
+            }
+          })
+        );
+        return;
       }
 
       await sesClient.send(
@@ -586,7 +639,7 @@ export function createRuntimeDeps() {
       );
     },
 
-    async sendCalendarInviteEmail({ senderEmail, toEmails, subject, bodyText, icsContent }) {
+    async sendCalendarInviteEmail({ senderEmail, toEmails, subject, bodyText, icsContent, threadHeaders }) {
       const recipients = Array.isArray(toEmails)
         ? toEmails
             .map((item) => String(item ?? "").trim().toLowerCase())
@@ -601,11 +654,20 @@ export function createRuntimeDeps() {
       const safeIcs = String(icsContent ?? "").replace(/\r?\n/g, "\r\n");
       const mixedBoundary = `mixed-${crypto.randomUUID()}`;
       const alternativeBoundary = `alt-${crypto.randomUUID()}`;
+      const normalizedThreadHeaders = normalizeThreadHeaders(threadHeaders);
 
-      const rawMessage = [
+      const rawMessageParts = [
         `From: ${sanitizeHeaderValue(senderEmail)}`,
         `To: ${sanitizeHeaderValue(recipients.join(", "))}`,
         `Subject: ${safeSubject}`,
+      ];
+      if (normalizedThreadHeaders?.inReplyTo) {
+        rawMessageParts.push(`In-Reply-To: ${normalizedThreadHeaders.inReplyTo}`);
+      }
+      if (normalizedThreadHeaders?.references) {
+        rawMessageParts.push(`References: ${normalizedThreadHeaders.references}`);
+      }
+      rawMessageParts.push(
         "MIME-Version: 1.0",
         `Content-Type: multipart/mixed; boundary="${mixedBoundary}"`,
         "",
@@ -635,7 +697,8 @@ export function createRuntimeDeps() {
         "",
         `--${mixedBoundary}--`,
         ""
-      ].join("\r\n");
+      );
+      const rawMessage = rawMessageParts.join("\r\n");
 
       await sesClient.send(
         new SendEmailCommand({

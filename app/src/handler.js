@@ -76,6 +76,8 @@ const AGENT_NARRATION_ACTION_KEYWORDS =
   /\b(?:will|can|should|could)\b[\s\S]{0,40}\b(?:suggest|share|send|propose|find|follow up|respond)\b/i;
 const AGENT_INVOCATION_ACTION_KEYWORDS =
   /\b(?:find|suggest|share|send|propose|book|schedule|check|look|show|slot|time|availability|invite|meet|meeting|calendar|sync|coordinate)\b/i;
+const AGENT_INVOCATION_TEMPORAL_SIGNAL_KEYWORDS =
+  /\b(?:mon(?:day)?|tue(?:s|sday)?|wed(?:nesday)?|thu(?:r|rs|rsday)?|fri(?:day)?|sat(?:urday)?|sun(?:day)?|today|tomorrow|this\s+week|next\s+week|this\s+month|next\s+month|\d{1,2}(?::\d{2})?\s*(?:am|pm))\b/i;
 const AGENT_LLM_INVOCATION_HINT_KEYWORDS =
   /\b(?:cc(?:ing)?|copy(?:ing)?|add(?:ing)?|include|including|loop(?:ing)?\s+in|bring(?:ing)?\s+in|introduc(?:e|ing)|with)\b[\s\S]{0,60}\b(?:assistant|agent|scheduler|calendar\s+agent)\b/i;
 const AGENT_ROLE_REFERENCE_HINT_KEYWORDS = /\b(?:my|our|the)\s+(?:assistant|agent|scheduler|calendar\s+agent)\b/i;
@@ -387,6 +389,8 @@ function detectExplicitAgentInvocation({
     const lines = candidate.text
       .replace(/\r\n/g, "\n")
       .split("\n");
+    let hasAgentReference = false;
+    let hasAffirmativeTemporalSignal = false;
     for (const line of lines) {
       const normalizedLine = String(line ?? "")
         .replace(/\s+/g, " ")
@@ -396,10 +400,17 @@ function detectExplicitAgentInvocation({
       }
 
       const lowerLine = normalizedLine.toLowerCase();
+      if (
+        AFFIRMATIVE_BOOKING_INTENT_KEYWORDS.test(normalizedLine) &&
+        AGENT_INVOCATION_TEMPORAL_SIGNAL_KEYWORDS.test(normalizedLine)
+      ) {
+        hasAffirmativeTemporalSignal = true;
+      }
       for (const term of agentReferenceTerms) {
         if (!term || !lowerLine.includes(term)) {
           continue;
         }
+        hasAgentReference = true;
         if (AGENT_INVOCATION_ACTION_KEYWORDS.test(normalizedLine) || /\?/.test(normalizedLine)) {
           return {
             invoked: true,
@@ -409,6 +420,15 @@ function detectExplicitAgentInvocation({
           };
         }
       }
+    }
+
+    if (hasAgentReference && hasAffirmativeTemporalSignal) {
+      return {
+        invoked: true,
+        matchedTerm: "multi_line_context",
+        matchedLine: candidate.text.replace(/\s+/g, " ").trim().slice(0, 240),
+        source: candidate.source
+      };
     }
   }
 
@@ -1327,6 +1347,99 @@ function buildThreadReplySubject(originalSubject, fallback = "Meeting request") 
   return `Re: ${normalizedFallback}`;
 }
 
+function normalizeHeaderValueForThread(value) {
+  return String(value ?? "")
+    .replace(/[\r\n]+/g, " ")
+    .trim();
+}
+
+function extractMessageIdTokens(rawValue) {
+  const normalized = normalizeHeaderValueForThread(rawValue);
+  if (!normalized) {
+    return [];
+  }
+
+  const bracketedMatches = normalized.match(/<[^<>]+>/g);
+  if (Array.isArray(bracketedMatches) && bracketedMatches.length > 0) {
+    return bracketedMatches.map((item) => item.trim()).filter(Boolean);
+  }
+
+  const token = normalized.split(/[\s,]+/).find(Boolean);
+  if (!token) {
+    return [];
+  }
+
+  const cleaned = token.replace(/^<+|>+$/g, "").trim();
+  if (!cleaned) {
+    return [];
+  }
+
+  return [cleaned.includes("@") ? `<${cleaned}>` : cleaned];
+}
+
+function normalizeThreadMessageIdValue(rawValue) {
+  const candidates = Array.isArray(rawValue)
+    ? rawValue.flatMap((item) => extractMessageIdTokens(item))
+    : extractMessageIdTokens(rawValue);
+  return candidates[0] ?? "";
+}
+
+function normalizeThreadMessageIdList(rawValue) {
+  const values = Array.isArray(rawValue) ? rawValue : [rawValue];
+  const deduped = [];
+  for (const value of values) {
+    for (const token of extractMessageIdTokens(value)) {
+      if (!token || deduped.includes(token)) {
+        continue;
+      }
+      deduped.push(token);
+    }
+  }
+  return deduped;
+}
+
+function normalizeReferencesHeaderValue(referencesList) {
+  const maxReferences = 30;
+  const clampedList = referencesList.slice(-maxReferences);
+  const joined = clampedList.join(" ").trim();
+  if (!joined) {
+    return "";
+  }
+
+  return joined.length > 1800 ? joined.slice(joined.length - 1800) : joined;
+}
+
+function buildOutboundThreadHeaders({ payload, mimeMessageId, mimeInReplyTo, mimeReferences }) {
+  const payloadMessageId = normalizeThreadMessageIdValue(payload?.messageId);
+  const payloadInReplyTo = normalizeThreadMessageIdValue(payload?.inReplyTo);
+  const payloadReferences = normalizeThreadMessageIdList(payload?.references);
+
+  const messageId = normalizeThreadMessageIdValue(mimeMessageId) || payloadMessageId;
+  const inReplyTo = normalizeThreadMessageIdValue(mimeInReplyTo) || payloadInReplyTo;
+  const references = normalizeThreadMessageIdList([
+    ...(Array.isArray(mimeReferences) ? mimeReferences : [mimeReferences]),
+    ...payloadReferences
+  ]);
+
+  const replyAnchor = messageId || inReplyTo;
+  if (!replyAnchor && references.length === 0) {
+    return null;
+  }
+
+  const mergedReferences = [];
+  for (const token of [...references, inReplyTo, messageId]) {
+    if (!token || mergedReferences.includes(token)) {
+      continue;
+    }
+    mergedReferences.push(token);
+  }
+
+  return {
+    inReplyTo: replyAnchor,
+    references: normalizeReferencesHeaderValue(mergedReferences)
+  };
+}
+
 function deriveClientDisplayName(rawFromEmail, normalizedFromEmail) {
   const rawValue = String(rawFromEmail ?? "").trim();
   const bracketIndex = rawValue.indexOf("<");
@@ -1839,7 +1952,8 @@ async function sendResponseEmailWithAdvisorCopy({
   advisorNotificationEmail,
   recipients,
   subject,
-  bodyText
+  bodyText,
+  threadHeaders
 }) {
   const finalRecipients = includeAdvisorRecipient({
     recipients,
@@ -1851,14 +1965,16 @@ async function sendResponseEmailWithAdvisorCopy({
       senderEmail,
       recipientEmail: finalRecipients[0],
       subject,
-      bodyText
+      bodyText,
+      threadHeaders
     });
   } else {
     await deps.sendResponseEmail({
       senderEmail,
       toEmails: finalRecipients,
       subject,
-      bodyText
+      bodyText,
+      threadHeaders
     });
   }
 }
@@ -2178,39 +2294,73 @@ async function resolveAdvisorContext({ payload, env, deps }) {
   };
 }
 
-async function parsePlainTextFromMime(rawMime) {
+async function parseEmailContentFromMime(rawMime) {
   if (!rawMime) {
-    return "";
+    return {
+      bodyText: "",
+      messageId: "",
+      inReplyTo: "",
+      references: []
+    };
   }
 
   try {
     const parsed = await simpleParser(rawMime);
+    const headers = parsed?.headers;
+    const messageIdHeader = typeof headers?.get === "function" ? headers.get("message-id") : "";
+    const inReplyToHeader = typeof headers?.get === "function" ? headers.get("in-reply-to") : "";
+    const referencesHeader = typeof headers?.get === "function" ? headers.get("references") : "";
+
+    const messageId = normalizeThreadMessageIdValue(parsed?.messageId ?? messageIdHeader);
+    const inReplyTo = normalizeThreadMessageIdValue(parsed?.inReplyTo ?? inReplyToHeader);
+    const references = normalizeThreadMessageIdList([parsed?.references, referencesHeader]);
+
     const plainText = String(parsed.text ?? "").trim();
     if (plainText) {
-      return plainText;
+      return {
+        bodyText: plainText,
+        messageId,
+        inReplyTo,
+        references
+      };
     }
 
     // Some senders provide HTML-only multipart messages. Fall back to a
     // lightweight HTML-to-text conversion so scheduling intent still parses.
     const html = typeof parsed.html === "string" ? parsed.html : "";
     if (!html) {
-      return "";
+      return {
+        bodyText: "",
+        messageId,
+        inReplyTo,
+        references
+      };
     }
 
-    return html
-      .replace(/<style[\s\S]*?<\/style>/gi, " ")
-      .replace(/<script[\s\S]*?<\/script>/gi, " ")
-      .replace(/<[^>]+>/g, " ")
-      .replace(/&nbsp;/gi, " ")
-      .replace(/&amp;/gi, "&")
-      .replace(/&lt;/gi, "<")
-      .replace(/&gt;/gi, ">")
-      .replace(/&quot;/gi, '"')
-      .replace(/&#39;/gi, "'")
-      .replace(/\s+/g, " ")
-      .trim();
+    return {
+      bodyText: html
+        .replace(/<style[\s\S]*?<\/style>/gi, " ")
+        .replace(/<script[\s\S]*?<\/script>/gi, " ")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/&nbsp;/gi, " ")
+        .replace(/&amp;/gi, "&")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+        .replace(/\s+/g, " ")
+        .trim(),
+      messageId,
+      inReplyTo,
+      references
+    };
   } catch {
-    return "";
+    return {
+      bodyText: "",
+      messageId: "",
+      inReplyTo: "",
+      references: []
+    };
   }
 }
 
@@ -2243,7 +2393,10 @@ async function resolveInboundEmailBody({ payload, env, deps }) {
   if (inlineBody) {
     return {
       bodyText: inlineBody,
-      bodySource: "inline"
+      bodySource: "inline",
+      mimeMessageId: "",
+      mimeInReplyTo: "",
+      mimeReferences: []
     };
   }
 
@@ -2251,21 +2404,30 @@ async function resolveInboundEmailBody({ payload, env, deps }) {
   if (!rawEmailLocation) {
     return {
       bodyText: "",
-      bodySource: "none"
+      bodySource: "none",
+      mimeMessageId: "",
+      mimeInReplyTo: "",
+      mimeReferences: []
     };
   }
 
   try {
     const rawMime = await deps.getRawEmailObject(rawEmailLocation);
-    const bodyText = await parsePlainTextFromMime(rawMime);
+    const parsedMime = await parseEmailContentFromMime(rawMime);
     return {
-      bodyText,
-      bodySource: "mail_store"
+      bodyText: parsedMime.bodyText,
+      bodySource: "mail_store",
+      mimeMessageId: parsedMime.messageId,
+      mimeInReplyTo: parsedMime.inReplyTo,
+      mimeReferences: parsedMime.references
     };
   } catch {
     return {
       bodyText: "",
-      bodySource: "mail_store_unavailable"
+      bodySource: "mail_store_unavailable",
+      mimeMessageId: "",
+      mimeInReplyTo: "",
+      mimeReferences: []
     };
   } finally {
     try {
@@ -2295,6 +2457,13 @@ function parseIncomingPayload(event) {
       subject: commonHeaders.subject ?? "",
       toEmails: Array.isArray(commonHeaders.to) ? commonHeaders.to : [],
       ccEmails: Array.isArray(commonHeaders.cc) ? commonHeaders.cc : [],
+      messageId: commonHeaders.messageId ?? "",
+      inReplyTo: commonHeaders.inReplyTo ?? "",
+      references: Array.isArray(commonHeaders.references)
+        ? commonHeaders.references
+        : commonHeaders.references
+          ? [commonHeaders.references]
+          : [],
       body: "",
       channel: "email",
       ses: {
@@ -2469,7 +2638,19 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   const clientId = normalizeClientId(fromEmail);
   const clientDisplayName = deriveClientDisplayName(payload.fromEmail, fromEmail);
   const fromDomain = extractDomainFromEmail(fromEmail);
-  const { bodyText, bodySource } = await resolveInboundEmailBody({ payload, env, deps });
+  const {
+    bodyText,
+    bodySource,
+    mimeMessageId,
+    mimeInReplyTo,
+    mimeReferences
+  } = await resolveInboundEmailBody({ payload, env, deps });
+  const outboundThreadHeaders = buildOutboundThreadHeaders({
+    payload,
+    mimeMessageId,
+    mimeInReplyTo,
+    mimeReferences
+  });
   const latestReplyText = extractLatestReplyText(bodyText);
   const quotedThreadContext = extractQuotedThreadContext(bodyText);
   const quotedOnlyReply = !latestReplyText && Boolean(quotedThreadContext);
@@ -2773,7 +2954,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         advisorNotificationEmail,
         recipients: [fromEmail],
         subject: threadReplySubject,
-        bodyText: deniedMessage.bodyText
+        bodyText: deniedMessage.bodyText,
+        threadHeaders: outboundThreadHeaders
       });
       deliveryStatus = "sent";
     }
@@ -2907,71 +3089,100 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
   let invocationLlmConfidence = 0;
   let preflightLlmIntent = null;
   let cachedIntentOpenAiConfig = null;
+  const llmInvocationHintPresent = hasLlmInvocationHint({
+    subject: payload.subject ?? "",
+    latestReplyText: latestReplyText || bodyText,
+    fullBodyText: bodyText,
+    agentReferenceTerms
+  });
   const resolvedAgentInvocationLlmConfidenceThreshold = Number.isFinite(agentInvocationLlmConfidenceThreshold)
     ? agentInvocationLlmConfidenceThreshold
     : DEFAULT_AGENT_INVOCATION_LLM_CONFIDENCE_THRESHOLD;
+  const resolvedIntentConfidenceThreshold = Number.isFinite(intentConfidenceThreshold)
+    ? intentConfidenceThreshold
+    : DEFAULT_INTENT_CONFIDENCE_THRESHOLD;
+  const resolvedBookingIntentConfidenceThreshold = Number.isFinite(bookingIntentConfidenceThreshold)
+    ? bookingIntentConfidenceThreshold
+    : DEFAULT_BOOKING_INTENT_CONFIDENCE_THRESHOLD;
 
   if (invocationSignal.invoked && !isAdvisorSender) {
     suggestionAddresseeDisplayName = senderDisplayName || suggestionAddresseeDisplayName;
     suggestionAddresseeEmail = fromEmail;
   }
 
-  if (explicitInvocationRequired && !invocationSignal.invoked) {
-    const llmInvocationHintPresent = hasLlmInvocationHint({
-      subject: payload.subject ?? "",
-      latestReplyText: latestReplyText || bodyText,
-      fullBodyText: bodyText,
-      agentReferenceTerms
-    });
-    if (
-      llmInvocationHintPresent &&
-      intentExtractionMode === "llm_hybrid" &&
-      llmProviderSecretArn &&
-      typeof deps.extractSchedulingIntentWithLlm === "function"
-    ) {
-      try {
-        const llmSecretString = await deps.getSecretString(llmProviderSecretArn);
-        const openAiConfig = parseOpenAiConfigSecret(llmSecretString);
-        cachedIntentOpenAiConfig = openAiConfig;
-        const llmInvocationIntent = await deps.extractSchedulingIntentWithLlm({
-          openAiConfig,
-          subject: payload.subject ?? "",
-          body: intentInputBodyText,
-          agentDisplayName,
-          agentIdentityHints: agentReferenceTerms,
-          hostTimezone,
-          referenceNowIso: startedAtIso,
-          fetchImpl: deps.fetchImpl,
-          timeoutMs: intentLlmTimeoutMs,
-          retryPolicy: "invocation_check"
-        });
-        accumulateLlmTelemetry(llmUsageAccumulator, llmInvocationIntent?.llmTelemetry);
-        preflightLlmIntent = llmInvocationIntent;
-        invocationLlmStatus = "ok";
-        invocationLlmValue = typeof llmInvocationIntent?.invocationIntent === "boolean"
-          ? llmInvocationIntent.invocationIntent
-          : null;
-        invocationLlmConfidence = Number.isFinite(Number(llmInvocationIntent?.invocationIntentConfidence))
-          ? Number(llmInvocationIntent.invocationIntentConfidence)
-          : 0;
-        if (
-          invocationLlmValue === true &&
-          invocationLlmConfidence >= resolvedAgentInvocationLlmConfidenceThreshold
-        ) {
-          invocationSignal = {
-            invoked: true,
-            matchedTerm: "",
-            matchedLine: "llm_invocation_classifier",
-            source: "llm"
-          };
-          if (!isAdvisorSender) {
-            suggestionAddresseeDisplayName = senderDisplayName || suggestionAddresseeDisplayName;
-            suggestionAddresseeEmail = fromEmail;
-          }
+  if (
+    explicitInvocationRequired &&
+    llmInvocationHintPresent &&
+    intentExtractionMode === "llm_hybrid" &&
+    llmProviderSecretArn &&
+    typeof deps.extractSchedulingIntentWithLlm === "function"
+  ) {
+    try {
+      const llmSecretString = await deps.getSecretString(llmProviderSecretArn);
+      const openAiConfig = parseOpenAiConfigSecret(llmSecretString);
+      cachedIntentOpenAiConfig = openAiConfig;
+      const invocationInputBody = intentInputMode === "latest_reply" && quotedThreadContext
+        ? buildThreadAwareIntentBody({
+          latestReplyText: intentInputBodyText,
+          quotedThreadContext
+        })
+        : intentInputBodyText;
+      const llmInvocationIntent = await deps.extractSchedulingIntentWithLlm({
+        openAiConfig,
+        subject: payload.subject ?? "",
+        body: invocationInputBody,
+        agentDisplayName,
+        agentIdentityHints: agentReferenceTerms,
+        hostTimezone,
+        referenceNowIso: startedAtIso,
+        fetchImpl: deps.fetchImpl,
+        timeoutMs: intentLlmTimeoutMs,
+        retryPolicy: "invocation_check"
+      });
+      accumulateLlmTelemetry(llmUsageAccumulator, llmInvocationIntent?.llmTelemetry);
+      preflightLlmIntent = llmInvocationIntent;
+      invocationLlmStatus = "ok";
+      invocationLlmValue = typeof llmInvocationIntent?.invocationIntent === "boolean"
+        ? llmInvocationIntent.invocationIntent
+        : null;
+      invocationLlmConfidence = Number.isFinite(Number(llmInvocationIntent?.invocationIntentConfidence))
+        ? Number(llmInvocationIntent.invocationIntentConfidence)
+        : 0;
+      const llmWindowCount = Array.isArray(llmInvocationIntent?.requestedWindows)
+        ? llmInvocationIntent.requestedWindows.length
+        : 0;
+      const llmWindowConfidence = Number.isFinite(Number(llmInvocationIntent?.confidence))
+        ? Number(llmInvocationIntent.confidence)
+        : 0;
+      const llmBookingValue = typeof llmInvocationIntent?.bookingIntent === "boolean"
+        ? llmInvocationIntent.bookingIntent
+        : null;
+      const llmBookingConfidence = Number.isFinite(Number(llmInvocationIntent?.bookingIntentConfidence))
+        ? Number(llmInvocationIntent.bookingIntentConfidence)
+        : 0;
+      const llmSignalsInvocation =
+        invocationLlmValue === true &&
+        invocationLlmConfidence >= resolvedAgentInvocationLlmConfidenceThreshold;
+      const llmSignalsSchedulingIntent =
+        llmBookingValue === true &&
+        llmBookingConfidence >= resolvedBookingIntentConfidenceThreshold;
+      const llmSignalsTimeframeIntent =
+        llmWindowCount > 0 &&
+        llmWindowConfidence >= resolvedIntentConfidenceThreshold;
+      if (llmSignalsInvocation || llmSignalsSchedulingIntent || llmSignalsTimeframeIntent) {
+        invocationSignal = {
+          invoked: true,
+          matchedTerm: "",
+          matchedLine: "llm_invocation_classifier",
+          source: "llm"
+        };
+        if (!isAdvisorSender) {
+          suggestionAddresseeDisplayName = senderDisplayName || suggestionAddresseeDisplayName;
+          suggestionAddresseeEmail = fromEmail;
         }
-      } catch {
-        invocationLlmStatus = "fallback";
       }
+    } catch {
+      invocationLlmStatus = "fallback";
     }
   }
 
@@ -3131,7 +3342,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           advisorNotificationEmail,
           recipients: [fromEmail],
           subject: threadReplySubject,
-          bodyText: responseMessage.bodyText
+          bodyText: responseMessage.bodyText,
+          threadHeaders: outboundThreadHeaders
         });
         deliveryStatus = "sent";
       }
@@ -3593,7 +3805,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
             senderEmail,
             recipientEmail: advisorNotificationEmail,
             subject: threadReplySubject,
-            bodyText: advisorMessage.bodyText
+            bodyText: advisorMessage.bodyText,
+            threadHeaders: outboundThreadHeaders
           });
           advisorNotificationStatus = "sent";
         } else {
@@ -3611,7 +3824,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           advisorNotificationEmail,
           recipients: [fromEmail],
           subject: threadReplySubject,
-          bodyText: clientHoldMessage.bodyText
+          bodyText: clientHoldMessage.bodyText,
+          threadHeaders: outboundThreadHeaders
         });
         clientHoldStatus = "sent";
         deliveryStatus = "sent";
@@ -4030,7 +4244,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
             advisorNotificationEmail,
             recipients: responseRecipients,
             subject: bookingConfirmationMessage.subject,
-            bodyText: bookingConfirmationMessage.bodyText
+            bodyText: bookingConfirmationMessage.bodyText,
+            threadHeaders: outboundThreadHeaders
           });
           bookingConfirmationStatus = "sent";
         } catch {
@@ -4046,7 +4261,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           toEmails: inviteRecipients.length > 0 ? inviteRecipients : [fromEmail],
           subject: responseMessage.subject,
           bodyText: responseMessage.bodyText,
-          icsContent: responseMessage.icsContent
+          icsContent: responseMessage.icsContent,
+          threadHeaders: outboundThreadHeaders
         });
       } else {
         const fallbackRecipients = inviteRecipients.length > 0 ? inviteRecipients : [fromEmail];
@@ -4056,7 +4272,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
           advisorNotificationEmail,
           recipients: fallbackRecipients,
           subject: responseMessage.subject,
-          bodyText: responseMessage.bodyText
+          bodyText: responseMessage.bodyText,
+          threadHeaders: outboundThreadHeaders
         });
       }
       bookingStatus = "invite_sent";
@@ -4070,7 +4287,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         advisorNotificationEmail,
         recipients: responseRecipients,
         subject: responseMessage.subject,
-        bodyText: responseMessage.bodyText
+        bodyText: responseMessage.bodyText,
+        threadHeaders: outboundThreadHeaders
       });
     }
 
