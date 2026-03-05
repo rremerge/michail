@@ -411,6 +411,19 @@ function clampIntentInvocationConfidence(rawConfidence) {
   return parsed;
 }
 
+function normalizeIntentDurationMinutes(rawDurationMinutes) {
+  const parsed = Number.parseInt(rawDurationMinutes, 10);
+  if (!Number.isFinite(parsed)) {
+    return null;
+  }
+
+  if (parsed < 15 || parsed > 240) {
+    return null;
+  }
+
+  return parsed;
+}
+
 function validateIntentExtraction(candidate) {
   if (!candidate || typeof candidate !== "object") {
     throw new Error("LLM intent extraction response is missing structured JSON object");
@@ -421,6 +434,7 @@ function validateIntentExtraction(candidate) {
     requestedWindows,
     clientTimezone: normalizeIntentTimezone(candidate.clientTimezone),
     confidence: clampIntentConfidence(candidate.confidence),
+    durationMinutes: normalizeIntentDurationMinutes(candidate.durationMinutes),
     bookingIntent: normalizeIntentBookingIntent(candidate.bookingIntent),
     bookingIntentConfidence: clampIntentBookingConfidence(candidate.bookingIntentConfidence),
     invocationIntent: normalizeIntentInvocation(candidate.invocationIntent),
@@ -719,6 +733,7 @@ export async function extractSchedulingIntentWithOpenAi({
     {
       task:
       "Extract client-requested scheduling windows. Resolve relative dates from referenceNowIso in hostTimezone unless clientTimezone is explicit. " +
+        "Extract requested meeting durationMinutes when explicit (otherwise null). " +
         "Classify whether the sender is explicitly asking the scheduling agent to act now, and whether they clearly intend to book one of the requested windows now. " +
         "If uncertain, leave requestedWindows empty, set bookingIntent/invocationIntent to null, and lower confidence.",
       trustedContext: {
@@ -744,6 +759,7 @@ export async function extractSchedulingIntentWithOpenAi({
         requestedWindows: [{ startIso: "ISO8601", endIso: "ISO8601" }],
         clientTimezone: "IANA timezone string or null",
         confidence: "number 0..1",
+        durationMinutes: "integer meeting duration in minutes or null",
         bookingIntent: "true|false|null",
         bookingIntentConfidence: "number 0..1",
         invocationIntent: "true|false|null",

@@ -35,6 +35,41 @@ test("parseSchedulingRequest falls back to defaults when fields are absent", () 
   assert.equal(parsed.clientTimezone, null);
 });
 
+test("parseSchedulingRequest recognizes common one-hour phrasing variants", () => {
+  const cases = [
+    "Can we do Tuesday at 9am for an hour?",
+    "Can we do Tuesday at 9am for one hour?",
+    "Need a 1-hour slot Tuesday morning.",
+    "Need a 1h slot Tuesday morning."
+  ];
+
+  for (const body of cases) {
+    const parsed = parseSchedulingRequest({
+      fromEmail: "a@b.com",
+      subject: "Scheduling",
+      body,
+      defaultDurationMinutes: 30,
+      fallbackTimezone: "America/Los_Angeles",
+      referenceIso: "2026-03-02T10:00:00-08:00"
+    });
+
+    assert.equal(parsed.durationMinutes, 60, body);
+  }
+});
+
+test("parseSchedulingRequest recognizes hour-and-a-half phrasing", () => {
+  const parsed = parseSchedulingRequest({
+    fromEmail: "a@b.com",
+    subject: "Scheduling",
+    body: "Can we meet Tuesday morning for an hour and a half?",
+    defaultDurationMinutes: 30,
+    fallbackTimezone: "America/Los_Angeles",
+    referenceIso: "2026-03-02T10:00:00-08:00"
+  });
+
+  assert.equal(parsed.durationMinutes, 90);
+});
+
 test("parseSchedulingRequest extracts weekday time ranges from natural language", () => {
   const parsed = parseSchedulingRequest({
     fromEmail: "a@b.com",

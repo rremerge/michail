@@ -73,6 +73,18 @@ const DAYPART_WINDOWS = {
   evening: { startMinute: 17 * 60, endMinute: 20 * 60 },
   night: { startMinute: 19 * 60, endMinute: 22 * 60 }
 };
+const WORD_NUMBER_TO_INT = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10
+};
 
 function getMatches(text, regex) {
   return [...String(text ?? "").matchAll(new RegExp(regex.source, regex.flags))];
@@ -154,22 +166,55 @@ function parseOptionalYear(rawYear, fallbackYear) {
 
 function parseDurationMinutes(subject, body, fallback) {
   const merged = `${subject} ${body}`.toLowerCase();
-  const match = merged.match(/(\d{1,3})\s*(minute|minutes|min|mins|hour|hours|hr|hrs)\b/);
-  if (!match) {
-    return fallback;
+  const halfHourPattern = /\b(?:half|0\.5)\s*(?:an?\s*)?hour\b/;
+  if (halfHourPattern.test(merged)) {
+    return 30;
   }
 
-  const amount = Number.parseInt(match[1], 10);
-  if (Number.isNaN(amount) || amount <= 0) {
-    return fallback;
+  const hourAndHalfPattern = /\b(?:(an?|one)\s+hour|(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\s*(?:hours?|hrs?|h))\s+and\s+(?:a\s+)?half\b/;
+  const hourAndHalfMatch = merged.match(hourAndHalfPattern);
+  if (hourAndHalfMatch) {
+    const numericToken = String(hourAndHalfMatch[2] ?? "").trim();
+    const parsedNumeric = Number.parseInt(numericToken, 10);
+    const baseHours = Number.isFinite(parsedNumeric)
+      ? parsedNumeric
+      : WORD_NUMBER_TO_INT[numericToken] ?? 1;
+    if (baseHours > 0) {
+      return baseHours * 60 + 30;
+    }
   }
 
-  const unit = match[2];
-  if (unit.startsWith("hour") || unit === "hr" || unit === "hrs") {
-    return amount * 60;
+  const numericDurationPattern = /(\d{1,3})\s*[- ]?\s*(minute|minutes|min|mins|hour|hours|hr|hrs|h)\b/;
+  const numericDurationMatch = merged.match(numericDurationPattern);
+  if (numericDurationMatch) {
+    const amount = Number.parseInt(numericDurationMatch[1], 10);
+    if (Number.isFinite(amount) && amount > 0) {
+      const unit = numericDurationMatch[2];
+      if (unit.startsWith("hour") || unit === "hr" || unit === "hrs" || unit === "h") {
+        return amount * 60;
+      }
+
+      return amount;
+    }
   }
 
-  return amount;
+  const wordDurationPattern =
+    /\b(an?|one|two|three|four|five|six|seven|eight|nine|ten)\s*[- ]?\s*(minute|minutes|min|mins|hour|hours|hr|hrs|h)\b/;
+  const wordDurationMatch = merged.match(wordDurationPattern);
+  if (wordDurationMatch) {
+    const token = String(wordDurationMatch[1] ?? "").trim();
+    const amount = token === "a" || token === "an" ? 1 : WORD_NUMBER_TO_INT[token];
+    if (amount > 0) {
+      const unit = wordDurationMatch[2];
+      if (unit.startsWith("hour") || unit === "hr" || unit === "hrs" || unit === "h") {
+        return amount * 60;
+      }
+
+      return amount;
+    }
+  }
+
+  return fallback;
 }
 
 function parseMeetingType(subject, body) {

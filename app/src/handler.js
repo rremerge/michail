@@ -1237,7 +1237,8 @@ function constrainRequestedWindowsToDaypart({ requestedWindows, daypart, timezon
 function mergeParsedIntent({
   parserIntent,
   llmIntent,
-  confidenceThreshold = DEFAULT_INTENT_CONFIDENCE_THRESHOLD
+  confidenceThreshold = DEFAULT_INTENT_CONFIDENCE_THRESHOLD,
+  defaultDurationMinutes = 30
 }) {
   if (!llmIntent) {
     return {
@@ -1248,6 +1249,16 @@ function mergeParsedIntent({
 
   const llmWindows = Array.isArray(llmIntent.requestedWindows) ? llmIntent.requestedWindows : [];
   const parserWindows = Array.isArray(parserIntent.requestedWindows) ? parserIntent.requestedWindows : [];
+  const llmDuration = Number.parseInt(llmIntent.durationMinutes, 10);
+  const parserDuration = Number.parseInt(parserIntent.durationMinutes ?? defaultDurationMinutes, 10);
+  const normalizedParserDuration = Number.isFinite(parserDuration) && parserDuration > 0
+    ? parserDuration
+    : defaultDurationMinutes;
+  const parserUsingDefaultDuration = normalizedParserDuration === defaultDurationMinutes;
+  const shouldUseLlmDuration =
+    Number.isFinite(llmDuration) &&
+    llmDuration > 0 &&
+    (parserUsingDefaultDuration || Number(llmIntent.confidence ?? 0) >= confidenceThreshold);
   const shouldUseLlmWindows =
     llmWindows.length > 0 && (parserWindows.length === 0 || Number(llmIntent.confidence ?? 0) >= confidenceThreshold);
 
@@ -1255,6 +1266,7 @@ function mergeParsedIntent({
     return {
       parsed: {
         ...parserIntent,
+        durationMinutes: shouldUseLlmDuration ? llmDuration : normalizedParserDuration,
         clientTimezone: parserIntent.clientTimezone ?? llmIntent.clientTimezone ?? null
       },
       intentSource: "parser"
@@ -1265,6 +1277,7 @@ function mergeParsedIntent({
     parsed: {
       ...parserIntent,
       requestedWindows: llmWindows,
+      durationMinutes: shouldUseLlmDuration ? llmDuration : normalizedParserDuration,
       clientTimezone: parserIntent.clientTimezone ?? llmIntent.clientTimezone ?? null
     },
     intentSource: parserWindows.length > 0 ? "llm_override" : "llm"
@@ -3646,7 +3659,8 @@ export async function processSchedulingEmail({ payload, env, deps, now = () => D
         llmIntent: mergedLlmIntent,
         confidenceThreshold: Number.isFinite(intentConfidenceThreshold)
           ? intentConfidenceThreshold
-          : DEFAULT_INTENT_CONFIDENCE_THRESHOLD
+          : DEFAULT_INTENT_CONFIDENCE_THRESHOLD,
+        defaultDurationMinutes: durationDefault
       });
       parsed = merged.parsed;
       intentSource = merged.intentSource;

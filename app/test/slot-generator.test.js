@@ -43,3 +43,29 @@ test("generateCandidateSlots respects requested windows", () => {
   assert.equal(suggestions[0].startIsoUtc, "2026-03-03T19:00:00.000Z");
   assert.equal(suggestions[1].startIsoUtc, "2026-03-03T19:30:00.000Z");
 });
+
+test("generateCandidateSlots keeps 30-minute start granularity for 60-minute meetings", () => {
+  const suggestions = generateCandidateSlots({
+    hostTimezone: "America/Los_Angeles",
+    advisingWeekdays: ["Tue"],
+    searchStartUtc: "2026-03-10T20:00:00Z",
+    searchEndUtc: "2026-03-11T02:00:00Z",
+    durationMinutes: 60,
+    maxSuggestions: 10,
+    requestedWindowsUtc: [
+      {
+        startIso: "2026-03-10T21:00:00Z",
+        endIso: "2026-03-10T23:00:00Z"
+      }
+    ]
+  });
+
+  assert.deepEqual(
+    suggestions.map((item) => item.startIsoUtc),
+    [
+      "2026-03-10T21:00:00.000Z",
+      "2026-03-10T21:30:00.000Z",
+      "2026-03-10T22:00:00.000Z"
+    ]
+  );
+});

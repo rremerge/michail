@@ -151,7 +151,8 @@ test("processSchedulingEmail uses LLM-extracted windows when parser has no windo
           }
         ],
         clientTimezone: "America/Los_Angeles",
-        confidence: 0.95
+        confidence: 0.95,
+        durationMinutes: 60
       };
     },
     async writeTrace(_tableName, item) {
@@ -191,6 +192,7 @@ test("processSchedulingEmail uses LLM-extracted windows when parser has no windo
   assert.equal(traceItems[0].intentSource, "llm");
   assert.equal(traceItems[0].intentLlmStatus, "ok");
   assert.equal(traceItems[0].requestedWindowCount, 1);
+  assert.equal(traceItems[0].durationMinutes, 60);
 });
 
 test("processSchedulingEmail keeps parser windows when LLM confidence is low", async () => {

@@ -191,6 +191,7 @@ test("extractSchedulingIntentWithOpenAi parses and normalizes requested windows"
                   ],
                   clientTimezone: "America/Los_Angeles",
                   confidence: 0.92,
+                  durationMinutes: 60,
                   bookingIntent: true,
                   bookingIntentConfidence: 0.88
                 })
@@ -207,6 +208,7 @@ test("extractSchedulingIntentWithOpenAi parses and normalizes requested windows"
   assert.equal(result.requestedWindows[0].endIso, "2026-02-26T00:00:00.000Z");
   assert.equal(result.clientTimezone, "America/Los_Angeles");
   assert.equal(result.confidence, 0.92);
+  assert.equal(result.durationMinutes, 60);
   assert.equal(result.bookingIntent, true);
   assert.equal(result.bookingIntentConfidence, 0.88);
 });
@@ -238,6 +240,7 @@ test("extractSchedulingIntentWithOpenAi drops invalid windows", async () => {
                   ],
                   clientTimezone: "Not/AZone",
                   confidence: 9,
+                  durationMinutes: 5,
                   bookingIntent: "unknown",
                   bookingIntentConfidence: "nan"
                 })
@@ -252,6 +255,7 @@ test("extractSchedulingIntentWithOpenAi drops invalid windows", async () => {
   assert.deepEqual(result.requestedWindows, []);
   assert.equal(result.clientTimezone, null);
   assert.equal(result.confidence, 1);
+  assert.equal(result.durationMinutes, null);
   assert.equal(result.bookingIntent, null);
   assert.equal(result.bookingIntentConfidence, 0);
 });

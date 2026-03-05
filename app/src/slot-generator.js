@@ -69,6 +69,7 @@ export function generateCandidateSlots({
       )
     )
     .filter((interval) => interval.isValid);
+  const slotStepMinutes = durationMinutes >= 30 ? 30 : Math.max(15, durationMinutes);
 
   let localDay = startUtc.setZone(hostTimezone).startOf("day");
   const finalLocalDay = endUtc.setZone(hostTimezone).endOf("day");
@@ -89,17 +90,17 @@ export function generateCandidateSlots({
       const candidateIntervalUtc = Interval.fromDateTimes(slotStart.toUTC(), slotEnd.toUTC());
 
       if (candidateIntervalUtc.start < startUtc || candidateIntervalUtc.end > endUtc) {
-        slotStart = slotStart.plus({ minutes: durationMinutes });
+        slotStart = slotStart.plus({ minutes: slotStepMinutes });
         continue;
       }
 
       if (!inRequestedWindow(candidateIntervalUtc, requestedWindows)) {
-        slotStart = slotStart.plus({ minutes: durationMinutes });
+        slotStart = slotStart.plus({ minutes: slotStepMinutes });
         continue;
       }
 
       if (overlapsBusy(candidateIntervalUtc, busy)) {
-        slotStart = slotStart.plus({ minutes: durationMinutes });
+        slotStart = slotStart.plus({ minutes: slotStepMinutes });
         continue;
       }
 
@@ -111,7 +112,7 @@ export function generateCandidateSlots({
         hostTimezone
       });
 
-      slotStart = slotStart.plus({ minutes: durationMinutes });
+      slotStart = slotStart.plus({ minutes: slotStepMinutes });
     }
 
     localDay = localDay.plus({ days: 1 });
