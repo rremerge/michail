@@ -105,6 +105,8 @@ const QUOTED_THREAD_BOUNDARY_PATTERNS = [
   /^to:\s.+@/i,
   /^subject:\s/i
 ];
+const THREAD_CONTEXT_HEADER_LINE_PATTERN =
+  /^(date|from|to|cc|bcc|subject|sent|message-id|in-reply-to|references|mime-version|content-type|content-transfer-encoding)\s*:/i;
 const EMAIL_ADDRESS_PATTERN = /[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}/gi;
 const DEFAULT_INVITE_SUBJECT_LLM_CONFIDENCE_THRESHOLD = 0.75;
 
@@ -927,7 +929,7 @@ function buildThreadAwareIntentBody({ latestReplyText, quotedThreadContext }) {
 
 function buildThreadAwareParserBody({ latestReplyText, quotedThreadContext }) {
   const latest = String(latestReplyText ?? "").trim();
-  const context = String(quotedThreadContext ?? "").trim();
+  const context = sanitizeThreadContextForParser(quotedThreadContext);
   if (!latest && !context) {
     return "";
   }
@@ -939,6 +941,48 @@ function buildThreadAwareParserBody({ latestReplyText, quotedThreadContext }) {
   }
 
   return `${latest}\n\n${context}`;
+}
+
+function sanitizeThreadContextForParser(quotedThreadContext) {
+  const normalized = String(quotedThreadContext ?? "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n")
+    .trim();
+  if (!normalized) {
+    return "";
+  }
+
+  const lines = normalized.split("\n");
+  const keptLines = [];
+  let droppingFoldedHeaderLines = false;
+  for (const line of lines) {
+    const rawLine = String(line ?? "");
+    const dequotedLine = rawLine.replace(/^\s*>+\s?/, "");
+    const trimmed = dequotedLine.trim();
+
+    if (!trimmed) {
+      droppingFoldedHeaderLines = false;
+      keptLines.push("");
+      continue;
+    }
+
+    if (THREAD_CONTEXT_HEADER_LINE_PATTERN.test(trimmed)) {
+      droppingFoldedHeaderLines = true;
+      continue;
+    }
+
+    if (droppingFoldedHeaderLines) {
+      // RFC 5322 folded headers continue on following whitespace-indented lines.
+      if (/^[ \t]/.test(dequotedLine)) {
+        continue;
+      }
+      droppingFoldedHeaderLines = false;
+    }
+
+    keptLines.push(rawLine);
+  }
+
+  return keptLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function buildIntentTraceFields({

@@ -518,6 +518,71 @@ test("processSchedulingEmail adopts duration from earlier thread context when la
   assert.equal(traceItems[0].durationMinutes, 90);
 });
 
+test("processSchedulingEmail ignores quoted RFC header metadata when parsing thread-aware windows", async () => {
+  const traceItems = [];
+  const deps = {
+    async getSecretString() {
+      return JSON.stringify({
+        api_key: "test-openai-key",
+        model: "gpt-5.2"
+      });
+    },
+    async extractSchedulingIntentWithLlm() {
+      return {
+        requestedWindows: [],
+        clientTimezone: "America/Los_Angeles",
+        confidence: 0.35
+      };
+    },
+    async writeTrace(_tableName, item) {
+      traceItems.push(item);
+    },
+    async sendResponseEmail() {}
+  };
+
+  const env = {
+    ...baseEnv,
+    INTENT_EXTRACTION_MODE: "llm_hybrid",
+    LLM_PROVIDER_SECRET_ARN: "arn:llm-secret",
+    SEARCH_DAYS: "120"
+  };
+
+  const result = await runSchedulingEmail({
+    payload: {
+      fromEmail: "manoj@rremerge.com",
+      subject: "Re: Hello from Zscaler Data Security !",
+      body: [
+        "Hey venkat",
+        "",
+        "Cc'ing my calendar agent. Michael can you please suggest some slots for venkat to connect",
+        "",
+        "Manoj.",
+        "",
+        "On Wed, Mar 4, 2026 at 3:34 PM Venkat Krishnamoorthi <vkrishnamoorthi@zscaler.com> wrote:",
+        "> Date: Thu, 5 Mar 2026 15:27:48 -0800",
+        "> From: Venkat Krishnamoorthi <vkrishnamoorthi@zscaler.com>",
+        "> To: Manoj Apte <manoj@rremerge.com>, michael@agent.letsconnect.ai",
+        "> Cc: Brad Thomas <bthomas@zscaler.com>",
+        "> Subject: Re: Hello from Zscaler Data Security !",
+        ">",
+        "> I would love to connect this week to chat on this."
+      ].join("\n")
+    },
+    env,
+    deps,
+    now: () => Date.parse("2026-03-05T23:28:00Z")
+  });
+
+  assert.equal(result.http.statusCode, 200);
+  const response = JSON.parse(result.http.body);
+  assert.equal(response.suggestionCount, 3);
+  assert.equal(traceItems.length, 1);
+  assert.equal(traceItems[0].intentInputMode, "latest_reply");
+  assert.equal(traceItems[0].intentSource, "parser");
+  assert.equal(traceItems[0].requestedWindowCount, 0);
+  assert.equal(DateTime.fromISO(response.suggestions[0].startIsoHost).toISODate(), "2026-03-10");
+});
+
 test("processSchedulingEmail retries intent extraction with broad window policy when first pass is empty", async () => {
   const traceItems = [];
   const extractionCalls = [];
